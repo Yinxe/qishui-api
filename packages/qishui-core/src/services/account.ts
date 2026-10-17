@@ -1,6 +1,7 @@
+import { CacheTtl } from '../cache/policy.js'
 import type { QishuiCore } from '../core.js'
 import { parseUser } from '../parse.js'
-import type { MeProfile, MeStats, Membership, MembershipOffer, PrivacySetting, TrackData, UserData } from '../types.js'
+import type { Membership, MembershipOffer, MeProfile, MeStats, PrivacySetting, TrackData, UserData } from '../types.js'
 import { bool, num, str } from '../util.js'
 
 export interface CommerceSummary {
@@ -28,6 +29,7 @@ export class AccountService {
   async me(opts: { refresh?: boolean } = {}): Promise<MeProfile> {
     const { value } = await this.core.cache.fetch<any>('me', 'self', () => this.core.request('GetMyInfo', {}), {
       force: opts.refresh,
+      ttlMs: CacheTtl.account,
     })
     const user: UserData = parseUser(value.my_info ?? {}, this.parseOpts)
     if (user.id) await this.core.session.rememberIdentity(user.id, user.nickname)
@@ -55,7 +57,7 @@ export class AccountService {
       'privacy',
       'self',
       () => this.core.request('GetMyPrivacySetting', {}),
-      { force: opts.refresh },
+      { force: opts.refresh, ttlMs: CacheTtl.account },
     )
     const raw = value.privacy_setting ?? {}
     return {
@@ -92,7 +94,7 @@ export class AccountService {
       'subscription',
       'self',
       () => this.core.request('GetMySubscription', {}),
-      { force: opts.refresh },
+      { force: opts.refresh, ttlMs: CacheTtl.account },
     )
     const subs = value.subs_info ?? {}
     const entitlements = subs.play_entitlements
@@ -113,14 +115,24 @@ export class AccountService {
 
   /** 会员售卖位文案（开通会员弹窗） */
   async upsell(): Promise<any> {
-    return (await this.core.cache.fetch<any>('upsell', 'self', () => this.core.request('GetUpsell', {}))).value
+    return (
+      await this.core.cache.fetch<any>('upsell', 'self', () => this.core.request('GetUpsell', {}), {
+        ttlMs: CacheTtl.account,
+      })
+    ).value
   }
 
   /** 商业化配置 + 商品信息（两个接口一起给，做支付页会都用到） */
   async commerce(opts: { refresh?: boolean } = {}): Promise<CommerceSummary> {
     const [config, info] = await Promise.all([
-      this.core.cache.fetch<any>('commerce-config', 'self', () => this.core.request('GetCommerceConfig', {}), { force: opts.refresh }),
-      this.core.cache.fetch<any>('commerce-info', 'self', () => this.core.request('GetCommerceInfo', {}), { force: opts.refresh }),
+      this.core.cache.fetch<any>('commerce-config', 'self', () => this.core.request('GetCommerceConfig', {}), {
+        force: opts.refresh,
+        ttlMs: CacheTtl.account,
+      }),
+      this.core.cache.fetch<any>('commerce-info', 'self', () => this.core.request('GetCommerceInfo', {}), {
+        force: opts.refresh,
+        ttlMs: CacheTtl.account,
+      }),
     ])
     return { config: config.value, info: info.value }
   }
@@ -131,7 +143,7 @@ export class AccountService {
       'digital-albums',
       'self',
       () => this.core.request('GetDigitalAlbums', {}),
-      { force: opts.refresh },
+      { force: opts.refresh, ttlMs: CacheTtl.account },
     )
     return value.albums ?? value.digital_albums ?? []
   }
@@ -171,7 +183,9 @@ export class AccountService {
   }
 
   /** 黑名单（分页；响应用的键是 `users`） */
-  async blockList(opts: { cursor?: number; count?: number; refresh?: boolean } = {}): Promise<{ users: UserData[]; nextCursor?: string }> {
+  async blockList(
+    opts: { cursor?: number; count?: number; refresh?: boolean } = {},
+  ): Promise<{ users: UserData[]; nextCursor?: string }> {
     const cursor = opts.cursor ?? 0
     const count = opts.count ?? 20
     const key = `block-${cursor}-${count}`
@@ -179,7 +193,7 @@ export class AccountService {
       'block-list',
       key,
       () => this.core.request('GetBlockUserList', { cursor, count }),
-      { force: opts.refresh, ttlMs: 5 * 60_000 },
+      { force: opts.refresh, ttlMs: CacheTtl.account },
     )
     const list = value.users ?? value.block_users ?? []
     return {

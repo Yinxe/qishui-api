@@ -2,6 +2,10 @@ import fsp from 'node:fs/promises'
 import path from 'node:path'
 import type { CorePaths } from '../paths.js'
 import { dirStats, ensureDir, fileSize, pathExists, readJson, removeQuiet, writeJsonAtomic } from '../util.js'
+import { isScoped } from './policy.js'
+
+/** `viewer`/`account` 档在共享位（未登录）之上的落盘子层名 */
+const ACCT_DIR = '_acct'
 
 export interface CacheEntry<T> {
   v: 1
@@ -15,6 +19,8 @@ export interface CacheEntry<T> {
 export interface EntityCacheOptions {
   ttlMs: number
   logger?: (line: string) => void
+  /** 激活账号的现取 getter（切号即时生效）；undefined/匿名时带态数据落共享位 */
+  uid?: () => string | undefined
 }
 
 export interface EntityCacheStats {
@@ -24,10 +30,18 @@ export interface EntityCacheStats {
   misses: number
 }
 
+interface KindDir {
+  dir: string
+  /** 内存 key 的 scope 段：uid 或 '~'（共享位） */
+  scope: string
+}
+
 /**
  * 元数据缓存：一个 kind 一个目录，一条一个 JSON 文件。
  * 磁盘形态不用数据库，是为了「坏了能直接 cat / 删掉重来」，也方便上层按目录统计。
  *
+ * - 第二维度是账号 scope（`policy.ts` 的 `isScoped`）：带「我」态或账号私有的 kind
+ *   落 `_acct/<uid>/<kind>/`，内存 key 也带 uid 前缀，两号互不可见；公共 kind 与匿名态落共享位；
  * - TTL 过期即视为未命中（文件留着，等 prune 清）；
  * - 并发同 key 只发一次 loader（pending 去重）；
  * - `touch` 用文件 mtime 表达 LRU，跨进程也能被 prune 看到。
@@ -43,8 +57,21 @@ export class EntityCache {
     private options: EntityCacheOptions,
   ) {}
 
+  /** 该 kind 当前该落哪一层：带态且已登录 = uid，否则共享位 */
+  private scopeOf(kind: string): string | undefined {
+    return isScoped(kind) ? this.options.uid?.() : undefined
+  }
+
   private key(kind: string, id: string): string {
-    return `${kind}/${id}`
+    return `${this.scopeOf(kind) ?? '~'}/${kind}/${id}`
+  }
+
+  private pathFor(kind: string, id: string): string {
+    return this.paths.entityFile(kind, id, this.scopeOf(kind))
+  }
+
+  private kindDirPath(kind: string, scope?: string): string {
+    return scope ? path.join(this.paths.entityDir, ACCT_DIR, scope, kind) : path.join(this.paths.entityDir, kind)
   }
 
   get<T>(kind: string, id: string): { value: T; at: number } | undefined {
@@ -64,12 +91,12 @@ export class EntityCache {
     const entry: CacheEntry<T> = { v: 1, kind, id, at: Date.now(), expires: Date.now() + ttlMs, data }
     this.memory.set(this.key(kind, id), entry)
     if (ttlMs <= 0) return
-    await writeJsonAtomic(this.paths.entityFile(kind, id), entry)
+    await writeJsonAtomic(this.pathFor(kind, id), entry)
   }
 
   /** 读盘（内存没有时）：TTL 校验后塞回内存 */
   async load<T>(kind: string, id: string): Promise<T | undefined> {
-    const file = this.paths.entityFile(kind, id)
+    const file = this.pathFor(kind, id)
     const entry = await readJson<CacheEntry<T>>(file)
     if (!entry?.data) return undefined
     if (typeof entry.expires === 'number' && entry.expires <= Date.now()) return undefined
@@ -116,54 +143,96 @@ export class EntityCache {
     }
   }
 
-  /** 写操作后清缓存：给了 id 清一条，否则清整个 kind */
+  /** 写操作后清缓存：给了 id 清一条，否则清整个 kind（只清当前 scope 的，跨账号数据不动） */
   async invalidate(kind: string, id?: string): Promise<void> {
-    const prefix = `${kind}/`
-    for (const key of [...this.memory.keys()]) {
-      if (key === `${kind}/${id}` || (id === undefined && key.startsWith(prefix))) this.memory.delete(key)
+    const scope = this.scopeOf(kind)
+    if (id === undefined) {
+      const memPrefix = `${scope ?? '~'}/${kind}/`
+      for (const key of [...this.memory.keys()]) if (key.startsWith(memPrefix)) this.memory.delete(key)
+      await removeQuiet(this.kindDirPath(kind, scope))
+      return
     }
-    if (id === undefined) await removeQuiet(path.join(this.paths.entityDir, kind))
-    else await removeQuiet(this.paths.entityFile(kind, id))
+    const memKey = this.key(kind, id)
+    this.memory.delete(memKey)
+    this.pending.delete(memKey)
+    await removeQuiet(this.pathFor(kind, id))
+  }
+
+  /** 切号时作废内存/pending（磁盘按 scope 分层，本来就不互踩） */
+  clearMemory(): void {
+    this.memory.clear()
+    this.pending.clear()
+  }
+
+  /** 删共享位上的整个 kind 目录（迁移收尾：旧版把账号私有/带态数据落过共享位） */
+  async clearShared(kind: string): Promise<void> {
+    for (const key of [...this.memory.keys()]) if (key.startsWith(`~/${kind}/`)) this.memory.delete(key)
+    await removeQuiet(path.join(this.paths.entityDir, kind))
+  }
+
+  /** 删掉某个账号的全部私有/带态缓存（logout --purge / reset 用） */
+  async invalidateAccount(uid: string): Promise<void> {
+    for (const key of [...this.memory.keys()]) if (key.startsWith(`${uid}/`)) this.memory.delete(key)
+    for (const key of [...this.pending.keys()]) if (key.startsWith(`${uid}/`)) this.pending.delete(key)
+    await removeQuiet(path.join(this.paths.entityDir, ACCT_DIR, uid))
+  }
+
+  /** entityDir 与其下 `_acct/<uid>` 的全部 kind 目录 */
+  private async allKindDirs(): Promise<KindDir[]> {
+    const out: KindDir[] = []
+    let names: string[] = []
+    try {
+      names = await fsp.readdir(this.paths.entityDir)
+    } catch {
+      return out
+    }
+    for (const name of names) {
+      if (name === ACCT_DIR) {
+        let uids: string[] = []
+        const acctRoot = path.join(this.paths.entityDir, ACCT_DIR)
+        try {
+          uids = await fsp.readdir(acctRoot)
+        } catch {
+          uids = []
+        }
+        for (const uid of uids) {
+          for (const kind of await this.readdirSafe(path.join(acctRoot, uid))) {
+            out.push({ dir: path.join(acctRoot, uid, kind), scope: uid })
+          }
+        }
+      } else {
+        out.push({ dir: path.join(this.paths.entityDir, name), scope: '~' })
+      }
+    }
+    return out
+  }
+
+  private async readdirSafe(dir: string): Promise<string[]> {
+    try {
+      return await fsp.readdir(dir)
+    } catch {
+      return []
+    }
   }
 
   async stats(): Promise<EntityCacheStats> {
     let entries = 0
     let bytes = 0
-    let kinds: string[] = []
-    try {
-      kinds = await fsp.readdir(this.paths.entityDir)
-    } catch {
-      kinds = []
-    }
-    for (const kind of kinds) {
-      const dir = path.join(this.paths.entityDir, kind)
-      const sub = await dirStats(dir)
+    for (const kd of await this.allKindDirs()) {
+      const sub = await dirStats(kd.dir)
       entries += sub.files
       bytes += sub.bytes
     }
     return { entries, bytes, hits: this.hits, misses: this.misses }
   }
 
-  /** 清掉过期条目；再超 maxBytes 就按 mtime 从旧到新删 */
+  /** 清掉过期条目；再超 maxBytes 就按 mtime 从旧到新删（共享位与各账号目录一起算） */
   async prune(opts: { maxBytes?: number; maxAgeMs?: number } = {}): Promise<{ removed: number; freedBytes: number }> {
     const now = Date.now()
     const files: { file: string; size: number; mtime: number }[] = []
-    let kinds: string[] = []
-    try {
-      kinds = await fsp.readdir(this.paths.entityDir)
-    } catch {
-      return { removed: 0, freedBytes: 0 }
-    }
-    for (const kind of kinds) {
-      const dir = path.join(this.paths.entityDir, kind)
-      let names: string[] = []
-      try {
-        names = await fsp.readdir(dir)
-      } catch {
-        continue
-      }
-      for (const name of names) {
-        const file = path.join(dir, name)
+    for (const kd of await this.allKindDirs()) {
+      for (const name of await this.readdirSafe(kd.dir)) {
+        const file = path.join(kd.dir, name)
         try {
           const st = await fsp.stat(file)
           files.push({ file, size: st.size, mtime: st.mtimeMs })
@@ -181,7 +250,7 @@ export class EntityCache {
       freedBytes += size
     }
 
-    let alive: typeof files = []
+    const alive: typeof files = []
     for (const item of files) {
       const entry = await readJson<CacheEntry<unknown>>(item.file)
       const expired = entry?.expires != null ? entry.expires <= now : true
@@ -208,12 +277,12 @@ export class EntityCache {
   /** 只读看某个 kind 是否有落盘（不做网络） */
   async has(kind: string, id: string): Promise<boolean> {
     if (this.get(kind, id)) return true
-    const file = this.paths.entityFile(kind, id)
+    const file = this.pathFor(kind, id)
     if (!(await pathExists(file))) return false
     return (await fileSize(file)) !== undefined
   }
 
-  /** 全清元数据缓存（内存 + 磁盘）；返回删掉的文件数与字节数 */
+  /** 全清元数据缓存（内存 + 磁盘，含全部账号目录）；返回删掉的文件数与字节数 */
   async clear(): Promise<{ removed: number; freedBytes: number }> {
     const before = await this.stats()
     this.memory.clear()

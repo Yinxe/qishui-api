@@ -1,3 +1,4 @@
+import { CacheTtl } from '../cache/policy.js'
 import type { QishuiCore } from '../core.js'
 import { Album, Artist, Playlist, Track, User } from '../entities.js'
 import { asAlbum, asArtist, asPlaylist, asTrack, asUser, collectPlaylists, collectTracks, imageUrl } from '../parse.js'
@@ -52,6 +53,81 @@ export interface LaunchInfo {
 export type HomeLayout = 'grid' | 'feed'
 
 /**
+ * 推荐流的偏好模式（App「听歌模式」底部那三个）。
+ * 取值来自 IDL 常量 `PreferenceModeFamiliar` / `PreferenceModeFresh`（上游 thrift 生成），
+ * 缺省是 `default`（推荐）。
+ */
+export type FeedPreferenceMode = 'default' | 'familiar' | 'fresh' | (string & {})
+
+/** FeedMode 里一条可选项：偏好模式（推荐/熟悉/新鲜）或场景模式（图书馆/专注/摸鱼…） */
+export interface FeedModeOption {
+  /** `preference_mode` = 偏好；`scene_mode` = 场景 */
+  type: 'preference_mode' | 'scene_mode' | (string & {})
+  /** 上游给的中文文案（如「推荐」「专注模式」） */
+  text: string
+  /** 偏好模式的取值（`default` / `familiar` / `fresh`），场景模式为 undefined */
+  preferenceMode?: FeedPreferenceMode
+  /** 场景模式的 id，可直接当 `radioTracks()` 的 `radio_id` 用 */
+  radioId?: string
+  /** 场景模式的内部队列名（`scene_mode_focus` 这类，只是标识） */
+  subQueueType?: string
+  raw: unknown
+}
+
+/**
+ * 已知的偏好模式。上游的 `feed_mode_bar` **只回当前选中的那一个**（实测只回「推荐」），
+ * 所以「熟悉/新鲜」这两个取值来自 IDL 常量（`PreferenceModeFamiliar` / `PreferenceModeFresh`），
+ * 不是从响应里枚举出来的。
+ */
+export const FEED_PREFERENCE_MODES: { mode: FeedPreferenceMode; label: string }[] = [
+  { mode: 'default', label: '推荐' },
+  { mode: 'familiar', label: '熟悉' },
+  { mode: 'fresh', label: '新鲜' },
+]
+
+export interface FeedPreferenceOption {
+  mode: FeedPreferenceMode
+  label: string
+  /** 上游当前选中的那个（来自 `feed_mode_bar`） */
+  current: boolean
+}
+
+export interface FeedModeView {
+  /** 偏好栏（推荐/熟悉/新鲜），给 `feedSongTab({preferenceMode})` */
+  preferences: FeedPreferenceOption[]
+  /** 上游回来的偏好栏条目（通常只有当前那一条，原样留着备查） */
+  bar: FeedModeOption[]
+  /** 场景音乐（45 个），`radioId` 给 `radioTracks()` */
+  scenes: FeedModeOption[]
+  raw: unknown
+}
+
+/**
+ * `FeedSongTab` 的完整请求口径（IDL 见 `contract/feed.ts` 的 `FeedSongTabRequest`）。
+ * 没列出来的 `is_did_first_request`/`did_first_use_time`/`feed_preference`/`feed_extra`
+ * 要么需要设备侧首次使用时间这类我们没采集的量，要么结构是 opaque any，不硬编。
+ */
+export interface FeedSongTabOptions {
+  preferenceMode?: FeedPreferenceMode
+  /** 信息流类型；IDL 常量只有 `track`/`mix`，单曲 tab 用 `track` */
+  feedMode?: 'track' | 'mix' | (string & {})
+  /** 一次要几首，上游默认 6 */
+  count?: number
+  /**
+   * 带本地播放历史当 `played_tracks`。**默认关**：我们只本地记历史、没向上游报播放时长，
+   * 主动上报反而暴露「只播不报」；等播放时长的上报口径补上再默认开。
+   */
+  withPlayedTracks?: boolean
+  /** 排除本激活号听过的（journal 最近 500 条）——纯客户端过滤，不赌上游是否真吃 `preference_mode` */
+  excludePlayed?: boolean
+  /** 排除「我喜欢」里的（要登录；拉不到就跳过） */
+  excludeLiked?: boolean
+  /** 排除时最多翻几页补量（默认 3，防请求失控） */
+  maxPages?: number
+  refresh?: boolean
+}
+
+/**
  * 发现 / 推荐：
  *  - `home()` = `DiscoverView` 推荐页版（空 body）：榜单块 + 歌单推荐 + 场景队列，一次 159 条资源；
  *  - `home({layout:'feed'})` = 听歌模式版：30 个 `discover_radio` 场景队列，**没有榜单块**；
@@ -62,6 +138,9 @@ export type HomeLayout = 'grid' | 'feed'
  */
 export class DiscoverService {
   constructor(private core: QishuiCore) {}
+
+  /** 本次进程里 FeedSongTab 的请求计数（App 用它区分冷启动首刷与后续翻页） */
+  private readonly feedTabSession = { total: 0, byMode: new Map<string, number>() }
 
   private get parseOpts() {
     return { coverWidth: this.core.config.coverWidth }
@@ -78,7 +157,7 @@ export class DiscoverService {
           'DiscoverView',
           layout === 'feed' ? { first_request: true, pc_new_discover_request: true } : {},
         ),
-      { force: opts.refresh, ttlMs: 10 * 60_000 },
+      { force: opts.refresh, ttlMs: CacheTtl.none },
     )
     return this.toHomeView(value)
   }
@@ -109,7 +188,7 @@ export class DiscoverService {
           block_type: opts.blockType,
           sub_channel_id: opts.subChannelId ?? opts.blockType,
         }),
-      { force: opts.refresh, ttlMs: 10 * 60_000 },
+      { force: opts.refresh, ttlMs: CacheTtl.none },
     )
     return (Array.isArray(value.inner_block) ? value.inner_block : []).map((inner: any) => ({
       type: str(inner?.type) ?? '',
@@ -119,25 +198,96 @@ export class DiscoverService {
     }))
   }
 
-  /** 「随便听听」的单曲推荐 tab（一次 6 首，含完整 album/artists） */
-  async feedSongTab(opts: { refresh?: boolean } = {}): Promise<Track[]> {
-    const { value } = await this.core.cache.fetch<any>('feed-song-tab', 'self', () => this.core.request('FeedSongTab', {}), {
-      force: opts.refresh,
-      ttlMs: 5 * 60_000,
-    })
-    const list = Array.isArray(value.items) ? value.items : []
+  /**
+   * 「随便听听」的单曲推荐 tab（一次默认 6 首，含完整 album/artists）。
+   * 请求按 App 口径补齐：`feed_mode`/`preference_mode`/`count` + 会话计数
+   * （`is_first_request`/`total_request_count`/`preference_mode_request_count`）；
+   * 本地播放历史 `played_tracks` 机制在，默认不带（见 `FeedSongTabOptions.withPlayedTracks`）。
+   */
+  async feedSongTab(opts: FeedSongTabOptions = {}): Promise<Track[]> {
+    const mode = opts.preferenceMode ?? 'default'
+    const want = opts.count ?? 6
+    if (!opts.excludePlayed && !opts.excludeLiked) {
+      const { value } = await this.core.cache.fetch<any>(
+        'feed-song-tab',
+        mode,
+        () => this.core.request('FeedSongTab', this.feedSongTabBody(mode, opts)),
+        { force: opts.refresh, ttlMs: CacheTtl.none },
+      )
+      return this.feedSongTabTracks(value)
+    }
+    // 客户端排除档：连续翻页去重，补够 want 首或到 maxPages 为止（请求失控防线）
+    const excluded = await this.feedExcludedIds(opts)
+    const out: Track[] = []
+    const seen = new Set<string>()
+    const pages = Math.max(1, opts.maxPages ?? 3)
+    for (let page = 0; page < pages && out.length < want; page++) {
+      const value = await this.core.request('FeedSongTab', this.feedSongTabBody(mode, { ...opts, count: want }))
+      for (const track of this.feedSongTabTracks(value)) {
+        if (seen.has(track.id)) continue
+        seen.add(track.id)
+        if (!excluded.has(track.id)) out.push(track)
+      }
+    }
+    return out.slice(0, want)
+  }
+
+  private feedSongTabTracks(value: any): Track[] {
+    const list = Array.isArray(value?.items) ? value.items : []
     const parsed = list.map((item: unknown) => asTrack(item, this.parseOpts)).filter(Boolean) as TrackData[]
     return (parsed.length ? parsed : collectTracks(value, this.parseOpts, 20)).map((d) => new Track(this.core, d))
   }
 
+  private async feedExcludedIds(opts: FeedSongTabOptions): Promise<Set<string>> {
+    const ids = new Set<string>()
+    if (opts.excludePlayed) for (const record of this.core.history.recent(500)) ids.add(record.trackId)
+    if (opts.excludeLiked) {
+      try {
+        for (const track of await this.core.library.likedTracks()) ids.add(track.id)
+      } catch {
+        // 未登录/拉取失败：喜欢池缺席，只剩已播排除
+      }
+    }
+    return ids
+  }
+
+  private feedSongTabBody(mode: FeedPreferenceMode, opts: FeedSongTabOptions): Record<string, unknown> {
+    this.feedTabSession.total += 1
+    const modeCount = (this.feedTabSession.byMode.get(mode) ?? 0) + 1
+    this.feedTabSession.byMode.set(mode, modeCount)
+    const body: Record<string, unknown> = {
+      feed_mode: opts.feedMode ?? 'track',
+      preference_mode: mode,
+      count: opts.count ?? 6,
+      is_first_request: this.feedTabSession.total === 1,
+      total_request_count: this.feedTabSession.total,
+      preference_mode_request_count: modeCount,
+    }
+    if (opts.withPlayedTracks) {
+      const played = this.core.history.recent(20).reverse()
+      if (played.length) {
+        // IDL 里 TrackPlayed 是 opaque any，字段名按同构的 MediaPlayed（entity/media.ts）推的，效果未对上游验证
+        body.played_tracks = played.map((r) => ({
+          track_id: r.trackId,
+          played_mills: r.playedMs ?? r.durationMs ?? 0,
+          duration: r.durationMs ?? 0,
+          play_timestamp: Math.floor(r.at / 1000),
+        }))
+      }
+    }
+    return body
+  }
+
   /** 歌单广场（分类歌单页的数据源） */
-  async playlistSquare(opts: { categoryId?: string; refresh?: boolean } = {}): Promise<{ playlists: Playlist[]; categories: any[] }> {
+  async playlistSquare(
+    opts: { categoryId?: string; refresh?: boolean } = {},
+  ): Promise<{ playlists: Playlist[]; categories: any[] }> {
     const categoryId = opts.categoryId ?? ''
     const { value } = await this.core.cache.fetch<any>(
       'playlist-square',
       categoryId,
       () => this.core.request('FeedPlaylistSquare', { category_id: categoryId }),
-      { force: opts.refresh, ttlMs: 10 * 60_000 },
+      { force: opts.refresh, ttlMs: CacheTtl.none },
     )
     const list = Array.isArray(value.items) ? value.items : []
     const playlists = list
@@ -149,19 +299,62 @@ export class DiscoverService {
 
   /**
    * 电台/场景队列的曲目流（无限电台的续播来源）。
-   * `radioId` = 首页 `discover_radio` 块的 `inner.id`。
+   * `radioId` 实测两种都吃：FeedMode 场景的 `scene_mode_id`（如 `48`），
+   * 或首页 `discover_radio` 块的 `inner_block_id`（雪花 id）。
    */
-  async radioTracks(radioId: string, opts: { refresh?: boolean } = {}): Promise<Track[]> {
-    const { value } = await this.core.cache.fetch<any>('radio-tracks', radioId, () => this.core.request('FeedRadioTracks', { radio_id: radioId }), {
-      force: opts.refresh,
-      ttlMs: 5 * 60_000,
-    })
+  async radioTracks(radioId: string | number, opts: { refresh?: boolean } = {}): Promise<Track[]> {
+    const key = String(radioId)
+    const { value } = await this.core.cache.fetch<any>(
+      'radio-tracks',
+      key,
+      () => this.core.request('FeedRadioTracks', { radio_id: radioId }),
+      { force: opts.refresh, ttlMs: CacheTtl.none },
+    )
     return collectTracks(value, this.parseOpts, 50).map((d) => new Track(this.core, d))
   }
 
   /** Feed 模式配置（推荐流的路由表：preference_mode / scene_mode 的枚举与文案） */
   async feedMode(opts: { refresh?: boolean } = {}): Promise<any> {
-    return (await this.core.cache.fetch<any>('feed-mode', 'self', () => this.core.request('FeedMode', {}), { force: opts.refresh, ttlMs: 30 * 60_000 })).value
+    return (
+      await this.core.cache.fetch<any>('feed-mode', 'self', () => this.core.request('FeedMode', {}), {
+        force: opts.refresh,
+        ttlMs: CacheTtl.config,
+      })
+    ).value
+  }
+
+  /**
+   * Feed 模式配置（推荐流的路由表），解析成「偏好栏 + 场景列表」。
+   * 偏好栏喂 `feedSongTab({preferenceMode})`；场景的 `radioId` 喂 `radioTracks()`。
+   */
+  async feedModes(opts: { refresh?: boolean } = {}): Promise<FeedModeView> {
+    const raw = await this.feedMode(opts)
+    const toOption = (item: any): FeedModeOption => {
+      const scene = item?.entity?.feed_scene_mode
+      const preference = item?.entity?.feed_preference_mode
+      return {
+        type: str(item?.type) ?? '',
+        text: str(item?.text) ?? '',
+        preferenceMode: str(preference?.mode),
+        radioId: scene?.scene_mode_id === undefined ? undefined : String(scene.scene_mode_id),
+        subQueueType: str(scene?.sub_queue_type),
+        raw: item,
+      }
+    }
+    const bar: FeedModeOption[] = (Array.isArray(raw?.feed_mode_bar?.feed_mode) ? raw.feed_mode_bar.feed_mode : []).map(
+      toOption,
+    )
+    const scenes: FeedModeOption[] = []
+    for (const block of Array.isArray(raw?.feed_mode_block) ? raw.feed_mode_block : []) {
+      for (const item of Array.isArray(block?.feed_mode) ? block.feed_mode : []) scenes.push(toOption(item))
+    }
+    const currentModes = new Set(bar.map((option) => option.preferenceMode).filter(Boolean))
+    return {
+      preferences: FEED_PREFERENCE_MODES.map((item) => ({ ...item, current: currentModes.has(item.mode) })),
+      bar,
+      scenes,
+      raw,
+    }
   }
 
   /** 精选内容（实测回空 body —— 不可用的推荐位，保接口但别指望有数据） */
@@ -171,7 +364,7 @@ export class DiscoverService {
         'featured',
         `${opts.cursor ?? 0}-${opts.count ?? 20}`,
         () => this.core.request('GetFeaturedContents', { cursor: opts.cursor ?? 0, count: opts.count ?? 20 }),
-        { force: opts.refresh, ttlMs: 30 * 60_000 },
+        { force: opts.refresh, ttlMs: CacheTtl.none },
       )
     ).value
   }
@@ -180,7 +373,7 @@ export class DiscoverService {
   async launch(opts: { refresh?: boolean } = {}): Promise<LaunchInfo> {
     const { value } = await this.core.cache.fetch<any>('launch', 'self', () => this.core.request('Launch', {}), {
       force: opts.refresh,
-      ttlMs: 30 * 60_000,
+      ttlMs: CacheTtl.config,
     })
     const boost = value.boost_setting
     return {

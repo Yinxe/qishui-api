@@ -1,4 +1,4 @@
-import { resolvePaths, type CorePaths } from './paths.js'
+import { type CorePaths, resolvePaths } from './paths.js'
 import { readJsonSync, writeJsonAtomic } from './util.js'
 
 export type RepeatMode = 'off' | 'all' | 'one'
@@ -30,6 +30,11 @@ export interface CoreConfig {
   defaultRepeat: RepeatMode
   /** 播放器默认随机 */
   defaultShuffle: boolean
+  /**
+   * 激活账号的 uid（多账号开关的真相源）：空 = 匿名。
+   * `SessionManager.useAccount()`/登录会写回它；也可手改 config.json 换默认号。
+   */
+  activeUid?: string
 }
 
 export const CONFIG_DEFAULTS: Omit<CoreConfig, 'dataDir'> = {

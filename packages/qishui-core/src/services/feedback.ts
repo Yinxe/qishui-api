@@ -1,3 +1,4 @@
+import { CacheTtl } from '../cache/policy.js'
 import type { QishuiCore } from '../core.js'
 import { str } from '../util.js'
 
@@ -29,10 +30,15 @@ export class FeedbackService {
 
   /** 举报原因枚举（举报弹窗的选项列表），默认 `report_type: 'track'` */
   async reportReasons(type = 'track', opts: { refresh?: boolean } = {}): Promise<ReportReason[]> {
-    const { value } = await this.core.cache.fetch<any>('report-reasons', type, () => this.core.request('GetReportReason', { report_type: type }), {
-      force: opts.refresh,
-      ttlMs: 24 * 60 * 60 * 1000,
-    })
+    const { value } = await this.core.cache.fetch<any>(
+      'report-reasons',
+      type,
+      () => this.core.request('GetReportReason', { report_type: type }),
+      {
+        force: opts.refresh,
+        ttlMs: CacheTtl.staticEnum,
+      },
+    )
     const list = Array.isArray(value.report_reasons) ? value.report_reasons : []
     return list.map((item: any) => ({ code: str(item?.code) ?? '', reason: str(item?.reason) ?? '', raw: item }))
   }

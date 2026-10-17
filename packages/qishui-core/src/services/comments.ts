@@ -66,7 +66,10 @@ export class CommentsService {
   }
 
   /** 某条评论的回复（响应键是 `reply_infos`，不是 `comments`） */
-  async replies(commentId: string, opts: { cursor?: number; count?: number; groupId?: string; groupType?: number } = {}): Promise<Paged<Comment>> {
+  async replies(
+    commentId: string,
+    opts: { cursor?: number; count?: number; groupId?: string; groupType?: number } = {},
+  ): Promise<Paged<Comment>> {
     const res = await this.core.request('ListReplies', {
       comment_id: commentId,
       cursor: opts.cursor ?? 0,
@@ -123,7 +126,11 @@ export class CommentsService {
    * 回复某条评论（回复也是一条 comment；`reply_id` 指向被回复的那条，
    * 要指定「回复谁」用 `replyToUserId` —— IDL 里没有 `reply_user_id` 这个字段）。
    */
-  async reply(commentId: string, text: string, opts: { groupId?: string; replyToUserId?: string } = {}): Promise<Comment> {
+  async reply(
+    commentId: string,
+    text: string,
+    opts: { groupId?: string; replyToUserId?: string } = {},
+  ): Promise<Comment> {
     const res = await this.core.request('CreateComment', {
       group_id: opts.groupId ?? '',
       group_type: GroupType.Track,

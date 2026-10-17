@@ -41,6 +41,12 @@ const WRAPPER_KEYS = [
 ]
 
 /**
+ * 实体直接裹在 `entity.<kind>` 下的形态（搜索结果就是 `entity.artist` / `entity.playlist`，
+ * **不是** `*_wrapper`）。只在「整个对象基本只剩这一个键」时才剥，避免把曲目自带的 `album` 字段误当包装。
+ */
+const ENTITY_KEYS = ['track', 'album', 'artist', 'playlist', 'user', 'comment', 'video', 'ugc_video']
+
+/**
  * 一直剥到真正的实体：`entity.track_wrapper.track` / `entity.ranked_track.track` /
  * `entity.playlist` / `inner_block.resources[].entity.track` 全都能落到实体上。
  */
@@ -59,9 +65,16 @@ export function unwrap(node: any): any {
       cur = cur.ranked_track.track ?? cur.ranked_track
       moved = true
     }
-    if (isObj(cur.track) && Object.keys(cur).length <= 3) {
-      cur = cur.track
-      moved = true
+    // `entity.artist` / `entity.playlist` 这类包装（搜索结果形状），以及
+    // `track_wrapper: { track, limited_free_info }` 这种「实体键 + 附属元信息」——
+    // 只要**恰好命中一个**实体键就落到实体上。
+    // 用「没有字符串 id」把包装和真实体分开：真实体自带 id，绝不会被误剥（`album`/`artists` 字段因此安全）。
+    if (typeof cur.id !== 'string') {
+      const entityKeys = Object.keys(cur).filter((k) => ENTITY_KEYS.includes(k) && isObj(cur[k]))
+      if (entityKeys.length === 1) {
+        cur = cur[entityKeys[0]]
+        moved = true
+      }
     }
     if (!moved) break
   }
@@ -105,7 +118,11 @@ export function looksLikeUser(v: any): boolean {
     isObj(v) &&
     typeof v.id === 'string' &&
     typeof v.nickname === 'string' &&
-    (v.medium_avatar_url != null || v.larger_avatar_url != null || v.douyin_id != null || v.sec_uid != null || v.is_vip != null)
+    (v.medium_avatar_url != null ||
+      v.larger_avatar_url != null ||
+      v.douyin_id != null ||
+      v.sec_uid != null ||
+      v.is_vip != null)
   )
 }
 
@@ -117,7 +134,12 @@ export function looksLikeComment(v: any): boolean {
  * 递归捞实体（不关心它藏在哪一层）。
  * 命中后不再往命中节点内部递归 —— 列表里嵌的实体都是重复的，省掉大量无用遍历。
  */
-export function collect<T>(root: unknown, test: (v: any) => boolean, map: (v: any) => T, limit = Number.POSITIVE_INFINITY): T[] {
+export function collect<T>(
+  root: unknown,
+  test: (v: any) => boolean,
+  map: (v: any) => T,
+  limit = Number.POSITIVE_INFINITY,
+): T[] {
   const out: T[] = []
   const seenNodes = new Set<unknown>()
   const seenIds = new Set<string>()
@@ -148,7 +170,11 @@ export function collectTracks(root: unknown, opts: ParseOptions = {}, limit = Nu
   return collect(root, looksLikeTrack, (t) => parseTrack(t, opts), limit)
 }
 
-export function collectPlaylists(root: unknown, opts: ParseOptions = {}, limit = Number.POSITIVE_INFINITY): PlaylistData[] {
+export function collectPlaylists(
+  root: unknown,
+  opts: ParseOptions = {},
+  limit = Number.POSITIVE_INFINITY,
+): PlaylistData[] {
   return collect(root, looksLikePlaylist, (p) => parsePlaylist(p, opts), limit)
 }
 
@@ -370,7 +396,8 @@ export function coerceTrack(input: unknown, opts: ParseOptions = {}): TrackData 
   if (typeof input === 'string') return { id: input, name: '', artists: [] }
   const node = unwrap(input)
   if (looksLikeTrack(node)) return parseTrack(node, opts)
-  if (isObj(node) && (node.track_id != null || (node.name != null && node.artists != null))) return parseTrackRef(node, opts)
+  if (isObj(node) && (node.track_id != null || (node.name != null && node.artists != null)))
+    return parseTrackRef(node, opts)
   return undefined
 }
 

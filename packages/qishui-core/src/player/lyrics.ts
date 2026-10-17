@@ -17,7 +17,8 @@ export interface LyricLine {
   credit: boolean
 }
 
-const CREDIT = /^(作曲|作词|编曲|制作人|出品|监制|混音|母带|录音|吉他|贝斯|鼓|键盘|和声|录音室|OP|SP|发行|统筹|企划|艺人统筹|歌曲制作|音乐制作)[:：]/
+const CREDIT =
+  /^(作曲|作词|编曲|制作人|出品|监制|混音|母带|录音|吉他|贝斯|鼓|键盘|和声|录音室|OP|SP|发行|统筹|企划|艺人统筹|歌曲制作|音乐制作)[:：]/
 
 /**
  * 结构化歌词（KRC，行级 + 逐字）。
@@ -50,7 +51,10 @@ export class Lyrics {
 
   /** 歌词正文（不含署名行），一行一句 */
   get text(): string {
-    return this.lines.filter((l) => !l.credit).map((l) => l.text).join('\n')
+    return this.lines
+      .filter((l) => !l.credit)
+      .map((l) => l.text)
+      .join('\n')
   }
 
   /** 正文行（歌手指向的「要唱的部分」） */
@@ -59,7 +63,10 @@ export class Lyrics {
   }
 
   get durationMs(): number | undefined {
-    return this.lines.reduce<number | undefined>((max, line) => (line.endMs && (!max || line.endMs > max) ? line.endMs : max), undefined)
+    return this.lines.reduce<number | undefined>(
+      (max, line) => (line.endMs && (!max || line.endMs > max) ? line.endMs : max),
+      undefined,
+    )
   }
 
   /** 当前时刻所在行；返回行号（在 this.lines 里的下标），没有就是 -1 */

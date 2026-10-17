@@ -1,8 +1,18 @@
 import { getShareMeta, type ShareMeta } from 'qishui-api'
+import { CacheTtl } from '../cache/policy.js'
 import type { QishuiCore } from '../core.js'
 import { Album, Artist, Chart, Playlist, Track } from '../entities.js'
 import { CoreError } from '../errors.js'
-import { asAlbum, asArtist, asPlaylist, asTrack, collectAlbums, collectTracks, parseChart, parseTrackRef } from '../parse.js'
+import {
+  asAlbum,
+  asArtist,
+  asPlaylist,
+  asTrack,
+  collectAlbums,
+  collectTracks,
+  parseChart,
+  parseTrackRef,
+} from '../parse.js'
 import type { AlbumData, ChartData, Paged, TrackData } from '../types.js'
 import { num, str } from '../util.js'
 
@@ -82,7 +92,7 @@ export class CatalogService {
       for (const item of res.media ?? []) {
         const data = asTrack(item?.entity, this.parseOpts)
         if (!data?.id) continue
-        await this.core.cache.set('track', data.id, data)
+        await this.core.cache.set('track', data.id, data, CacheTtl.entity)
         found.set(data.id, new Track(this.core, data))
       }
     }
@@ -130,12 +140,15 @@ export class CatalogService {
   }
 
   /** 收藏数/评论数/分享数 */
-  async stats(id: string, opts: { refresh?: boolean } = {}): Promise<{ collected?: number; comment?: number; shared?: number }> {
+  async stats(
+    id: string,
+    opts: { refresh?: boolean } = {},
+  ): Promise<{ collected?: number; comment?: number; shared?: number }> {
     const { value } = await this.core.cache.fetch<any>(
       'media-stats',
       id,
       () => this.core.request('GetMediaStats', { media_id: id, media_type: 'track' }),
-      { force: opts.refresh, ttlMs: 5 * 60_000 },
+      { force: opts.refresh, ttlMs: CacheTtl.none },
     )
     return {
       collected: num(value.stats?.count_collected),
@@ -155,11 +168,13 @@ export class CatalogService {
           full_media: true,
           req_count: count,
         }),
-      { force: opts.refresh, ttlMs: 30 * 60_000 },
+      { force: opts.refresh, ttlMs: CacheTtl.none },
     )
     const items = Array.isArray(value.items) ? value.items : []
     const tracks = items.map((item: unknown) => asTrack(item, this.parseOpts)).filter(Boolean) as TrackData[]
-    return (tracks.length ? tracks : collectTracks(value, this.parseOpts, count)).slice(0, count).map((d) => new Track(this.core, d))
+    return (tracks.length ? tracks : collectTracks(value, this.parseOpts, count))
+      .slice(0, count)
+      .map((d) => new Track(this.core, d))
   }
 
   /** 用分享接口给的轻量引用造 Track（GetShareInfo/GetRelatedMedia 的短字段版） */
@@ -172,9 +187,12 @@ export class CatalogService {
 
   private async albumDetail(id: string, refresh?: boolean): Promise<any> {
     return (
-      await this.core.cache.fetch<any>('album-detail', id, () => this.core.request('GetAlbumDetail', { album_id: id, ignore_tracks: false }), {
-        force: refresh,
-      })
+      await this.core.cache.fetch<any>(
+        'album-detail',
+        id,
+        () => this.core.request('GetAlbumDetail', { album_id: id, ignore_tracks: false }),
+        { force: refresh, ttlMs: CacheTtl.entity },
+      )
     ).value
   }
 
@@ -197,9 +215,12 @@ export class CatalogService {
 
   private async artistDetail(id: string, refresh?: boolean): Promise<any> {
     return (
-      await this.core.cache.fetch<any>('artist-detail', id, () => this.core.request('GetArtistDetail', { artist_id: id, locate_item_id: 0 }), {
-        force: refresh,
-      })
+      await this.core.cache.fetch<any>(
+        'artist-detail',
+        id,
+        () => this.core.request('GetArtistDetail', { artist_id: id, locate_item_id: 0 }),
+        { force: refresh, ttlMs: CacheTtl.entity },
+      )
     ).value
   }
 
@@ -226,7 +247,7 @@ export class CatalogService {
       'artist-tracks',
       `${id}-${cursor}-${count}`,
       () => this.core.request('ListArtistTracks', { artist_id: id, cursor, count }),
-      { force: opts.refresh, ttlMs: 30 * 60_000 },
+      { force: opts.refresh, ttlMs: CacheTtl.entity },
     )
     const list = Array.isArray(value.tracks) ? value.tracks : []
     const parsed = list.map((t: unknown) => asTrack(t, this.parseOpts)).filter(Boolean) as TrackData[]
@@ -246,7 +267,7 @@ export class CatalogService {
       'artist-albums',
       `${id}-${cursor}-${count}`,
       () => this.core.request('ListArtistAlbums', { artist_id: id, cursor, count }),
-      { force: opts.refresh, ttlMs: 30 * 60_000 },
+      { force: opts.refresh, ttlMs: CacheTtl.entity },
     )
     const list = Array.isArray(value.albums) ? value.albums : []
     const parsed = list.map((a: unknown) => asAlbum(a, this.parseOpts)).filter(Boolean) as AlbumData[]
@@ -281,7 +302,7 @@ export class CatalogService {
             reverse: false,
             ab_param: '',
           }),
-        { force: refresh, ttlMs: 10 * 60_000 },
+        { force: refresh, ttlMs: CacheTtl.entity },
       )
     ).value
   }
@@ -304,10 +325,12 @@ export class CatalogService {
   /* ------------------------------------------------------------ 榜单 */
 
   async chart(id: string, opts: { refresh?: boolean } = {}): Promise<Chart> {
-    const { value } = await this.core.cache.fetch<any>('chart', id, () => this.core.request('GetChartDetail', { chart_id: id }), {
-      force: opts.refresh,
-      ttlMs: 10 * 60_000,
-    })
+    const { value } = await this.core.cache.fetch<any>(
+      'chart',
+      id,
+      () => this.core.request('GetChartDetail', { chart_id: id }),
+      { force: opts.refresh, ttlMs: CacheTtl.chart },
+    )
     const data: ChartData = parseChart(value.chart ?? {}, this.parseOpts)
     return new Chart(this.core, data)
   }
@@ -316,7 +339,17 @@ export class CatalogService {
   async clearCache(kind?: CatalogCacheKind): Promise<void> {
     const kinds: CatalogCacheKind[] = kind
       ? [kind]
-      : ['track', 'album-detail', 'artist-detail', 'artist-tracks', 'artist-albums', 'playlist-detail', 'chart', 'related', 'media-stats']
+      : [
+          'track',
+          'album-detail',
+          'artist-detail',
+          'artist-tracks',
+          'artist-albums',
+          'playlist-detail',
+          'chart',
+          'related',
+          'media-stats',
+        ]
     for (const k of kinds) await this.core.cache.invalidate(k, undefined)
   }
 }

@@ -38,29 +38,50 @@ function readText(file: string): string {
 }
 
 /**
- * 本地播放历史（`~/.qishui/journal/plays.jsonl`，一行一次播放，append-only）。
+ * 本地播放历史（数据目录下 `journal/plays.jsonl`，一行一次播放，append-only）。
  * 这是「听过什么」的真相源；上游的最近播放接口实测写回不落地，不能当依据。
+ * 多账号：`setScope(uid)` 后读写各号自己的 `journal/<uid>/plays.jsonl`，互不串记录。
  */
 export class PlayHistory {
-  constructor(private paths: CorePaths) {}
+  private file: string
+  private dir: string
+
+  constructor(private paths: CorePaths) {
+    this.file = paths.playsFile
+    this.dir = paths.journalDir
+  }
+
+  /** 换账号 scope；undefined = 回共享的 legacy 原位 */
+  setScope(uid?: string): void {
+    this.file = this.paths.journalFileFor(uid)
+    this.dir = uid ? this.paths.journalFileFor(uid).replace(/plays\.jsonl$/, '') : this.paths.journalDir
+  }
+
+  get scopeFile(): string {
+    return this.file
+  }
 
   async append(track: TrackData, extra: Omit<PlayRecord, 'at' | 'trackId'> = {}): Promise<PlayRecord> {
     const record: PlayRecord = {
       at: Date.now(),
       trackId: track.id,
       name: track.name || undefined,
-      artist: track.artists.map((a) => a.name).filter(Boolean).join(',') || undefined,
+      artist:
+        track.artists
+          .map((a) => a.name)
+          .filter(Boolean)
+          .join(',') || undefined,
       album: track.album?.name,
       durationMs: track.durationMs,
       ...extra,
     }
-    await ensureDir(this.paths.journalDir)
-    await appendLine(this.paths.playsFile, JSON.stringify(record))
+    await ensureDir(this.dir)
+    await appendLine(this.file, JSON.stringify(record))
     return record
   }
 
   read(): PlayRecord[] {
-    return readText(this.paths.playsFile)
+    return readText(this.file)
       .split('\n')
       .map((line) => line.trim())
       .filter(Boolean)
@@ -95,16 +116,16 @@ export class PlayHistory {
   }
 
   async clear(): Promise<void> {
-    await removeQuiet(this.paths.playsFile)
+    await removeQuiet(this.file)
   }
 
   async compactIfNeeded(): Promise<boolean> {
-    const lines = readText(this.paths.playsFile)
+    const lines = readText(this.file)
       .split('\n')
       .filter((line) => line.trim() !== '')
     if (lines.length <= MAX_LINES * 2) return false
-    await ensureDir(this.paths.journalDir)
-    await fsp.writeFile(this.paths.playsFile, `${lines.slice(-MAX_LINES).join('\n')}\n`)
+    await ensureDir(this.dir)
+    await fsp.writeFile(this.file, `${lines.slice(-MAX_LINES).join('\n')}\n`)
     return true
   }
 }

@@ -6,9 +6,9 @@ import { pipeline } from 'node:stream/promises'
 import { getShareMedia, type ShareLyrics, type ShareMedia } from 'qishui-api'
 import type { CoreConfig } from '../config.js'
 import { CacheError, CoreError, MediaUnavailableError } from '../errors.js'
+import { coerceTrack } from '../parse.js'
 import type { CorePaths } from '../paths.js'
 import { Lyrics } from '../player/lyrics.js'
-import { coerceTrack } from '../parse.js'
 import type { TrackData } from '../types.js'
 import { ensureDir, fileSize, hashFile, pathExists, readJson, removeQuiet, writeJsonAtomic } from '../util.js'
 
@@ -202,7 +202,9 @@ export class MediaCache {
         fetchedAt: Date.now(),
         sourceExpiresAt: share.expires_at,
       }
-      this.logger(`[media] 音频落盘 ${id} ${formatBytes(result.bytes)}${result.resumed ? '（断点续传）' : ''} → ${audio.file}`)
+      this.logger(
+        `[media] 音频落盘 ${id} ${formatBytes(result.bytes)}${result.resumed ? '（断点续传）' : ''} → ${audio.file}`,
+      )
     } else {
       audio = { ...audio, mime: audio.mime ?? mime, fetchedAt: Date.now() }
     }
@@ -212,7 +214,12 @@ export class MediaCache {
       opts.onProgress?.({ phase: 'lyrics', received: 0 })
       const file = path.join(dir, 'lyrics.json')
       await writeJsonAtomic(file, share.lyrics)
-      lyrics = { file: 'lyrics.json', lines: share.lyrics.sentences.length, lyricType: share.lyrics.lyric_type, fetchedAt: Date.now() }
+      lyrics = {
+        file: 'lyrics.json',
+        lines: share.lyrics.sentences.length,
+        lyricType: share.lyrics.lyric_type,
+        fetchedAt: Date.now(),
+      }
       this.logger(`[media] 歌词落盘 ${id}（${lyrics.lines} 行）`)
     }
 
@@ -371,7 +378,8 @@ export class MediaCache {
       const audioPath = path.join(dir, meta.audio.file)
       const size = await fileSize(audioPath)
       if (size === undefined) issues.push({ trackId: id, issue: `音频文件缺失：${meta.audio.file}` })
-      else if (size !== meta.audio.bytes) issues.push({ trackId: id, issue: `音频大小不符：${size} ≠ ${meta.audio.bytes}` })
+      else if (size !== meta.audio.bytes)
+        issues.push({ trackId: id, issue: `音频大小不符：${size} ≠ ${meta.audio.bytes}` })
       if (meta.lyrics && !(await pathExists(path.join(dir, meta.lyrics.file)))) {
         issues.push({ trackId: id, issue: `歌词文件缺失：${meta.lyrics.file}` })
       }
@@ -430,6 +438,7 @@ export class MediaCache {
       return await getShareMedia(trackId, {
         fetchImpl: this.fetchImpl,
         cover_width: this.config.coverWidth,
+        signal,
       })
     } catch (err) {
       throw new MediaUnavailableError(
@@ -502,7 +511,7 @@ export class MediaCache {
 function resolveAudioName(previous: CachedMediaMeta | undefined, mime: string | undefined): string {
   const ext = (mime && MIME_EXT[mime]) ?? (mime?.startsWith('video') ? '.mp4' : '.m4a')
   const keep = previous?.audio.file
-  if (keep && keep.endsWith(ext)) return keep
+  if (keep?.endsWith(ext)) return keep
   return `audio${ext}`
 }
 

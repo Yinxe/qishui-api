@@ -2,7 +2,8 @@
  * qishui-core 端到端冒烟（真打上游，谨慎跑）。
  *
  * 覆盖：会话迁移/复用 → 账号 → 曲库（批量 hydration + 缓存命中零请求）→ 搜索 → 发现/榜单
- *      → 评论读 → 播放器状态机 → 媒体落盘/断点/校验 → 本地历史 → 缓存统计/清理。
+ *      → 评论读 → 播放器状态机 → 媒体落盘/断点/校验 → 本地历史 → 缓存统计/清理
+ *      → **多账号机制**（迁移分文件、_acct 隔离、切号编排、--as 临时态、logout --purge —— 全程零网络）。
  *
  * 用独立的测试数据目录（默认 /tmp/opencode/qishui-test-home），不碰 ~/.qishui；
  * 会话从 packages/qishui-api 那份 device/session 迁移过来（只读源文件）。
@@ -13,7 +14,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { createQishui, RiskControlError, type QishuiCore } from '../dist/index.js'
+import { CacheTtl, createQishui, type QishuiCore, RiskControlError } from '../dist/index.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const API_DIR = path.resolve(HERE, '../../qishui-api')
@@ -85,6 +86,103 @@ const countingFetch: typeof fetch = (input, init) => {
   return fetch(input, init)
 }
 
+/**
+ * 多账号机制（全程零网络：注入假设备 + 假 cookie，只断言本地行为）。
+ *
+ * 走一遍：旧 session.json 迁移 → 造出 B 号 → `_acct/<uid>` 缓存隔离 → `useAccount` 编排
+ * （内存作废/cookie 先清后灌/历史上换目录/config.activeUid 写回）→ `--as` 式临时实例 → `logout --purge`。
+ */
+async function multiAccountChecks(): Promise<void> {
+  const HOME2 = path.join(HOME, 'multi')
+  const fakeDevice = { deviceId: '9000000000000000001', installId: '9000000000000000002', cdid: 'smoke-cdid' }
+  const fetchBefore = fetchCount
+  fs.mkdirSync(HOME2, { recursive: true })
+  fs.writeFileSync(
+    path.join(HOME2, 'session.json'),
+    JSON.stringify({
+      v: 1,
+      device: fakeDevice,
+      cookies: { sessionid: 'COOKIE_A' },
+      uid: '111',
+      nickname: '小号A',
+      savedAt: Date.now() - 86_400_000,
+    }),
+  )
+
+  const core2 = await check('旧 session.json → 迁移出 accounts/<uid>.json + device.json（原件 .bak）', async () => {
+    const instance = await createQishui({ dataDir: HOME2, device: fakeDevice, fetchImpl: countingFetch })
+    expect(fs.existsSync(path.join(HOME2, 'device.json')), '没有 device.json')
+    expect(fs.existsSync(path.join(HOME2, 'session.json.bak')), 'session.json 没改名 .bak')
+    expect(fs.existsSync(path.join(HOME2, 'accounts', '111.json')), '没有 accounts/111.json')
+    const snapshot = instance.snapshot()
+    expect(snapshot.loggedIn && snapshot.uid === '111', `迁移后登录态不对：${snapshot.uid}`)
+    expect(fetchCount === fetchBefore, `迁移阶段竟打了网络（+${fetchCount - fetchBefore}）`)
+    return instance
+  })
+  if (!core2) return
+
+  await check('造出 B 号：rememberIdentity + save → 两号并存', async () => {
+    await core2.session.ready()
+    core2.api.cookies.absorb(['sessionid=COOKIE_B', 'extra_b=1'])
+    await core2.session.rememberIdentity('222', '小号B')
+    await core2.session.save()
+    const list = core2.accounts()
+    expect(list.length === 2, `应入库 2 个账号，实际 ${list.length}`)
+    expect(fs.existsSync(path.join(HOME2, 'accounts', '222.json')), '没有 accounts/222.json')
+    expect(
+      list.some((a) => a.uid === '222' && a.active),
+      'B 应是激活号',
+    )
+  })
+
+  await check('带态/私有缓存落 _acct/<uid>，公共 kind 落共享位', async () => {
+    await core2.cache.set('me', 'k', { who: 'B' })
+    await core2.cache.set('search', 'q', { who: 'B' })
+    expect(fs.existsSync(core2.paths.entityFile('me', 'k', '222')), 'me 没落 _acct/222/')
+    expect(fs.existsSync(core2.paths.entityFile('search', 'q')), 'search 没落共享位')
+    expect(!fs.existsSync(path.join(HOME2, 'cache', 'entities', '_acct', '222', 'search')), 'search 不该进 _acct')
+  })
+
+  await check('useAccount(A)：内存态作废 + 私有缓存跨号不可见 + 共享位照常可见', async () => {
+    await core2.useAccount('111')
+    expect(core2.cache.get('me', 'k') === undefined, 'A 号不该在内存看到 B 的 me')
+    expect((await core2.cache.load('me', 'k')) === undefined, 'A 号读盘读到了 B 的 me')
+    expect((await core2.cache.load<{ who: string }>('search', 'q'))?.who === 'B', 'search 是共享的，A 该看得见')
+  })
+
+  await check('切号编排：cookie 先清后灌无残留 + 历史上换目录 + config.activeUid 写回', async () => {
+    const jar = core2.api.cookies.toObject()
+    expect(jar.sessionid === 'COOKIE_A', `jar 里 sessionid 不是 A：${jar.sessionid}`)
+    expect(!('extra_b' in jar), 'B 的独有 cookie 残留到了 A')
+    expect(
+      core2.history.scopeFile === path.join(HOME2, 'journal', '111', 'plays.jsonl'),
+      `历史文件没上账号：${core2.history.scopeFile}`,
+    )
+    const config = JSON.parse(fs.readFileSync(path.join(HOME2, 'config.json'), 'utf8'))
+    expect(config.activeUid === '111', `config.activeUid 没写回：${config.activeUid}`)
+    expect(fetchCount === fetchBefore, `机制断言期间打了网络（+${fetchCount - fetchBefore}）`)
+  })
+
+  await check('--as 式临时实例：本进程用 B，默认激活号不动', async () => {
+    const core3 = await createQishui({ dataDir: HOME2, device: fakeDevice, account: '222', fetchImpl: countingFetch })
+    expect(core3.session.activeUid === '222', `临时实例没激活 B：${core3.session.activeUid}`)
+    core3.dispose()
+    const config = JSON.parse(fs.readFileSync(path.join(HOME2, 'config.json'), 'utf8'))
+    expect(config.activeUid === '111', `临时实例把默认激活号都改了：${config.activeUid}`)
+  })
+
+  await check('logout --purge：只删当前号（A），B 的会话与 _acct 缓存原样', async () => {
+    await core2.logout({ purge: true })
+    expect(!fs.existsSync(path.join(HOME2, 'accounts', '111.json')), 'A 的账号文件没删')
+    expect(fs.existsSync(path.join(HOME2, 'accounts', '222.json')), '不该动 B 的账号文件')
+    expect(fs.existsSync(core2.paths.entityFile('me', 'k', '222')), '不该动 B 的私有缓存')
+    expect(core2.accounts().length === 1, `索引应剩 1 个号，实际 ${core2.accounts().length}`)
+    expect(core2.snapshot().loggedIn === false, '登出后不该还是登录态')
+    core2.dispose()
+    expect(fetchCount === fetchBefore, `多账号小节全程应零网络（共 +${fetchCount - fetchBefore}）`)
+  })
+}
+
 async function main(): Promise<void> {
   console.log(`qishui-core smoke —— 数据目录 ${HOME}`)
   fs.rmSync(HOME, { recursive: true, force: true })
@@ -114,29 +212,45 @@ async function main(): Promise<void> {
     })
 
     // ------------------------------------------------------------ 账号
-    const me = await check('account.me()', () => core!.account.me(), (value) => {
-      expect(value.user.id, 'my_info 里没有 id')
-      expect(core!.uid === value.user.id, `uid 没被记住：${core!.uid} vs ${value.user.id}`)
-    })
+    await check(
+      'account.me()',
+      () => core!.account.me(),
+      (value) => {
+        expect(value.user.id, 'my_info 里没有 id')
+        expect(core!.uid === value.user.id, `uid 没被记住：${core!.uid} vs ${value.user.id}`)
+      },
+    )
     await check('account.stats()', async () => {
       const stats = await core!.account.stats()
       expect(stats.liked !== undefined || stats.following !== undefined, '统计字段全空')
     })
-    await check('account.membership()', () => core!.account.membership(), (value) => {
-      expect(typeof value.isVip === 'boolean', 'is_vip 不是布尔')
-    })
-    await check('account.privacy()', () => core!.account.privacy(), (value) => {
-      expect(value.followInfoVisibility !== undefined, 'privacy_setting 空')
-    })
+    await check(
+      'account.membership()',
+      () => core!.account.membership(),
+      (value) => {
+        expect(typeof value.isVip === 'boolean', 'is_vip 不是布尔')
+      },
+    )
+    await check(
+      'account.privacy()',
+      () => core!.account.privacy(),
+      (value) => {
+        expect(value.followInfoVisibility !== undefined, 'privacy_setting 空')
+      },
+    )
     await check('account.blockList()', async () => {
       await core!.account.blockList({ count: 5 })
     })
 
     // ------------------------------------------------------------ 曲库
-    const track = await check('catalog.track() 单首（MGetMedia）', () => core!.catalog.track(CTX.trackId), (value) => {
-      expect(value.data.name, '曲目没有 name')
-      expect(value.data.artists.length > 0, '曲目没有 artists')
-    })
+    const track = await check(
+      'catalog.track() 单首（MGetMedia）',
+      () => core!.catalog.track(CTX.trackId),
+      (value) => {
+        expect(value.data.name, '曲目没有 name')
+        expect(value.data.artists.length > 0, '曲目没有 artists')
+      },
+    )
     if (track) console.log(`      ${track.toString()}  ${track.durationMs}ms`)
 
     await check('catalog.tracks() 批量 + 去重 + 顺序', async () => {
@@ -185,10 +299,14 @@ async function main(): Promise<void> {
     })
 
     // ------------------------------------------------------------ 发现 / 搜索 / 榜单
-    const home = await check('discover.home() 推荐页大盘', () => core!.discover.home(), (value) => {
-      expect(value.blocks.length > 0, '首页没有 blocks')
-      expect(value.tracks.length > 0, '首页没有曲目')
-    })
+    const home = await check(
+      'discover.home() 推荐页大盘',
+      () => core!.discover.home(),
+      (value) => {
+        expect(value.blocks.length > 0, '首页没有 blocks')
+        expect(value.tracks.length > 0, '首页没有曲目')
+      },
+    )
     await check('discover.home({layout:"feed"}) 听歌模式版面', async () => {
       const feed = await core!.discover.home({ layout: 'feed' })
       expect(feed.blocks.length > 0, 'feed 版面没有 blocks')
@@ -202,7 +320,9 @@ async function main(): Promise<void> {
     })
     if (home) {
       console.log(`      ${home.blocks.length} 块 / ${home.tracks.length} 首 / ${home.playlists.length} 歌单`)
-      const chartBlock = home.blocks.flatMap((b) => b.inner).find((inner) => inner.id && /top_list|chart/.test(inner.type))
+      const chartBlock = home.blocks
+        .flatMap((b) => b.inner)
+        .find((inner) => inner.id && /top_list|chart/.test(inner.type))
       if (chartBlock?.id) {
         await check(`catalog.chart(${chartBlock.id}) 榜单`, async () => {
           const chart = await core!.catalog.chart(chartBlock!.id!)
@@ -228,12 +348,41 @@ async function main(): Promise<void> {
       expect(tracks.length > 0, '搜索没有结果')
       console.log(`      「晴天」→ ${tracks.length} 首，第一首：${tracks[0].toString()}`)
     })
+    await check('search.artists() / albums() / playlists() 各类实体都解析得出', async () => {
+      const artists = await core!.search.artists('周杰伦')
+      const albums = await core!.search.albums('周杰伦')
+      const playlists = await core!.search.playlists('周杰伦')
+      expect(
+        artists.length > 0 && albums.length > 0 && playlists.length > 0,
+        `有一类为空：歌手=${artists.length} 专辑=${albums.length} 歌单=${playlists.length}`,
+      )
+      console.log(`      歌手 ${artists.length} / 专辑 ${albums.length} / 歌单 ${playlists.length}`)
+    })
     await check('search.suggest() + recommendWords() + categories()', async () => {
       const suggest = await core!.search.suggest('晴天')
       const words = await core!.search.recommendWords()
       const tabs = await core!.search.categories()
       console.log(`      联想 ${suggest.length} 条 / 推荐词 ${words.length} 条 / 分类 ${tabs.length} 个`)
       expect(tabs.length > 0, '搜索分类为空')
+    })
+
+    // ------------------------------------------------------------ 缓存分档（哪些缓存、哪些不缓存）
+    await check('cache policy：实时数据不落盘（同一搜索连打两次都发请求）', async () => {
+      expect(CacheTtl.none === 0, `CacheTtl.none 应为 0，实际 ${CacheTtl.none}`)
+      const before = fetchCount
+      await core!.search.tracks('晴天')
+      const one = fetchCount - before
+      await core!.search.tracks('晴天')
+      const two = fetchCount - before - one
+      expect(two === one, `第二次没重发：one=${one} two=${two}（命中缓存了就是 0）`)
+      console.log(`      search 两次 → fetch +${one} / +${two}（none 档不落盘；一条 search 本来就有两条 path）`)
+    })
+    await check('cache policy：元数据落盘（同一曲目第二次零请求）', async () => {
+      const before = fetchCount
+      await core!.catalog.track(CTX.trackId2)
+      await core!.catalog.track(CTX.trackId2)
+      expect(fetchCount - before <= 1, `曲目元数据没走缓存：多了 ${fetchCount - before} 次 fetch`)
+      console.log(`      曲目 ×2 → fetch +${fetchCount - before}（entity 档 6h）`)
     })
 
     // ------------------------------------------------------------ 评论（只读）
@@ -276,7 +425,9 @@ async function main(): Promise<void> {
         expect(source, '没有播放源')
         expect(source!.kind === 'cache', `期望落盘缓存，实际 ${source!.kind}`)
         expect(fs.existsSync(source!.path!), `音频文件不存在：${source!.path}`)
-        console.log(`      ${path.basename(source!.path!)} ${(source!.bytes! / 1024).toFixed(0)}KB，歌词 ${source!.lyrics?.lines.length ?? 0} 行`)
+        console.log(
+          `      ${path.basename(source!.path!)} ${(source!.bytes! / 1024).toFixed(0)}KB，歌词 ${source!.lyrics?.lines.length ?? 0} 行`,
+        )
       })
 
       await sleep(700)
@@ -317,12 +468,16 @@ async function main(): Promise<void> {
         const plays = core!.plays(10)
         expect(plays.length >= 2, `应该有 ≥2 条播放记录，实际 ${plays.length}`)
         const stats = core!.playStats()
-        console.log(`      记录 ${stats.records} 条 / 曲目 ${stats.tracks} 首 / 榜首 ${stats.top[0]?.name ?? '?'}×${stats.top[0]?.plays ?? 0}`)
+        console.log(
+          `      记录 ${stats.records} 条 / 曲目 ${stats.tracks} 首 / 榜首 ${stats.top[0]?.name ?? '?'}×${stats.top[0]?.plays ?? 0}`,
+        )
       })
       await check('media.verify() + stats()', async () => {
         const issues = await core!.media.verify()
         const stats = await core!.media.stats()
-        console.log(`      缓存 ${stats.tracks} 首 / ${(stats.audioBytes / 1024).toFixed(0)}KB / 播放计数 ${stats.totalPlays} / 问题 ${issues.length}`)
+        console.log(
+          `      缓存 ${stats.tracks} 首 / ${(stats.audioBytes / 1024).toFixed(0)}KB / 播放计数 ${stats.totalPlays} / 问题 ${issues.length}`,
+        )
         for (const issue of issues) console.log(`      · ${issue.trackId} ${issue.issue}`)
       })
     }
@@ -330,11 +485,16 @@ async function main(): Promise<void> {
     // ------------------------------------------------------------ 维护
     await check('cacheStats() + prune() + clearCache()', async () => {
       const stats = await core!.cacheStats()
-      console.log(`      元数据 ${stats.entities.entries} 条（命中 ${stats.entities.hits}/未命中 ${stats.entities.misses}）`)
+      console.log(
+        `      元数据 ${stats.entities.entries} 条（命中 ${stats.entities.hits}/未命中 ${stats.entities.misses}）`,
+      )
       await core!.cache.prune()
       await core!.media.prune({ maxBytes: 0 })
       expect((await core!.cacheStats()).media.tracks >= 0, 'stats 异常')
     })
+    // ------------------------------------------------------------ 多账号机制（全程零网络：假设备号 + 假 cookie）
+    await multiAccountChecks()
+
     await check('player.dispose() / core.dispose()', async () => {
       core!.player.dispose()
       core!.dispose()

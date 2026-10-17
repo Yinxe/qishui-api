@@ -2,7 +2,16 @@ import type { CachedMediaMeta, PlaySource } from './cache/media.js'
 import type { QishuiCore } from './core.js'
 import type { Lyrics } from './player/lyrics.js'
 import type { PlayOptions } from './player/player.js'
-import type { Paged, TrackData, AlbumData, ArtistData, ChartData, CommentData, PlaylistData, UserData } from './types.js'
+import type {
+  AlbumData,
+  ArtistData,
+  ChartData,
+  CommentData,
+  Paged,
+  PlaylistData,
+  TrackData,
+  UserData,
+} from './types.js'
 
 /**
  * 实体层：把「原始响应里的一个对象」变成有方法的对象。
@@ -36,7 +45,10 @@ export class Track {
   }
 
   get artistNames(): string {
-    return this.data.artists.map((a) => a.name).filter(Boolean).join(', ')
+    return this.data.artists
+      .map((a) => a.name)
+      .filter(Boolean)
+      .join(', ')
   }
 
   get album(): TrackData['album'] {
@@ -135,7 +147,10 @@ export class Album {
   }
 
   get artistNames(): string {
-    return this.data.artists.map((a) => a.name).filter(Boolean).join(', ')
+    return this.data.artists
+      .map((a) => a.name)
+      .filter(Boolean)
+      .join(', ')
   }
 
   get raw(): unknown {

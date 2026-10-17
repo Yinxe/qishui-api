@@ -1,3 +1,4 @@
+import { CacheTtl } from '../cache/policy.js'
 import type { QishuiCore } from '../core.js'
 import { Playlist, User } from '../entities.js'
 import { CoreError } from '../errors.js'
@@ -21,10 +22,15 @@ export class SocialService {
 
   /** 用户资料。风控敏感：默认 5 分钟缓存，`refresh` 才会真的再打一次 */
   async user(userId: string, opts: { refresh?: boolean } = {}): Promise<User> {
-    const { value } = await this.core.cache.fetch<any>('user', userId, () => this.core.request('GetUserInfo', { user_id: userId, sec_uid: '' }), {
-      force: opts.refresh,
-      ttlMs: 5 * 60_000,
-    })
+    const { value } = await this.core.cache.fetch<any>(
+      'user',
+      userId,
+      () => this.core.request('GetUserInfo', { user_id: userId, sec_uid: '' }),
+      {
+        force: opts.refresh,
+        ttlMs: CacheTtl.account,
+      },
+    )
     const data = asUser(value.user_info ?? value.user ?? value, this.parseOpts)
     if (!data?.id) throw new CoreError(`拿不到用户 ${userId}（响应里没有 user）`)
     return new User(this.core, data)
@@ -33,16 +39,24 @@ export class SocialService {
   /**
    * 粉丝/关注列表。响应键是 `follow_items`（混排 `{user}` / `{user_artist}`），不是 `users`。
    */
-  private async relations(kind: 'followers' | 'following', userId: string, cursor: number, count: number, refresh?: boolean): Promise<Paged<User>> {
+  private async relations(
+    kind: 'followers' | 'following',
+    userId: string,
+    cursor: number,
+    count: number,
+    refresh?: boolean,
+  ): Promise<Paged<User>> {
     const endpoint = kind === 'followers' ? 'GetFollowerList' : 'GetFollowingList'
     const { value } = await this.core.cache.fetch<any>(
       kind,
       `${userId}-${cursor}-${count}`,
       () => this.core.request(endpoint, { user_id: userId, cursor, count, scene: '' }),
-      { force: refresh, ttlMs: 5 * 60_000 },
+      { force: refresh, ttlMs: CacheTtl.account },
     )
     const raw = Array.isArray(value.follow_items) ? value.follow_items : []
-    const list = raw.length ? raw.map((item: any) => item?.user ?? item?.user_artist ?? item) : collectUsers(value, count)
+    const list = raw.length
+      ? raw.map((item: any) => item?.user ?? item?.user_artist ?? item)
+      : collectUsers(value, count)
     return {
       items: list.map((u: unknown) => new User(this.core, parseUser(u, this.parseOpts))),
       hasMore: Boolean(value.has_more),
@@ -63,14 +77,17 @@ export class SocialService {
   }
 
   /** 某人公开的歌单 */
-  async userPlaylists(userId: string, opts: { cursor?: number; count?: number; refresh?: boolean } = {}): Promise<Paged<Playlist>> {
+  async userPlaylists(
+    userId: string,
+    opts: { cursor?: number; count?: number; refresh?: boolean } = {},
+  ): Promise<Paged<Playlist>> {
     const cursor = opts.cursor ?? 0
     const count = opts.count ?? 20
     const { value } = await this.core.cache.fetch<any>(
       'user-playlists',
       `${userId}-${cursor}-${count}`,
       () => this.core.request('GetUserPlaylists', { user_id: userId, cursor, count, scene: '', ab_param: '' }),
-      { force: opts.refresh, ttlMs: 5 * 60_000 },
+      { force: opts.refresh, ttlMs: CacheTtl.account },
     )
     const raw: unknown[] = Array.isArray(value.playlists) ? value.playlists : []
     const list = raw.map((p) => asPlaylist(p, this.parseOpts)).filter((d): d is PlaylistData => !!d)
@@ -84,25 +101,35 @@ export class SocialService {
   }
 
   /** 某人收藏的歌单/专辑混排（不含曲目） */
-  async userMixedCollections(userId: string, opts: { cursor?: number; count?: number; refresh?: boolean } = {}): Promise<unknown> {
+  async userMixedCollections(
+    userId: string,
+    opts: { cursor?: number; count?: number; refresh?: boolean } = {},
+  ): Promise<unknown> {
     const cursor = opts.cursor ?? 0
     const count = opts.count ?? 20
     return (
-      await this.core.cache.fetch<any>('user-mixed', `${userId}-${cursor}-${count}`, () => this.core.request('GetUserMixedCollections', { user_id: userId, cursor, count }), {
-        force: opts.refresh,
-        ttlMs: 5 * 60_000,
-      })
+      await this.core.cache.fetch<any>(
+        'user-mixed',
+        `${userId}-${cursor}-${count}`,
+        () => this.core.request('GetUserMixedCollections', { user_id: userId, cursor, count }),
+        {
+          force: opts.refresh,
+          ttlMs: CacheTtl.account,
+        },
+      )
     ).value
   }
 
   async follow(userId: string): Promise<void> {
     await this.core.request('FollowUser', { user_id: userId })
     await this.core.cache.invalidate('user', userId)
+    await this.core.cache.invalidate('me', 'self')
   }
 
   async unfollow(userId: string): Promise<void> {
     await this.core.request('UnfollowUser', { user_id: userId })
     await this.core.cache.invalidate('user', userId)
+    await this.core.cache.invalidate('me', 'self')
   }
 
   /** 拉黑：`block_items: [{id, item_type:'user'}]`（实测字段名） */
@@ -119,7 +146,9 @@ export class SocialService {
   }
 
   /** 黑名单（落成 core.account.blockList，这里给个便捷入口） */
-  async blocks(opts: { cursor?: number; count?: number; refresh?: boolean } = {}): Promise<{ users: UserData[]; nextCursor?: string }> {
+  async blocks(
+    opts: { cursor?: number; count?: number; refresh?: boolean } = {},
+  ): Promise<{ users: UserData[]; nextCursor?: string }> {
     return await this.core.account.blockList(opts)
   }
 }

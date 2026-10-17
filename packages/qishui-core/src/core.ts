@@ -2,13 +2,14 @@ import type { Client, CookieJar, CookieMap, DeviceIdentity, EndpointName, Respon
 import { getShareMedia } from 'qishui-api'
 import type { PlaySource } from './cache/media.js'
 import { MediaCache } from './cache/media.js'
+import { KIND_SCOPE } from './cache/policy.js'
 import { EntityCache } from './cache/store.js'
-import { loadConfig, saveConfig, type CoreConfig } from './config.js'
+import { type CoreConfig, loadConfig, saveConfig } from './config.js'
 import { Album, Artist, Chart, Comment, Playlist, Track, User } from './entities.js'
 import { Emitter, type EventMap } from './events.js'
 import { PlayHistory, type PlayRecord, type PlayStats } from './history.js'
-import type { CorePaths } from './paths.js'
 import { asAlbum, asArtist, asChart, asComment, asPlaylist, asTrack, asUser, coerceTrack } from './parse.js'
+import type { CorePaths } from './paths.js'
 import { Player } from './player/player.js'
 import { AccountService } from './services/account.js'
 import { CatalogService } from './services/catalog.js'
@@ -19,12 +20,20 @@ import { LibraryService } from './services/library.js'
 import { LinkService } from './services/link.js'
 import { SearchService } from './services/search.js'
 import { SocialService } from './services/social.js'
-import { SessionManager, type LoginOptions, type QishuiLogin, type SessionSnapshot } from './session.js'
+import {
+  type AccountInfo,
+  type LoginOptions,
+  type QishuiLogin,
+  SessionManager,
+  type SessionSnapshot,
+} from './session.js'
 import type { TrackData } from './types.js'
 
 export interface CoreEvents extends EventMap {
   /** 每个请求/关键步骤的日志行（跟 options.logger 同时收到） */
   log: { line: string }
+  /** 激活账号变了（登录/切号/登出都会发；undefined = 回到匿名） */
+  'account-changed': { uid?: string }
 }
 
 export interface QishuiOptions {
@@ -34,10 +43,12 @@ export interface QishuiOptions {
   config?: Partial<CoreConfig>
   /** 日志行（默认不输出；同时会 emit `core.events.on('log')`） */
   logger?: (line: string) => void
-  /** 显式注入设备身份（默认读 session.json，没有就注册一台） */
+  /** 显式注入设备身份（默认读 device.json，没有就注册一台） */
   device?: DeviceIdentity
-  /** 显式注入 cookie（默认读 session.json） */
+  /** 显式注入 cookie（默认读激活账号的 accounts/<uid>.json） */
   cookies?: CookieMap | CookieJar
+  /** 本次实例激活的账号（uid 或昵称；优先于 config.activeUid。`--as` 走这里） */
+  account?: string
   /** 自定义 fetch（代理/测试用） */
   fetchImpl?: typeof fetch
   /** 播放器时钟参数 */
@@ -104,9 +115,14 @@ export class QishuiCore {
     }
     this.session = deps.session
     this.api = deps.client
-    this.cache = new EntityCache(this.paths, { ttlMs: this.config.entityTtlMs, logger: this.logger })
+    this.cache = new EntityCache(this.paths, {
+      ttlMs: this.config.entityTtlMs,
+      logger: this.logger,
+      uid: () => this.session.activeUid,
+    })
     this.media = new MediaCache(this.paths, this.config, this.logger, this.fetchImpl)
     this.history = new PlayHistory(this.paths)
+    this.history.setScope(this.session.uid)
     this.player = new Player(this, options.player)
     this.account = new AccountService(this)
     this.catalog = new CatalogService(this)
@@ -127,9 +143,21 @@ export class QishuiCore {
       device: options.device,
       cookies: options.cookies,
       logger: options.logger,
+      activeUid: options.account ?? loaded.config.activeUid,
+      onActivate: (uid) => {
+        loaded.config.activeUid = uid
+        return saveConfig(loaded.paths, loaded.config)
+      },
     })
     const client = await session.ready()
-    return new QishuiCore({ loaded, options, session, client })
+    const core = new QishuiCore({ loaded, options, session, client })
+    // 迁移收尾：旧版把账号私有的 kind 落过共享位，删掉（各号数据本来就在 TTL 档里，代价一次冷拉）
+    if (session.migrated) {
+      for (const [kind, scope] of Object.entries(KIND_SCOPE)) {
+        if (scope !== 'public') await core.cache.clearShared(kind)
+      }
+    }
+    return core
   }
 
   /* ------------------------------------------------------------ 会话 */
@@ -142,19 +170,54 @@ export class QishuiCore {
     return this.session.uid
   }
 
+  /** 当前激活账号（uid；匿名 undefined） */
+  get activeUid(): string | undefined {
+    return this.session.activeUid
+  }
+
+  /** 已入库账号一览（含激活标记） */
+  accounts(): AccountInfo[] {
+    return this.session.accounts()
+  }
+
   snapshot(): SessionSnapshot {
     return this.session.snapshot()
   }
 
-  /** 扫码登录（二维码内容交给上层渲染；core 不引二维码依赖） */
-  login(options: LoginOptions = {}): Promise<QishuiLogin> {
-    return this.session.login(options)
+  /** 扫码登录（二维码内容交给上层渲染；core 不引二维码依赖）；新号入库并默认激活 */
+  async login(options: LoginOptions = {}): Promise<QishuiLogin> {
+    const login = await this.session.login({
+      ...options,
+      onPersisted: (uid) => {
+        this.cache.clearMemory()
+        this.history.setScope(uid)
+        this.events.emit('account-changed', { uid })
+      },
+    })
+    return login
   }
 
-  async logout(): Promise<void> {
+  /**
+   * 切到已入库账号（uid 或昵称）：换 cookie + 作废内存缓存 + 播放历史换目录。
+   * 磁盘缓存按 `_acct/<uid>/` 分层，跨号数据互不可见，不用清。
+   */
+  async useAccount(uid: string): Promise<void> {
     this.player.clear()
-    await this.session.logout()
-    await this.cache.invalidate('me', 'self')
+    await this.session.useAccount(uid)
+    this.cache.clearMemory()
+    this.history.setScope(this.session.uid)
+    this.events.emit('account-changed', { uid: this.session.uid })
+  }
+
+  /** 退出当前账号（默认保留账号壳可再登录）；`purge` 连账号文件与私有缓存一起删 */
+  async logout(opts: { purge?: boolean } = {}): Promise<void> {
+    this.player.clear()
+    const uid = this.session.uid
+    await this.session.logout(opts)
+    this.cache.clearMemory()
+    if (opts.purge && uid) await this.cache.invalidateAccount(uid)
+    this.history.setScope(undefined)
+    this.events.emit('account-changed', { uid: undefined })
   }
 
   /**
@@ -165,14 +228,19 @@ export class QishuiCore {
    * 所以这里不收窄参数类型、不做值转换，只把响应按 IDL 类型返回。
    */
   async request<K extends EndpointName>(key: K, params: Record<string, unknown> = {}): Promise<ResponseOf<K>> {
-    return await (this.api.request as unknown as (k: EndpointName, p: Record<string, unknown>) => Promise<ResponseOf<K>>)(key, params)
+    return await (
+      this.api.request as unknown as (k: EndpointName, p: Record<string, unknown>) => Promise<ResponseOf<K>>
+    )(key, params)
   }
 
   /* ------------------------------------------------------------ 实体构造 */
 
   /** 曲目：id / TrackData / 含 track 的原始响应 都能转 */
   track(input: TrackData | string | unknown): Track {
-    const data = typeof input === 'string' ? { id: input, name: '', artists: [] } : coerceTrack(input, { coverWidth: this.config.coverWidth })
+    const data =
+      typeof input === 'string'
+        ? { id: input, name: '', artists: [] }
+        : coerceTrack(input, { coverWidth: this.config.coverWidth })
     if (!data?.id) throw new Error('core.track(): 认不出这个入参（需要 id / TrackData / 含 track 的响应）')
     return new Track(this, data)
   }
@@ -229,7 +297,14 @@ export class QishuiCore {
     if (item.kind !== 'track') {
       const media = await getShareMedia(item, { fetchImpl: this.fetchImpl, cover_width: this.config.coverWidth })
       return {
-        track: { id: item.id, name: media.title ?? '', artists: [], durationMs: media.duration_ms, coverUrl: media.cover_url, vid: media.vid },
+        track: {
+          id: item.id,
+          name: media.title ?? '',
+          artists: [],
+          durationMs: media.duration_ms,
+          coverUrl: media.cover_url,
+          vid: media.vid,
+        },
         kind: 'remote',
         url: media.play_url,
         mime: media.mime_type,

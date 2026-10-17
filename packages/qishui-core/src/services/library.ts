@@ -1,3 +1,4 @@
+import { CacheTtl } from '../cache/policy.js'
 import type { QishuiCore } from '../core.js'
 import { Artist, Playlist, Track } from '../entities.js'
 import { CoreError } from '../errors.js'
@@ -37,16 +38,35 @@ export class LibraryService {
     for (const item of kinds) await this.core.cache.invalidate(item.kind, item.id)
   }
 
+  /**
+   * 收藏/歌单类写操作后统一失效的读缓存。
+   * 全清这五档是有意的：一条写会同时影响「我喜欢」「我的歌单」「混排收藏」「关注艺人」和「我的」页计数，
+   * 逐个推断容易漏；都是 5 分钟 TTL 的小文件，多删几个比留下错值便宜。
+   */
+  private collectionCache(): { kind: string; id?: string }[] {
+    return [
+      { kind: 'my-playlists', id: 'self' },
+      { kind: 'liked-tracks', id: 'list' },
+      { kind: 'mixed-collections', id: 'self' },
+      { kind: 'artist-collection' },
+      { kind: 'me', id: 'self' },
+    ]
+  }
+
   /* ------------------------------------------------------------ 我的歌单（读） */
 
   /** 我的歌单（含「我喜欢的音乐」type=1、「抖音收藏」type=4） */
   async playlists(opts: { refresh?: boolean } = {}): Promise<Playlist[]> {
-    const { value } = await this.core.cache.fetch<any>('my-playlists', 'self', () => this.core.request('GetMyPlaylists', { cursor: 0, count: 50, ab_param: '' }), {
-      force: opts.refresh,
-      ttlMs: 10 * 60_000,
-    })
+    const { value } = await this.core.cache.fetch<any>(
+      'my-playlists',
+      'self',
+      () => this.core.request('GetMyPlaylists', { cursor: 0, count: 50, ab_param: '' }),
+      { force: opts.refresh, ttlMs: CacheTtl.account },
+    )
     const list = Array.isArray(value.playlists) ? value.playlists : []
-    return (list.map((p: unknown) => asPlaylist(p, this.parseOpts)).filter(Boolean) as PlaylistData[]).map((d) => new Playlist(this.core, d))
+    return (list.map((p: unknown) => asPlaylist(p, this.parseOpts)).filter(Boolean) as PlaylistData[]).map(
+      (d) => new Playlist(this.core, d),
+    )
   }
 
   /** 「我喜欢的音乐」那张自动歌单 */
@@ -66,7 +86,7 @@ export class LibraryService {
         const all = await liked.allTracks()
         return { tracks: all.map((t) => t.data) }
       },
-      { force: opts.refresh, ttlMs: 5 * 60_000 },
+      { force: opts.refresh, ttlMs: CacheTtl.account },
     )
     return value.tracks.map((d) => new Track(this.core, d))
   }
@@ -79,10 +99,12 @@ export class LibraryService {
 
   /** 我收藏/关注的其它东西（歌单+专辑混排，不含曲目） */
   async mixedCollections(opts: { refresh?: boolean } = {}): Promise<{ playlists: Playlist[]; raw: unknown }> {
-    const { value } = await this.core.cache.fetch<any>('mixed-collections', 'self', () => this.core.request('GetMyMixedCollections', { cursor: 0, count: 50 }), {
-      force: opts.refresh,
-      ttlMs: 10 * 60_000,
-    })
+    const { value } = await this.core.cache.fetch<any>(
+      'mixed-collections',
+      'self',
+      () => this.core.request('GetMyMixedCollections', { cursor: 0, count: 50 }),
+      { force: opts.refresh, ttlMs: CacheTtl.account },
+    )
     return {
       playlists: (collectPlaylists(value, this.parseOpts) ?? []).map((d) => new Playlist(this.core, d)),
       raw: value,
@@ -99,7 +121,7 @@ export class LibraryService {
       'artist-collection',
       `${uid}-${cursor}-${count}`,
       () => this.core.request('GetUserArtistCollection', { user_id: uid, cursor, count }),
-      { force: opts.refresh, ttlMs: 10 * 60_000 },
+      { force: opts.refresh, ttlMs: CacheTtl.account },
     )
     const list = Array.isArray(value.artists) ? value.artists : collectArtists(value)
     return {
@@ -119,7 +141,7 @@ export class LibraryService {
       'recent-played',
       `${cursor}-${count}`,
       () => this.core.request('GetRecentPlayedMedia', { cursor, count, media_type: 1, scene: '' }),
-      { force: opts.refresh, ttlMs: 60_000 },
+      { force: opts.refresh, ttlMs: CacheTtl.none },
     )
     const list = Array.isArray(value.media) ? value.media : []
     const parsed = list.map((item: unknown) => asTrack(item, this.parseOpts)).filter(Boolean) as TrackData[]
@@ -136,7 +158,7 @@ export class LibraryService {
   /** 建歌单 → 返回新歌单实体 */
   async createPlaylist(title: string, opts: { isPrivate?: boolean } = {}): Promise<Playlist> {
     const res: any = await this.core.request('CreatePlaylist', { name: title, is_private: opts.isPrivate ?? false })
-    await this.invalidate({ kind: 'my-playlists', id: 'self' })
+    await this.invalidate(...this.collectionCache())
     const data = asPlaylist(res.playlist, this.parseOpts)
     if (data) return new Playlist(this.core, data)
     // 上游只回了 id 的情况下，回读一次
@@ -149,7 +171,7 @@ export class LibraryService {
     if (!ids.length) return
     // 响应没有 status_code，成功标志是 deleted_playlists 里带上该 id
     await this.core.request('MDeletePlaylists', { playlist_ids: ids })
-    await this.invalidate({ kind: 'playlist-detail' }, { kind: 'my-playlists', id: 'self' })
+    await this.invalidate({ kind: 'playlist-detail' }, ...this.collectionCache())
   }
 
   /** 改歌单信息（说明里注明：紧跟建单后改名偶发 1000014，重试即通） */
@@ -160,7 +182,7 @@ export class LibraryService {
       description: patch.description,
       is_private: patch.isPrivate,
     })
-    await this.invalidate({ kind: 'playlist-detail' }, { kind: 'my-playlists', id: 'self' })
+    await this.invalidate({ kind: 'playlist-detail' }, ...this.collectionCache())
   }
 
   /** 往歌单加歌（`media: [{id, type:'track'}]`） */
@@ -170,7 +192,7 @@ export class LibraryService {
       playlist_id: playlistId,
       media: trackIds.map((id) => ({ id, type: 'track' })),
     })
-    await this.invalidate({ kind: 'playlist-detail' }, { kind: 'my-playlists', id: 'self' })
+    await this.invalidate({ kind: 'playlist-detail' }, ...this.collectionCache())
   }
 
   /** 从歌单移除曲目 */
@@ -180,31 +202,31 @@ export class LibraryService {
       playlist_id: playlistId,
       media: trackIds.map((id) => ({ id, type: 'track' })),
     })
-    await this.invalidate({ kind: 'playlist-detail' }, { kind: 'my-playlists', id: 'self' })
+    await this.invalidate({ kind: 'playlist-detail' }, ...this.collectionCache())
   }
 
   /* ------------------------------------------------------------ 收藏（写） */
 
   async like(trackId: string): Promise<void> {
     await this.core.request('CollectTracks', { track_ids: [trackId] })
-    await this.invalidate({ kind: 'liked-tracks', id: 'list' }, { kind: 'my-playlists', id: 'self' })
+    await this.invalidate(...this.collectionCache())
   }
 
   async unlike(trackId: string): Promise<void> {
     await this.core.request('MDeleteCollectedTracks', { track_ids: [trackId] })
-    await this.invalidate({ kind: 'liked-tracks', id: 'list' }, { kind: 'my-playlists', id: 'self' })
+    await this.invalidate(...this.collectionCache())
   }
 
   async collectAlbums(albumIds: string[]): Promise<void> {
     if (!albumIds.length) return
     await this.core.request('CollectAlbums', { album_ids: albumIds })
-    await this.invalidate({ kind: 'mixed-collections', id: 'self' })
+    await this.invalidate(...this.collectionCache())
   }
 
   async uncollectAlbums(albumIds: string[]): Promise<void> {
     if (!albumIds.length) return
     await this.core.request('MDeleteCollectedAlbums', { album_ids: albumIds })
-    await this.invalidate({ kind: 'mixed-collections', id: 'self' })
+    await this.invalidate(...this.collectionCache())
   }
 
   /**
@@ -215,25 +237,25 @@ export class LibraryService {
   async collectArtists(artistIds: string[]): Promise<void> {
     if (!artistIds.length) return
     await this.core.request('CollectArtists', { artist_ids: artistIds })
-    await this.invalidate({ kind: 'artist-collection' })
+    await this.invalidate(...this.collectionCache())
   }
 
   async uncollectArtists(artistIds: string[]): Promise<void> {
     if (!artistIds.length) return
     await this.core.request('MDeleteCollectedArtists', { artist_ids: artistIds })
-    await this.invalidate({ kind: 'artist-collection' })
+    await this.invalidate(...this.collectionCache())
   }
 
   async collectPlaylists(playlistIds: string[]): Promise<void> {
     if (!playlistIds.length) return
     await this.core.request('CollectPlaylists', { playlist_ids: playlistIds })
-    await this.invalidate({ kind: 'mixed-collections', id: 'self' })
+    await this.invalidate(...this.collectionCache())
   }
 
   async uncollectPlaylists(playlistIds: string[]): Promise<void> {
     if (!playlistIds.length) return
     await this.core.request('MDeleteCollectedPlaylists', { playlist_ids: playlistIds })
-    await this.invalidate({ kind: 'mixed-collections', id: 'self' })
+    await this.invalidate(...this.collectionCache())
   }
 
   /** 批量收藏（`media` + `scene` + `collect_action` 指定场景与动作；`DeleteCollectedMediaList` 只吃 `media`） */
@@ -244,6 +266,7 @@ export class LibraryService {
       collect_action: 1,
       media: targets.map((t) => ({ id: t.id, type: t.type })),
     })
+    await this.invalidate(...this.collectionCache())
   }
 
   async uncollectMedia(targets: CollectTarget[]): Promise<void> {
@@ -251,5 +274,6 @@ export class LibraryService {
     await this.core.request('DeleteCollectedMediaList', {
       media: targets.map((t) => ({ id: t.id, type: t.type })),
     })
+    await this.invalidate(...this.collectionCache())
   }
 }

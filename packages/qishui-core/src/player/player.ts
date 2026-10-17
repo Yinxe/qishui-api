@@ -3,7 +3,7 @@ import type { RepeatMode } from '../config.js'
 import type { QishuiCore } from '../core.js'
 import { Emitter } from '../events.js'
 import type { TrackData } from '../types.js'
-import { Lyrics } from './lyrics.js'
+import type { Lyrics } from './lyrics.js'
 import { PlayQueue } from './queue.js'
 
 export type PlayerStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'stopped' | 'error'
@@ -294,7 +294,9 @@ export class Player {
   }
 
   /** 播放位置对应的歌词行（含下一行，滚动界面直接用） */
-  lyricState(offsetMs = 0): { line?: ReturnType<Lyrics['lineAt']>; index: number; next?: ReturnType<Lyrics['lineAt']> } | undefined {
+  lyricState(
+    offsetMs = 0,
+  ): { line?: ReturnType<Lyrics['lineAt']>; index: number; next?: ReturnType<Lyrics['lineAt']> } | undefined {
     if (!this.lyricsValue) return undefined
     return this.lyricsValue.view(this.positionValue, offsetMs)
   }
