@@ -1,0 +1,16 @@
+{
+  "//": "全仓类型检查用（pnpm run typecheck）：三个包的 src + test 一起过 tsc，只查类型不产出。各包自己的 tsconfig.json 负责 build（rootDir=src、输出 dist）。",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts"]
+}

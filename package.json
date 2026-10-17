@@ -4,10 +4,23 @@
   "description": "汽水音乐（SodaMusic）接口协议整理仓库根（pnpm workspace，包见 packages/qishui-api）",
   "private": true,
   "scripts": {
-    "build": "pnpm -r run build"
+    "build": "pnpm -r run build",
+    "cli:build": "pnpm --filter qishui-cli... run build",
+    "cli": "node packages/qishui-cli/dist/cli.js",
+    "test": "pnpm -r run test",
+    "typecheck": "tsc -p tsconfig.json",
+    "check": "biome check .",
+    "check:catalog": "pnpm --filter qishui-api run check:catalog",
+    "check:fix": "biome check --write .",
+    "format": "biome format --write ."
   },
   "engines": {
     "node": ">=20"
   },
-  "packageManager": "pnpm@12.11.2"
+  "packageManager": "pnpm@12.11.2",
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.15",
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
+  }
 }
