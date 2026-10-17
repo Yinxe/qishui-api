@@ -31,7 +31,7 @@
 - **人读输出统一样式**：一行式 `[序号.] 标题 — 副标题  元信息…  标记…  id`（id 尾随 dim，`tailParts` 拼两个空格）；表格里的 id 列由 `withIdColumn()` 按 `--no-id` 增删；命令产物本身是 id 的列（如 `modes` 的 `radio_id`、`cache list` 的曲目 id）不进该开关
 - `home`/`charts`/`mix` 的「播放目标」列表头点明为 `播放目标（type:id）`，并加提示：`type:id` 是 `qishui play` 的写法，`chart`/`radio`/`playlist` 取详情只要冒号后面的**裸 id**（免得把 `chart:7036…` 整串喂给 `qishui chart`）
 - 各命令 `--refresh` 的 help 文案按新缓存档位如实写：不缓存的命令标「该命令不缓存（参数无效，保留兼容）」，可缓存的写明档位（6 小时 / 30 分钟 / 5 分钟）
-- 冒烟 `test/smoke.ts` 增到 **59 项断言**，新增：默认带 id、`--no-id`/`--id false` 去掉 id、`discover` 子命令等价、`modes` 偏好/场景、`cache policy` 分档、`feed --mode` 非法值报错，以及 6 条搜索断言（`--type artist|album|playlist` 各 20 条、`all` 四类实体、`user` 如实提示）
+- 冒烟 `test/smoke.ts` 增到 **64 项断言**，新增：默认带 id（按「表尾 ≥15 位数字列」判定，不依赖上游两次调用返回同序——列表顺序会漂移）、`--no-id`/`--id false` 去掉 id、`discover` 子命令等价、`modes` 偏好/场景、`cache policy` 分档、`feed --mode` 非法值报错、多账号命令离线段（`accounts`/`use` 未知号报错/`feed --exclude` 非法值）、三线表断言（表头 + 三条横线），以及 6 条搜索断言（`--type artist|album|playlist` 各 20 条、`all` 四类实体、`user` 如实提示）
 
 ### Fixed
 

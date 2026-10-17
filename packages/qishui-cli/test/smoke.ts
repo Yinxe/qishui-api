@@ -185,14 +185,13 @@ async function main(): Promise<void> {
       (searchHuman.stdout.match(/─{10,}/g) ?? []).length >= 3,
   )
   soft('列表不再出现「试听」标记', !searchHuman.stdout.includes('试听'))
-  check(
-    '人类可读输出默认带曲目 id（能直接接着 play）',
-    tracks[0]?.id ? searchHuman.stdout.includes(String(tracks[0].id)) : true,
-  )
+  // 上游两次调用返回顺序会漂移，判据与具体曲目无关：看有没有 15+ 位的 id 列
+  const idColumn = /\s\d{15,}\b/
+  check('人类可读输出默认带曲目 id（表尾数字列可直接喂 play）', idColumn.test(searchHuman.stdout))
   const searchNoId = run(['search', '晴天', '--limit', '3', '--no-id'])
-  check('--no-id 去掉 id（同一屏不再出现）', tracks[0]?.id ? !searchNoId.stdout.includes(String(tracks[0].id)) : true)
+  check('--no-id 去掉 id 列（屏上不再有长数字 id）', !idColumn.test(searchNoId.stdout))
   const searchIdFalse = run(['search', '晴天', '--limit', '1', '--id', 'false'])
-  check('--id false 等价 --no-id', searchIdFalse.status === 0 && !searchIdFalse.stdout.includes(String(tracks[0]?.id)))
+  check('--id false 等价 --no-id', searchIdFalse.status === 0 && !idColumn.test(searchIdFalse.stdout))
 
   // 各类型搜索结果都要能解析实体（曾经只有 track 能出，artist/album/playlist 因为 entity.<kind> 壳没剥而全空）
   const searchArtist = run(['search', '周杰伦', '--type', 'artist', '--json'])
