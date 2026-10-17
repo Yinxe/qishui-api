@@ -237,7 +237,7 @@ qishui play playlist:<id> --no-cache  # 不落盘，只用远程签名地址
 
 ```bash
 pnpm run build                        # 先构建（core/api 也要）
-pnpm --filter qishui-cli run test     # 59 项断言
+pnpm --filter qishui-cli run test     # 64 项断言
 ```
 
 `test/smoke.ts` 是**纯 node 脚本**（`node --experimental-strip-types`，不引测试框架），跑构建产物 `dist/cli.js`，三层覆盖：
