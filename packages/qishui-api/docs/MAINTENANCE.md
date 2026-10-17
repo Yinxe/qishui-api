@@ -24,8 +24,8 @@
 | 贡献 IDL 的 bundle | `asar_out/main.js.map`(64) · `main_asar/assets/main-*.js.map`(11) · `desktopLyrics`(3) · `taskbarWidget`(2)，去重后 69 个文件 |
 | 网关 | `https://api.qishui.com`，无公开版本、无兼容承诺 |
 | 公共参数 | 逐字复刻 `services/request/request.ts:getTTCommonParams()`；`version_name` 与 `version_code` **都是版本字符串 `3.7.0`**，不是整数 |
-| 端点表 | 320 个端点 / 74 个官方在用 / 3 个刻意不实现 |
-| 可达性实测 | `docs/APP_ENDPOINTS.md`（2026-10-17，三轮）。① 匿名 82 条：`ok_json=32 · login_required=38`（含 29 个写接口）`· ok_thin=4 · client_rejected=3 · biz_error=3 · error=1 · risk_control=1`；② 带会话（非会员账号）复测上轮未结论的 14 条：**6 条翻盘**、3 条回空、2 条 `biz_error`（后被写接口轮翻案）、2 条 `error`、1 条风控；③ 写接口轮 29 条（`test/write.ts`，全部可回滚）：**29 条全部 `status_code=0`**（4 条换参数/换 path 翻案），唯一仍不通的是非写接口 `QueryTokenStatus`（上游 v1 GET 路由 500）；收尾安全复查 11/11 |
+| 端点表 | 320 个端点 / 74 个官方在用 / 3 个播放地址类上游拒答（库照发，不拦） |
+| 可达性实测 | `docs/APP_ENDPOINTS.md`（2026-10-17，四轮）。① 匿名 82 条：`ok_json=32 · login_required=38`（含 29 个写接口）`· ok_thin=4 · client_rejected=3 · biz_error=3 · error=1 · risk_control=1`；② 带会话（非会员账号）复测上轮未结论的 14 条：**6 条翻盘**、3 条回空、2 条 `biz_error`（后被写接口轮翻案）、2 条 `error`、1 条风控；③ 写接口轮 29 条（`test/write.ts`，全部可回滚）：**29 条全部 `status_code=0`**（4 条换参数/换 path 翻案），唯一仍不通的是非写接口 `QueryTokenStatus`（上游 v1 GET 路由 500）；收尾安全复查 11/11；④ 补测轮 8 条媒体类：`MGetMedia`/`MCheckTrack` 匿名 `ok_json`，`MGetMediaV2`/`GetTrack`/`GetH5Track`/`GetH5TrackV2`/`GetTrackPlayerInfo` 归入「客户端完整性校验拒答」 |
 
 **拿不到的部分**：`idl/*/entity/*.ts` 是纯类型声明（`interface`），编译期被完全擦除，`sourcesContent`
 里根本没有它们——74 个模块在产物中不存在，`src/idl/**` 里对应位置只能是 `export type X = any` 的 stub。

@@ -11,11 +11,11 @@
 | | 情况 |
 |---|---|
 | 接口覆盖 | **320 个端点**，请求字段全部精确来自整理出的 IDL；其中 **74 个**是官方客户端 `idlMethods` 注册表里真正在用的 |
-| 匿名可读 | 精选的 **82 条**音乐 App 常用接口里，实测 **32 条**匿名直接返回业务数据（发现页、**搜索**、榜单、歌手/专辑详情、相关推荐、歌单广场、分享链接、Sug 联想、评论区、商业化配置…），4 条回了但没数据 |
+| 匿名可读 | 精选的 **90 条**音乐 App 常用接口里，实测 **35 条**匿名直接返回业务数据（发现页、**搜索**、榜单、歌手/专辑详情、相关推荐、曲目批量详情 `MGetMedia`、可播性检查、歌单广场、分享链接、Sug 联想、评论区、商业化配置…），4 条回了但没数据 |
 | 需要登录 | **38 条**（`status_code=1000016`）：我的歌单/收藏/最近播放、收藏与关注、歌单增删改、评论、举报、隐私设置、下单等。其中 **29 条是写接口**，另 **9 条是「读」** —— 带会话复测后 **6 条翻盘**（我的信息/我的歌单/黑名单/上传凭据/隐私设置/h5 搜索），3 条回了空（账号没数据）。清单见 [`docs/APP_ENDPOINTS.md`](docs/APP_ENDPOINTS.md) |
 | **写接口** | **29 条全部实测通过**（`test/write.ts`，每步「做 → 回读验证 → 撤销 → 再回读」，收尾 11 项安全复查全过）：建单/改单/加歌/移歌/删单、收藏↔取消（曲目/专辑/艺人/歌单/媒体列表）、关注↔取关、拉黑↔解除、发评→点赞→删评、`Dislike`、举报、改隐私（原值回写）、取下单 token —— **29 条全部 `status_code=0`**（4 条是换参数/换 path 后翻案）。逐条参数与回读验证见 [`docs/APP_ENDPOINTS.md`](docs/APP_ENDPOINTS.md) §3.12 |
 | 登录 | **汽水音乐 App 扫码**（`/passport/web/get_qrcode` + `check_qrconnect`，二维码内容 = `bff-pc.qishui.com/.../scan_login?token=…`），cookie 落进 `CookieJar`；`test/login.ts --start` 出码、`--poll` 等扫 |
-| **播放地址** | goapi 那三个接口（`GetTrackV2`/`GetMediaPlayer`/`GetVideoV2`）**照常发请求、不拦**：匿名与**带会话**实测上游都拒答（pc 变体空响应 / 非 pc 变体 `1000062 应用版本有风险`），只在 `ENDPOINT_DATA[].gated` 上打标记。**会员态是否放行未验证**（本次账号非会员）。`src/web/sharePage.ts` 走 web 分享页的 SSR，实测能拿到 `audio_mp4`/`video_mp4` 地址。见下 |
+| **播放地址** | goapi 那批接口（`GetTrackV2`/`GetMediaPlayer`/`GetVideoV2`/`MGetMediaV2`/`GetTrack`/`GetH5Track`/`GetH5TrackV2`/`GetTrackPlayerInfo`）**照常发请求、不拦**：匿名与**带会话**实测上游都拒答（pc 变体空响应 / 非 pc 变体 `1000062 应用版本有风险`），只在 `ENDPOINT_DATA[].gated` 上打标记。**会员态是否放行未验证**（本次账号非会员）。要在 API 层拿曲目详情用 `MGetMedia`（匿名可用，**但不含播放地址**）、拿可播性用 `MCheckMedia`/`MCheckTrack`；`src/web/sharePage.ts` 走 web 分享页的 SSR，实测能拿到 `audio_mp4`/`video_mp4` 地址。见下 |
 | 搜索 | **匿名可用**：官方 `Search` 走 `/luna/search/<type>`（非 pc 变体）就返回 `result_groups`（track 一次 ~114KB 完整实体）；注意**不能带 `debug_params`**，pc 变体恒 `200+0 字节`。7 个 `search_type` 由 `SearchCategories` 给出。`Sug` / `SuggestWords` 做联想与推荐词 |
 | 检索替代 | 关键词可直接走 `Search`；`Sug` / `SuggestWords` 返回 track/album/artist 实体与 ID 做下拉与「猜你想搜」。`FlowSearch` 404（path 线上不存在）；`Search2023`（h5）匿名回 `login_required`、**带会话可用** |
 | **排行榜** | **能拿**：`DiscoverView` 空 body（= 官方 `Discover.vue`）回 `discover_top_song_list` 块（热歌榜 / 新歌榜 / 欧美榜，每榜几十首、每周四更新），曲目在 `resources[].entity.ranked_track.track`；每个榜条目的 `inner_block_id` 就是 `GetChartDetail` 的 `chart_id`，能再取整榜 `track_ranks[{rank,track}]`。`{first_request, pc_new_discover_request:true}`（听歌模式）只回 30 个场景队列、**榜单块不在响应里** |
@@ -25,7 +25,7 @@
 | 响应叶子类型 | 大部分是 `any`。`entity/*.ts` 是纯类型声明，编译期被完整擦除，产物里根本没有这段源码，拿不到 |
 
 逐端点实测记录（匿名、最小参数、`200+0字节` / `biz_error` / `login_required` 分类）与「这些接口能拿来做什么」
-一起整理在 [`docs/APP_ENDPOINTS.md`](docs/APP_ENDPOINTS.md)（82 条，13 个能力分类）；实测台在 `test/`，
+一起整理在 [`docs/APP_ENDPOINTS.md`](docs/APP_ENDPOINTS.md)（90 条，13 个能力分类）；实测台在 `test/`，
 `node --experimental-strip-types test/run.ts` 可复现。个别接口偶发 `risk_control`
 （`GetFollowingList` 这类社交接口匿名并发会被打 bdturing 标记），属预期。
 响应**形状**（字段结构，entity 层 IDL 里没有）逐节实测过，字段名以真实响应为准。
@@ -48,10 +48,11 @@
 
 关于播放地址，两条路不是一回事，别再写成「跟入口无关」——那句是未实测的假设，已被推翻：
 
-- **goapi 那条现在照发、由上游裁决**。`GetTrackV2`/`GetMediaPlayer`/`GetVideoV2` 返回音频 URL，官方客户端依赖 native 层
+- **goapi 那条现在照发、由上游裁决**。`GetTrackV2`/`GetMediaPlayer`/`GetVideoV2`/`MGetMediaV2`/`GetTrack`/`GetH5Track`/`GetH5TrackV2`/`GetTrackPlayerInfo` 这一类要音频 URL/单曲直读的接口，官方客户端依赖 native 层
   （`ttnet`/`bdticket`，Windows PE 二进制）产生的设备证明与请求签名；**匿名与带会话实测都拒答**：pc 变体 `200 + 0 字节`，
   非 pc 变体回 `1000062 应用版本有风险，请从应用商店下载正式版本`。本库此前自己抛 `UnsupportedError` 把它们拦下，
   现在**删掉了那道拦截**——上游才是裁判，本库只把「实测拒答」标在 `ENDPOINT_DATA[].gated` 上，请求照发。
+  （要在 API 层拿曲目详情，用匿名可用的 `MGetMedia`；但它**不含播放地址**。）
   本库不伪造 native attest（那是绕门禁，不是协议研究）。**会员态是否放行还没验过**（本次账号非会员），别把非会员结论当终局。
 - **web 分享页这条路是通的**：`www.qishui.com/share/track` 与 `/share/ugc_video` 匿名返回的 SSR 里就带着
   `audioWithLyricsOption.url` / `videoOptions.url`，实测 `http=206`，全程只 GET 一次网页、不碰 goapi。
@@ -143,6 +144,20 @@ const meta = await shareLinkToMeta('https://qishui.douyin.com/s/iXpu65or/', clie
 `media_list: [{ id, type: 'track' }]`）+ `GetRelatedMedia`（相关曲目的完整对象）。
 封面拼串逐字复刻官方 `utils/image.ts`：`urls[0] + uri + '~' + template_prefix + '-crop-center:W:H.jpg'`，
 `getImageUrl()` 也导出，可直接用于歌手头像 / 专辑封面。
+
+**按 id 批量取曲目详情用 `MGetMedia`**（匿名可用，2026-10 补测）：
+
+```ts
+const res = await client.request('MGetMedia', {
+  scene: 'playlist',                                  // '' / 'playlist' / 'music_mate_queue' 都行
+  media: ids.map((id) => ({ id, type: 'track' })),
+})
+const tracks = (res.media ?? []).map((m) => m.entity.track_wrapper.track)  // 完整曲目实体
+```
+
+它回的是完整 track（album/artists/label_info/url_cover/duration），**但不含播放地址**；
+`media[]` 里**只有 `type: 'track'` 有实体**（album/playlist/video/ugc_video 一律 0 条）。
+「播放前查权益」用 `MCheckMedia`（`media_list`）或 `MCheckTrack`（`track_ids`，粒度更细）。
 
 **拿不到的**：歌词在 goapi 侧**没有独立接口**（`GetTrackV2Response` 里带 `lyric: track.TrackLyrics`，与音频同响应、同闸门，
 全 320 端点的 path/name 无 `lyric`/`lrc`）；但 web 分享页的 SSR 里带着 KRC 结构化歌词，`getShareMedia()` 已能取出

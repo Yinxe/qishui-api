@@ -76,6 +76,7 @@ export const CATALOG: Entry[] = [
     group: '发现 / 推荐',
     name: 'DiscoverView',
     label: '推荐页版（空 body）',
+    auth: 'anon',
     capability:
       '首页大盘：热歌榜/新歌榜/欧美榜（discover_track_top_list）+ 推荐歌单 + 场景队列，一次 159 个 resources',
     params: () => ({}),
@@ -84,6 +85,7 @@ export const CATALOG: Entry[] = [
     group: '发现 / 推荐',
     name: 'DiscoverView',
     label: '听歌模式版（sceneMode）',
+    auth: 'anon',
     capability: '另一套版面：30 个 discover_radio 场景队列（榜单块不在响应里），官方 sceneMode 用',
     params: () => ({ first_request: true, pc_new_discover_request: true }),
   },
@@ -263,6 +265,75 @@ export const CATALOG: Entry[] = [
     capability: 'goapi 视频地址。匿名实测同 GetTrackV2：各变体均空响应。库照发请求、不拦。**带会话/VIP 后未验证**',
     params: (c) => ({ video_id: c.trackId, type: 1 }),
   },
+  {
+    group: '播放 / 媒体地址',
+    name: 'MGetMedia',
+    auth: 'anon',
+    label: '曲目（track）',
+    capability:
+      '按 id 批量取媒体实体（**匿名可用**）：media[] 里每条的 entity 是完整 DisplayEntity（曲目在 entity.track_wrapper.track：含 album/artists/label_info/url_cover/duration，**但不含播放地址**）——「按 id 批量补曲目详情」就走它，不用再爬分享页 HTML。scene 传 ""/playlist/music_mate_queue 都行',
+    params: (c) => ({ scene: 'playlist', media: [{ id: c.trackId, type: 'track' }] }),
+  },
+  {
+    group: '播放 / 媒体地址',
+    name: 'MGetMedia',
+    auth: 'anon',
+    label: '混类型（album/playlist/video 都为 0 条）',
+    capability:
+      '同端点喂 album/playlist 类型：**回 0 条**（另有探针确认 ugc_video/video 同样 0 条）——只有 track 类型有实体。说明它是「曲目批量详情」专用口，不能当通用多类型入口',
+    params: (c) => ({
+      scene: 'playlist',
+      media: [
+        { id: c.trackId, type: 'track' },
+        { id: c.albumId, type: 'album' },
+        { id: c.playlistId, type: 'playlist' },
+      ],
+    }),
+  },
+  {
+    group: '播放 / 媒体地址',
+    name: 'MGetMediaV2',
+    auth: 'gated',
+    capability:
+      'v2 版（GET `/luna/media_v2`）。匿名实测：`200+0字节`，各 path 变体一样。库照发请求、不拦。**带会话/VIP 后未验证**',
+    params: (c) => ({ scene: 'playlist', media: [{ id: c.trackId, type: 'track' }] }),
+  },
+  {
+    group: '播放 / 媒体地址',
+    name: 'MCheckTrack',
+    auth: 'anon',
+    capability:
+      '按 track_ids 批量查曲目状态（**匿名可用**）→ `track_status[]`。粒度比 MCheckMedia 细（按 track 维度给权益/上下架判定）',
+    params: (c) => ({ track_ids: [c.trackId], scene: 0 }),
+  },
+  {
+    group: '播放 / 媒体地址',
+    name: 'GetTrack',
+    auth: 'gated',
+    capability: '单曲信息（非 h5 path `/luna/track`）。匿名实测：`1000062 应用版本有风险`（上游客户端完整性校验）。库照发请求、不拦。**带会话/VIP 后未验证**',
+    params: (c) => ({ track_id: c.trackId, media_type: 'track', queue_type: '' }),
+  },
+  {
+    group: '播放 / 媒体地址',
+    name: 'GetH5Track',
+    auth: 'gated',
+    capability: 'h5 path（`/luna/h5/track`）。匿名实测同 GetTrack：`1000062 应用版本有风险`。库照发请求、不拦。**带会话/VIP 后未验证**',
+    params: (c) => ({ track_id: c.trackId, media_type: 'track', queue_type: '' }),
+  },
+  {
+    group: '播放 / 媒体地址',
+    name: 'GetH5TrackV2',
+    auth: 'gated',
+    capability: 'h5 v2（`/luna/h5/track_v2`）。匿名实测：`1000062 应用版本有风险`。库照发请求、不拦。**带会话/VIP 后未验证**',
+    params: (c) => ({ track_id: c.trackId, media_type: 'track', queue_type: '' }),
+  },
+  {
+    group: '播放 / 媒体地址',
+    name: 'GetTrackPlayerInfo',
+    auth: 'gated',
+    capability: '播放器信息（`/luna/track_player`）。匿名实测：`1000062 应用版本有风险`。库照发请求、不拦。**带会话/VIP 后未验证**',
+    params: (c) => ({ track_id: c.trackId, type: 'track' }),
+  },
 
   // ---------------------------------------------------------------- 榜单
   {
@@ -279,7 +350,8 @@ export const CATALOG: Entry[] = [
     group: '歌单 / 收藏（读）',
     name: 'GetPlaylistDetail',
     auth: 'anon',
-    capability: '歌单详情：标题(title)/计数(count_tracks)/创建者 + 曲目（track_wrapper.track）。分享出去的歌单匿名可读',
+    capability:
+      '歌单详情：标题(title)/计数(count_tracks)/创建者 + 曲目。**曲目在 `media_resources[{id,type,entity,collect_info,index}]` 里**（不是 tracks/media_list），entity.track_wrapper.track 才是曲目；请求 count=20 实测回 18 条 + has_more=true + next_cursor=20。分享出去的歌单匿名可读',
     params: (c) => ({
       playlist_id: c.playlistId,
       cursor: 0,

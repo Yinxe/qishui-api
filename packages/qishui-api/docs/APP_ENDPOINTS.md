@@ -51,6 +51,17 @@
 
 跑法：`test/write.ts`，每步「做 → 回读验证 → 撤销 → 再回读」，收尾 11 项安全复查本次 **11/11 通过**（账号数据回到原样）。
 
+**补测轮（2026-10-17，只发没结论的 9 条：新增 8 条 + 2 条 error 复查）**
+
+| 结果 | 是哪几条 |
+|---|---|
+| `ok_json` | `MGetMedia`（曲目版 + 混类型版）、`MCheckTrack` —— 见 §3.5，这两个是 core 的「按 id 批量取曲目详情 / 查可播状态」的底座 |
+| `empty_body` | `MGetMediaV2`（GET `/luna/media_v2` → `200+0字节`） |
+| `client_rejected` | `GetTrack`、`GetH5Track`、`GetH5TrackV2`、`GetTrackPlayerInfo` —— 一律 `1000062 应用版本有风险`（上游客户端完整性校验，非会员） |
+| 仍是 `error` | `FlowSearch` HTTP 404、`QueryTokenStatus` HTTP 500（两条上游侧问题，复查不变） |
+| 未重发 | 其余 80 条沿用结论（`ok_json`/`ok_thin`/`client_rejected` 默认不重发，防风控；`FORCE=1` 可重测）|
+
+
 **一句话结论**：匿名能搭起「可浏览、可搜索、可看详情/评论/歌单、可拿播放地址（走 web 分享页）」的骨架；
 **个性化与写入都要会话，登录后确实都通**（登录轮 6 条翻盘 + 写接口轮 28/29）；
 真正拿不到的只剩**会员专属行为**（本账号 `is_vip:false`）和 `QueryTokenStatus` 那条已下线的 GET 路由。
@@ -80,10 +91,11 @@
 | 搜索分类 tab | `SearchCategories`（7 个 `search_type`） | ✅ |
 | 榜单详情（整榜） | `DiscoverView` 榜单块的 `inner_block_id` → `GetChartDetail` | ✅ |
 | 曲目/专辑/艺人详情 | `GetAlbumDetail` / `GetArtistDetail` / `ListArtistAlbums` / `ListArtistTracks` | ✅ |
+| 按 id 批量补曲目详情 | `MGetMedia`（只认 `type:'track'`，实体里**没有播放地址**） | ✅ |
 | 相似歌曲 | `GetRelatedMedia`（6 首/次） | ✅ |
 | 曲目元数据（标题/歌手/封面/可播性） | `GetShareInfo` | ✅ |
 | 播放地址 + 歌词 | `GetShareInfo` 拿分享链接 → `getShareMedia()` 读 web 分享页 SSR | ✅ |
-| 播放前查权益 | `MCheckMedia`（批量）/ `GetMediaStats`（计数） | ✅ |
+| 播放前查权益 | `MCheckMedia`（批量 `media_list`）/ `MCheckTrack`（批量 `track_ids`）/ `GetMediaStats`（计数） | ✅ |
 | 评论 | `ListComments` / `ListReplies` | ✅ |
 | 别人主页 | `GetUserInfo` / `GetUserPlaylists` / `GetFollowerList` | ✅（`GetFollowingList` 易风控） |
 | 我的音乐（我的歌单） | `GetMyPlaylists`（实测 `playlists[2]`）→ `GetPlaylistDetail` | 需会话（已验 ✅） |
@@ -176,9 +188,12 @@ blocks[1] type=discover_top_song_list
 | 端点 | 匿名 | 实测 | 能力 |
 |---|---|---|---|
 | `GetShareInfo` | ✅ | `share_info{10}` | 曲目元数据的**主力**：`share_title`《茶汤》、`share_desc`(歌手)、`share_cover{uri,urls,template_prefix}`、`short_share_link`、`system_share_link`、`share_weibo_desc`、`share_douyin_info.story_music_id` |
+| `MGetMedia` | ✅ | `media[1]` | **按 id 批量取曲目实体**（2026-10 补测）：`media[].entity.track_wrapper.track` 是完整曲目（album/artists/label_info/url_cover/duration），**但不含播放地址**。「按 id 补曲目详情」用它，不用爬分享页。`scene` 传 `""`/`playlist`/`music_mate_queue` 都行；**只有 `type:'track'` 有实体，album/playlist/ugc_video/video 一律回 0 条** |
+| `MCheckTrack` | ✅ | `track_status[1]` | 按 `track_ids` 批量查曲目状态（2026-10 补测）：按 track 维度给权益/上下架判定，粒度比 `MCheckMedia` 细 |
 | `MCheckMedia` | ✅ | `media_status[1]` | 播放前查权益：`status`(枚举) + `label_info.quality_map`（哪档音质要 VIP/购买），批量传 `media_list` |
 | `GetMediaStats` | ✅ | `stats{count_collected,count_comment,count_shared}` | 收藏/评论/分享计数（注意 `media_type` 要传字符串 `'track'`） |
-| `GetTrackV2` / `GetMediaPlayer` / `GetVideoV2` | ✗ | `client_rejected` | goapi 播放地址。**库照发请求、不拦**（早先那个自造的 `UnsupportedError` 已删）；匿名与**带会话**实测都拒答：pc 变体 `200+0字节`，非 pc 变体回 `1000062 应用版本有风险，请从应用商店下载正式版本`。**会员态是否放行仍未验证**（本次账号非会员）。可播地址走 web 分享页 |
+| `GetTrackV2` / `GetMediaPlayer` / `GetVideoV2` / `MGetMediaV2` / `GetTrack` / `GetH5Track` / `GetH5TrackV2` / `GetTrackPlayerInfo` | ✗ | `client_rejected` / `empty_body` | goapi 播放地址与单曲直读口。**库照发请求、不拦**（早先那个自造的 `UnsupportedError` 已删）；匿名实测全拒答：pc 变体 `200+0字节`，非 pc 变体回 `1000062 应用版本有风险，请从应用商店下载正式版本`（2026-10 把 `MGetMediaV2`/`GetTrack`/`GetH5Track`/`GetH5TrackV2`/`GetTrackPlayerInfo` 也归到这一类）。**会员态是否放行仍未验证**（本次账号非会员）。可播地址走 web 分享页 |
+
 
 > **播放地址走 web 分享页**（本项目已验证的那条路）：`GetShareInfo` → `system_share_link`
 > （`https://www.qishui.com/share/track?track_id=…`）→ `getShareMedia()` 读 SSR 里的
@@ -312,9 +327,10 @@ blocks[1] type=discover_top_song_list
 曲目统一取 `entity.ranked_track.track` 或 `entity.track`。
 
 **② 播放一首歌（含歌词）**
-列表里的 track 已有 `id`/`name`/`artists`/`album` → `MCheckMedia` 查权益（VIP/无版权）→
+列表里的 track 已有 `id`/`name`/`artists`/`album`；只有 id 时先用 **`MGetMedia`**（`{scene, media:[{id,type:'track'}]}`）批量补详情 → `MCheckMedia` 查权益（VIP/无版权）→
 `GetShareInfo` 拿 `system_share_link` → `getShareMedia()` 取 `play_url` + KRC 歌词（逐字时间戳）→ 播放。
 `GetTrackV2`/`GetMediaPlayer` 可以照调（库不拦），但匿名与带会话实测上游都拒答（`1000062` / 空响应），别把主链路压在它上面。
+（`qishui-core` 的 `catalog.tracks()` / `player.play()` 就是照这条链路实现的。）
 
 **③ 搜索**
 `Sug` 做下拉 → 用户在结果里点一个 `content_type` → 用 `entity.<kind>.id` 直接跳详情；
@@ -339,7 +355,7 @@ blocks[1] type=discover_top_song_list
 
 | 端点 | 现象 | 原因 |
 |---|---|---|
-| `GetTrackV2` / `GetMediaPlayer` / `GetVideoV2` | 匿名与**带会话**实测都拒答：pc 变体空响应、非 pc 变体回 `1000062 应用版本有风险` | 上游对客户端做完整性校验后拒答。本库只标记（`ENDPOINT_DATA[].gated`）、不拦请求，**会员态是否放行**尚未验证（本次账号非会员）。可播地址走 web 分享页 |
+| `GetTrackV2` / `GetMediaPlayer` / `GetVideoV2` / `MGetMediaV2` / `GetTrack` / `GetH5Track` / `GetH5TrackV2` / `GetTrackPlayerInfo` | 匿名与**带会话**实测都拒答：pc 变体空响应、非 pc 变体回 `1000062 应用版本有风险` | 上游对客户端做完整性校验后拒答。本库只标记（`ENDPOINT_DATA[].gated`）、不拦请求，**会员态是否放行**尚未验证（本次账号非会员）。要在 API 层拿曲目详情用 `MGetMedia`（匿名可用，但没有播放地址），要播放地址走 web 分享页 |
 | `FlowSearch` | HTTP 404 | `/luna/flow/search/<type>` 线上不存在 |
 | `GetSearchBlock` | `search_chart_block` 恒空 | 热搜是 h5/移动端的东西，PC 客户端源码里都不调它 |
 | `GetFeaturedContents` | 空响应（只回 status_info） | 推荐位没数据 |
@@ -351,17 +367,18 @@ blocks[1] type=discover_top_song_list
 
 ## 6. 还没验的：只剩会员行为
 
-三轮下来「读 + 写」都验过了：
+三轮下来「读 + 写」都验过了（2026-10-17 又补了 8 条媒体类，见 §1）：
 
 - **匿名轮**：82 条里 32 条直接拿到数据（发现页/搜索/榜单/详情/评论/歌单广场/分享链接）。
 - **登录轮**：6 条翻盘（`GetMyInfo`/`GetMyPlaylists`/`GetBlockUserList`/`GetUploaderInfo`/`GetMyPrivacySetting`/`Search2023`），
   3 条回空但结构正常（账号里没数据：`GetMyMixedCollections`/`GetRecentPlayedMedia`/`GetDigitalAlbums`）。
 - **写接口轮**：29 条实测**全部 `status_code=0`**（含 4 条换参数/换 path 翻案）；唯一不通的是**非写接口**的 `QueryTokenStatus`（上游 v1 GET 路由 500）。
   账号数据全程可回滚，收尾 11 项复查全过（详见 §3.12）。
+- **补测轮**：`MGetMedia` / `MCheckTrack` 匿名可用（曲目批量详情的底座）；`MGetMediaV2`/`GetTrack`/`GetH5Track`/`GetH5TrackV2`/`GetTrackPlayerInfo` 归入「客户端完整性校验拒答」那一类。
 
 **唯一没验的：会员（VIP）行为**。本次账号 `is_vip: false` / `vip_stage: "free"`，所以这些拿不到：
 
-- `GetTrackV2` / `GetMediaPlayer` / `GetVideoV2` 是否对**会员**放行（匿名实测是 `1000062` / 空响应，登录态也一样，会员态未验）；
+- 上表那批 `1000062` / 空响应的端点是否对**会员**放行（匿名与登录态都不放行，会员态未验）；
 - VIP 音质 / 下载类端点的权益分支；
 - `GetMySubscription` 的会员态返回、`GetUpsell` 的会员价分支。
 

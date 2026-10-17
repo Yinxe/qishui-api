@@ -17,7 +17,7 @@
 - `src/params.ts` 的 `APP_VERSION` 对齐快照版本，`commonParams()` 与 `userAgent()` 都读它
 - `docs/MAINTENANCE.md` — 快照出处、已知脆弱点、症状归因表、不可修边界
 - `docs/endpoints.md` — 320 端点全表（74 个官方在用）
-- `docs/APP_ENDPOINTS.md` — 音乐 App 视角的接口清单与匿名可达性实测：82 条精选接口按 13 个能力分类，
+- `docs/APP_ENDPOINTS.md` — 音乐 App 视角的接口清单与匿名可达性实测：90 条精选接口按 13 个能力分类，
   每条写「能拿到什么 + 关键字段（抄自真实响应）+ 实测结果」，另附 5 条典型链路与「别耗时间」清单
 - `test/` — 接口实测台：`catalog.ts` 清单（端点 + 能力 + 最小参数）、`run.ts` 依次实测
   （先采真实样本 id 再逐条发请求，分类打印 + 落 JSON）、`login.ts` 扫码落会话、`dump*.ts` 抓样本响应、
@@ -118,6 +118,17 @@
 - README 早先「**这条边界跟入口无关**：即使换 h5 / web / 小程序 某个入口技术上能拿到一个可播 URL，本项目也不做」
   是**未实测的断言**，实测被推翻：web 分享页匿名返回的 SSR 里就带着 `audio_mp4`/`video_mp4` 地址，无签名门槛。
   入口的性质确实不同——被 gate 住的是 goapi 那三个接口要的 native 设备证明，不是媒体本身。
+- **媒体类补测轮（2026-10-17，8 条）**：`MGetMedia`（`GET /luna/media`，`{scene, media:[{id,type:'track'}]}`）**匿名可用**，
+  `media[].entity.track_wrapper.track` 是完整曲目（album/artists/label_info/url_cover/duration，**但不含播放地址**）
+  —— 「按 id 批量补曲目详情」有官方口了，不用再爬分享页 HTML；`scene` 传 `""`/`playlist`/`music_mate_queue` 都行，
+  **但只有 `type:'track'` 有实体**（album/playlist/ugc_video/video 一律 0 条）。`MCheckTrack`
+  （`POST /luna/track/mcheck`，`{track_ids, scene:0}`）**匿名可用** → `track_status[]`，粒度比 `MCheckMedia` 细。
+  另 5 条归入「客户端完整性校验拒答」那一类（匿名全拒）：`MGetMediaV2` 各变体 `200+0字节`；
+  `GetTrack`（`/luna/track`）、`GetH5Track`（`/luna/h5/track`）、`GetH5TrackV2`、`GetTrackPlayerInfo`（`/luna/track_player`）
+  一律 `1000062 应用版本有风险` —— 与 `GetTrackV2` 同族，**登录态也不放行**（会员态仍未验）。
+  同时实测确认 `GetPlaylistDetail` 的曲目在 `media_resources[{id,type,entity,collect_info,index}]`
+  （请求 `count=20` 回 18 条 + `has_more` + `next_cursor`），`ListArtistAlbums` 回
+  `albums[{id,name,artists,company,count_tracks,state,stats,url_cover}]`
   据此把边界改写为「goapi 拒绝 / web 分享页可达」，范围调整由 owner 于 2026-10-15 决定；
   平台《服务协议》的授权口径与合规提示保持不变，用途自行评估
 

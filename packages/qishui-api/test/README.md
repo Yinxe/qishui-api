@@ -4,7 +4,7 @@
 
 | 文件 | 作用 |
 |---|---|
-| `catalog.ts` | 接口清单：分类 + 端点 key + `capability`（能拿到什么）+ 测试用最小参数。**文档 `docs/APP_ENDPOINTS.md` 就照它写**；`auth` 三档 `anon`/`login`/`gated`（`gated` 只是标记，库照发请求） |
+| `catalog.ts` | 接口清单：分类 + 端点 key + `capability`（能拿到什么）+ 测试用最小参数。**文档 `docs/APP_ENDPOINTS.md` 就照它写**；`auth` 三档 `anon`/`login`/`gated`（`gated` 只是标记，库照发请求）。当前 **90 条**（2026-10 补了 `MGetMedia`/`MCheckTrack` 等 8 条媒体类） |
 | `run.ts` | 依次实测整份清单：先采真实样本 id（曲目/专辑/艺人/歌单/用户/评论/电台/榜单），再逐条发请求，分类打印 + 落 JSON。**已有结论的接口自动 SKIP**（`ok_json`/`ok_thin`/`client_rejected`/`empty_body`），并复用上一轮样本 id，避免重复请求被风控；`FORCE=1` 强制全量重测 |
 | `raw.ts` | 手写 HTTP 直打（不走库 transport），给 `run.ts` / `probe-variants.ts` / `sweep-all.ts` 共用：逐 path 变体试探 + 按响应归类 |
 | `login.ts` | 扫码登录（**汽水音乐 App**，非抖音）：`--start` 出二维码并存中间态，`--poll` 轮询直到 confirmed，会话落 `qishui-session.json` |
@@ -33,6 +33,9 @@ node --experimental-strip-types test/dump.ts                    # 抓样本响�
 规矩：默认匿名、只读、最小参数、相邻请求 ≥1.2s 串行，**已经测出数据的不重复打**；写接口只在明确要动账号数据时才跑
 （`write.ts`），只碰自己刚造的数据、收藏类先查再决定要不要取消，收尾回读确认账号回到原样。
 结果明细落在 `/tmp/opencode/endpoint-report.json`。
+
+> 上层 [`qishui-core`](../../qishui-core) 的端到端冒烟在 `packages/qishui-core/test/smoke.ts`
+> （会话迁移 → 曲库 → 播放器 → 媒体缓存落盘/命中，36 步），跑之前先 `pnpm --filter qishui-core run build`。
 
 **记录口径**：`UnsupportedError` 那类「本库自己抛的异常」不算接口结论 —— 接口能不能用只看真实响应
 （上游拒答就写清 `1000062`/空响应，并标注口径：**匿名/登录/会员三档里哪些试过、哪些没试**）。
