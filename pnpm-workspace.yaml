@@ -1,0 +1,4 @@
+packages:
+  - 'packages/*'
+minimumReleaseAgeExclude:
+  - react@19.3.1

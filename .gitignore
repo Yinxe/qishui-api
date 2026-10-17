@@ -1,0 +1,11 @@
+node_modules/
+dist/
+qishui-session.json
+qishui-device.json
+
+# 账号绑定的实测产物：里面有本机账号的昵称/uid 尾号、真实歌单与曲目 id，不入库
+
+# 编辑器临时文件
+*.swp
+*.swo
+*~

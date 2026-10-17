@@ -1,0 +1,13 @@
+{
+  "name": "qishui-workspace",
+  "version": "0.0.0",
+  "description": "汽水音乐（SodaMusic）接口协议整理仓库根（pnpm workspace，包见 packages/qishui-api）",
+  "private": true,
+  "scripts": {
+    "build": "pnpm -r run build"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@12.11.2"
+}

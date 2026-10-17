@@ -1,0 +1,129 @@
+# Changelog
+
+格式参考 Keep a Changelog；版本号是本库自身语义化版本，**上游快照版本用 git tag `snapshot-v<客户端版本>-<序号>` 表达**。
+详见 `docs/MAINTENANCE.md`。
+
+## 0.1.0 — 2026-10-15
+
+对齐上游快照：汽水音乐 PC **v3.7.0**（官方分发包 SHA-256 `e58578ae…b0e4`）。
+
+### Added
+
+- 320 个端点的 IDL 快照（74 个官方在用），请求字段/位置/可选性逐字来自官方分发包里的接口声明
+- `createClient()` 门面：`request<K>(key, req)` 带 `RequestOf`/`ResponseOf` 类型推导、设备注册、cookie 管理、可导出会话
+- 抖音扫码登录（`get_qrcode` + `check_qrconnect`），状态机 `waiting/scanned/confirmed/expired/timeout`
+- 纯 HTTP 复刻官方 `apiCaller` 选路与 `getTTCommonParams()` 公共参数；`x-ss-stub` body 摘要
+- 错误模型：`TransportError` / `ApiError` / `AuthRequiredError` / `RiskControlError`（`UnsupportedError` 已于 2026-10-17 删除，见 Corrected）
+- `src/params.ts` 的 `APP_VERSION` 对齐快照版本，`commonParams()` 与 `userAgent()` 都读它
+- `docs/MAINTENANCE.md` — 快照出处、已知脆弱点、症状归因表、不可修边界
+- `docs/endpoints.md` — 320 端点全表（74 个官方在用）
+- `docs/APP_ENDPOINTS.md` — 音乐 App 视角的接口清单与匿名可达性实测：82 条精选接口按 13 个能力分类，
+  每条写「能拿到什么 + 关键字段（抄自真实响应）+ 实测结果」，另附 5 条典型链路与「别耗时间」清单
+- `test/` — 接口实测台：`catalog.ts` 清单（端点 + 能力 + 最小参数）、`run.ts` 依次实测
+  （先采真实样本 id 再逐条发请求，分类打印 + 落 JSON）、`login.ts` 扫码落会话、`dump*.ts` 抓样本响应、
+  `probe-params.ts` 试参数。无会话时写接口只验拦截；有会话时默认跳过写接口，`ALLOW_WRITE=1` 才发
+- `src/web/` — 分享链接入口：`resolveShareLink()` 只跟一跳 `Location` 拿 `track_id`（不解析页面 body），
+  `getShareMeta()` 用匿名接口组装标题 / 歌手文案 / 封面 JPEG / 可播性 VIP 标记 / 相关曲目；
+  `getImageUrl()` 逐字移植官方 `utils/image.ts` 的 CDN 拼串；`ShareMeta` 为显式字段白名单，原始响应不透传
+- `ugc_video` 形态支持：`parseShareLink` 去掉硬编码映射表，改为 `<kind>_id` → 任意 `*_id` → `item_id`/`id`
+  三级回落（exact 优先，避免 `/share/track` 上挂的 `comment_id` 解错条目）；
+  `getImageUrl` 同时覆盖 track 的 `uri+模板` 拼串与 ugc_video 的签名完整 URL 两种封面形态
+- `src/web/sharePage.ts` — `getShareMedia()`：分享链接 → 可播地址。只 GET 一次 `www.qishui.com/share/<kind>` 的
+  SSR 页，从 `_ROUTER_DATA` 括号配平截出 JSON，取 `track_page.audioWithLyricsOption.url`（`audio_mp4`）
+  或 `ugc_video_page.videoOptions.url`（`video_mp4`），并解析地址里的 16 进制过期时刻为 `expires_at`。
+  与 goapi 无关、匿名无 cookie；其余 kind 无流地址直接抛 `QishuiError`
+- `getShareMedia()` 附带取出 **KRC 结构化歌词**（track 独有，`audioWithLyricsOption.lyrics`）：`lyric_type: 'krc'`，
+  `sentences` 每行带行级 `start_ms`/`end_ms` + 逐字 `words[]` 时间戳（正适合播放器滚动与卡拉 OK 逐字高亮）；
+  署名行标 `type: 'lrc'`、末行 `endMs` 的 `MAX_SAFE_INTEGER` 哨兵归一化为 `undefined`；无歌词的曲缺省。
+  ugc_video 页无 lyrics，另补 4 个视频字段：`width`/`height`（分辨率）、`first_frame_url`（首帧图）、
+  `artist_avatar_url`（作者头像）。新导出类型 `ShareLyrics`/`ShareLyricSentence`/`ShareLyricWord`
+- 排行榜落点：`DiscoverView` 空 body（= 官方 `Discover.vue`）回 `discover_top_song_list` 的
+  `discover_track_top_list` × 3（热歌榜 50 / 新歌榜 48 / 欧美榜 50，`desc` 写着"每周四更新"），曲目在
+  `resources[].entity.ranked_track.track`（**不是** `track_wrapper.track`），另有 `rank.rank_delta`/`rank_type`；
+  `{first_request, pc_new_discover_request:true}`（官方 `sceneMode.ts` 听歌模式）只回 30 个场景队列 —— **榜单块不在响应里**
+- 登录态写链路实测跑通：`GetMyInfo` → `CreatePlaylist`（`type=2` 私有单）→ `MAppendPlaylistMedia`
+  （`{ id, type: 'track' }`，`count_tracks` 从 0→1）→ `GetPlaylistDetail` 回读曲目 → `getShareMedia` 取地址
+  → 下载 1,729,552B `m4a` → `MDeletePlaylists` 删临时单 + `GetMyPlaylists` 回读确认消失
+- 登录态整链路实测跑通（设备/会话 → `GetMyInfo` → 收藏盘点 → 逐首 `getShareMeta` + 封面落盘（sha256）→ 调用清单）：
+  首轮真实扫码把 `waiting → scanned → confirmed` 与 `sessionid` 落地跑通，11 次 goapi 调用全部 `http=200` 且带平台 logid
+
+### Changed
+
+- 措辞统一到「接口协议整理」口径：README/CHANGELOG/docs/注释里的旧提法一律改为「整理 / 对齐 / 官方分发包 / 拿到」；
+  合规段改为「仅供学习研究，请遵守平台服务条款」
+- 仓库结构收缩为本包一处（`packages/qishui-api/`），根目录只留 workspace 根（`packageManager` + `pnpm -r build` 等快捷脚本）
+
+### Corrected（实测推翻了先前的判断）
+
+- 喜欢的歌**不在** `GetMyMixedCollections`：该端点只装「收藏的歌单/专辑」（实测返回仅 `status_info`，即没有此类收藏）。
+  收藏曲目在自己的歌单里：`GetMyPlaylists`（「我喜欢的音乐」`type=1`、「抖音收藏的音乐」`type=4`）
+  → `GetPlaylistDetail` → `media_resources[].entity.track_wrapper.track`。已写进 `MAINTENANCE.md` §3
+- `my_stats.count_all_liked` 是「收到的点赞」（同行 `all_comments_liked_detail.popup` = "还没收到点赞"），
+  **不是收藏数**；实测某个账号该值为 0，而其喜欢歌单里有多首曲目
+- 歌词没有独立接口：`GetTrackV2Response` 内含 `lyric: track.TrackLyrics`，与音频同响应、同闸门；
+  全 320 端点的 path/name 无 `lyric`/`lrc`。README 早先「歌词走已封装的官方歌词接口」的说法是错的，已改
+- `GetMyFavoriteVideoList` / `GetMyCollectionVideoList` 实测 404（IDL 声明的 path 与线上不一致），已记录
+- 「POST 即写接口」是错的：`DiscoverView` / `DiscoverMix` / `FeedMode` / `FeedPlaylistSquare` / `FeedSongTab` /
+  `GetRelatedMedia` / `MCheckMedia` / `GetCommerceConfig` / `ShareCount` 都是 **POST 只读**。按 method 分类会把这 9 个
+  误判成写接口而跳过；改成先认读前缀（`Get|List|MGet|MCheck|Discover|Feed|Sug|Search|Share|Count|Check|Is|Has`），
+  剩下的才按写处理
+- 带会话跑时**可选字段不能一律填满**：`GetPlaylistDetail` 带上占位 `media` 直接 `1000004`，`type/scene/sort_type` 填 `0`
+  也是非法枚举。探测改为只发必填 + 有真样本的字段，且媒体类样本只喂给目标写接口（`ok_json` 因此 30→31）
+- `Playlist` 实体的字段名只能靠响应钉（`entity/playlist.ts` 在编译期被擦除）：标题是 `title` 不是 `name`，
+  计数是 `count_tracks`（另有 `resource_cnt` 是对象），`type=2` 为自建单；`MDeletePlaylists` 响应里**没有 `status_code`**，
+  成功标志是 `deleted_playlists` 数组带上该 id。写链路如果按 `name`/`status_code` 读会得出「建单没名字」「删单失败」的假结论
+- `parseShareLink` 的三级回落会误报：`/share/album?album_id=&comment_id=…` 拿评论 ID 当专辑 ID 返回。
+  改为精确键 `<kind>_id` 只要出现就只认它，值非法就返回 `undefined`；精确键缺席时（`modal_id` 这类）仍走回落
+- `GetSearchBlock` 的 `search_chart_block`（`hot_search_chart`/`hot_song_chart`/`new_song_chart`/`musician_song_chart`）
+  恒为空 —— `includes` 是 `SearchBlockType*` 白名单（`search_chart`/`search_hint`/`search_recommendation`），
+  `charts` 始终 absent；换 `scene_name` 无效。旁证：PC 客户端源码里既无「热搜」文案，也不调 `GetSearchBlock`
+  （不在 `idlMethods` 里）→ 它是 h5 / 移动端的东西。替代：`SuggestWords {suggest_type:'recommendation'}`
+- `GetChartDetail` 的 `chart_id` 不是常量名：喂 `hot_song_chart` 这类回 `1000004`，但喂 **`DiscoverView` 榜单块的
+  `inner_block_id`** 就正常返回 `chart{title,count_tracks,period,release_time,track_ranks[{rank,track}],style{desc…}}`
+  （热歌榜一次 ~150KB）—— 「320 个端点里没有列榜单的接口」不成立，榜单 id 就在 `DiscoverView` 里
+- **`Search` 匿名可用**（2026-10-17 复测推翻「恒 200+0 字节」的结论）：两条原因叠加 —— ① 可用的是
+  `/luna/search/<type>`（非 pc 变体），`/luna/pc/search/<type>` 恒空；② 请求**不能带 `debug_params`**
+  （传 `{}`/`'null'` 都回 `1000004`，整个字段不发就正常）。修复：`src/transport.ts` 加候选 path 回退
+  （读请求遇空响应 / 404 / 405 自动换下一条变体；写请求不回退，防重复写入）。`search_type` 的 7 个值由
+  `SearchCategories` 给出（all/track/video/artist/album/playlist/user）
+- 播放地址三个接口的闸门性质更精确了：手工直打（**绕过本库自己的拦截**）时 pc 变体 `200+0字节`、非 pc 变体回
+  `status_code=1000062 应用版本有风险，请从应用商店下载正式版本`
+- **删掉 `UnsupportedError`，改为「照发请求、遵从上游」**：那个异常是本库自己抛的，等于**拿本库的策略当接口结论**
+  （上游才是裁判）。现在 `GetTrackV2`/`GetMediaPlayer`/`GetVideoV2` 照常发请求，上游回 `1000062` / 空响应就如实报，
+  「实测拒答」只标在 `ENDPOINT_DATA[].gated` 上（不影响调用行为）。同理，**匿名口径不等于终局**：
+  拿不到不等于不可用，登录/会员态是没试过的变量（本轮已实测下面这条）
+- **登录态复测（2026-10-17，汽水音乐 App 扫码，账号 `is_vip:false`）**：只测上轮未结论的 14 条（`test/run.ts`
+  新增「已结论即 SKIP、复用上轮样本 id」逻辑，避免重复请求被风控）。**6 条翻盘拿数据**：`GetMyInfo`（`my_info{28}`
+  含 `is_vip`/`vip_stage`）、`GetMyPlaylists`（`playlists[2]`）、`GetBlockUserList`（**匿名回 `1000004`，
+  带会话正常** —— 正是「得登录才有数据」的例子）、`GetUploaderInfo`（imagex 直传凭据）、`GetMyPrivacySetting`
+  （6 个开关）、`Search2023`（h5 搜索，结果在 `result_groups[].data`）。3 条回 `status_code=0` 但空
+  （`GetMyMixedCollections`/`GetRecentPlayedMedia`/`GetDigitalAlbums` —— 账号里没数据，不是接口不通）。
+  `GetUserInfo` 带会话反被 captcha 拦（风控看频率不看登录态）；`GetReportReason` 仍 `1000004`（**后被写接口轮翻案**）、
+  `QueryTokenStatus` 上游 http 500。当时没验的剩两类：29 个写接口（**下一轮已全测**）、所有 VIP 相关行为
+- **写接口轮（2026-10-17，29 条全测、全部可回滚）**：新增 `test/write.ts`（每条「做 → 回读验证 → 撤销 → 再回读」）
+  与 `test/probe-writes.ts`（换参数/换 path 再试）。结果 **29 条全部 `status_code=0`**（唯一仍不通的是非写接口
+  `QueryTokenStatus`：上游 500）；
+  收尾 11 项安全复查全过（歌单数/关注数/黑名单/评论/最近播放/收藏/隐私设置回到原样）。4 条「乍看失败」被翻案：
+  ① `UpdatePlaylistInfo` 紧跟建单后改名回 `1000014`，**重试即通**；② `CreateComment` 的 `group_type` **必须 `0`(Track)**
+  （用 1 回 `5`），且**曲目评论区关着会回 `3056`**；③ `Report`/`GetReportReason` 的 `report_type` 是**字符串枚举**
+  （`"track"`）、`report_reason_code` 取 `GetReportReason` 的 `code`（`4001` 等）、path 用**非 pc** 的 `/luna/report`
+  —— 给数字/占位参数上游才 500，**之前记的「上游 500」是本库喂错参数**；④ `GetOffersTokensForPC` 给真
+  `offer_snapshot_id`+`report_param` 就回 `token`。另修两处字段名：`CommitBlockV2`/`CancelBlockV2` 用
+  `block_items:[{id,item_type}]`（不是 `user_id`）、收藏类批量接口用 `media[]`（`MCheckMedia` 才是 `media_list`）。
+  两条「写通道通、读回不落地」照实记：`AppendRecentlyPlayedMedia` 写了 `GetRecentPlayedMedia` 仍空、
+  `CollectArtists` 写回 `0` 但 `GetUserArtistCollection` 回读看不到
+- `test/login.ts` 改成**汽水音乐 App 扫码**（二维码 = `bff-pc.qishui.com/.../scan_login?token=…`，
+  此前文档写成「抖音扫码」是错的），并拆成 `--start`（出码）/`--poll`（等扫）两步；二维码借 npx 缓存里的
+  `qrcode-terminal` 画到终端，不给项目加依赖
+- README 早先「**这条边界跟入口无关**：即使换 h5 / web / 小程序 某个入口技术上能拿到一个可播 URL，本项目也不做」
+  是**未实测的断言**，实测被推翻：web 分享页匿名返回的 SSR 里就带着 `audio_mp4`/`video_mp4` 地址，无签名门槛。
+  入口的性质确实不同——被 gate 住的是 goapi 那三个接口要的 native 设备证明，不是媒体本身。
+  据此把边界改写为「goapi 拒绝 / web 分享页可达」，范围调整由 owner 于 2026-10-15 决定；
+  平台《服务协议》的授权口径与合规提示保持不变，用途自行评估
+
+### Not implemented（刻意不做）
+
+- goapi 播放地址（`GetTrackV2` / `GetMediaPlayer` / `GetVideoV2`）：依赖 native 设备证明与签名，**匿名与带会话实测都拒答**
+  （`1000062` / 空响应；会员态未验）。本库**照常发请求、由上游裁决**（不伪造 native attest，也不做模拟），
+  「实测拒答」标在 `ENDPOINT_DATA[].gated` 上；可播地址走 web 分享页（另一个入口，见 Added）
+- `entity/*` 响应叶子类型：源码在编译期被完全擦除，产物中不存在，只能生成为 `any`
