@@ -1,5 +1,5 @@
-import { API_BASE, APP_ID, APP_VERSION, CHANNEL, PACKAGE, userAgent, type DeviceIdentity } from '../params.js'
 import { QishuiError } from '../errors.js'
+import { API_BASE, APP_ID, APP_VERSION, CHANNEL, type DeviceIdentity, PACKAGE, userAgent } from '../params.js'
 
 export interface RegisterDeviceOptions {
   baseUrl?: string
@@ -60,7 +60,8 @@ export async function registerDevice(options: RegisterDeviceOptions = {}): Promi
     body: JSON.stringify(payload),
   })
   const json: any = await res.json().catch(() => null)
-  if (!json?.device_id_str) throw new QishuiError(`device_register 失败: HTTP ${res.status} ${JSON.stringify(json)?.slice(0, 200)}`)
+  if (!json?.device_id_str)
+    throw new QishuiError(`device_register 失败: HTTP ${res.status} ${JSON.stringify(json)?.slice(0, 200)}`)
   return {
     deviceId: String(json.device_id_str),
     installId: String(json.install_id_str ?? ''),

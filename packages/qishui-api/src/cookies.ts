@@ -13,7 +13,10 @@ export class CookieJar {
       const idx = raw.indexOf('=')
       if (idx < 0) continue
       const name = raw.slice(0, idx).trim()
-      const value = raw.slice(idx + 1).split(';')[0].trim()
+      const value = raw
+        .slice(idx + 1)
+        .split(';')[0]
+        .trim()
       if (value === '' || /max-age=0/i.test(raw)) this.map.delete(name)
       else this.map.set(name, value)
     }

@@ -146,10 +146,10 @@ blocks[1] type=discover_top_song_list
 | 端点 | 匿名 | 实测 | 能力 |
 |---|---|---|---|
 | `DiscoverMix` | ✅ | `inner_block[8~10]` | 按 `{block_type, sub_channel_id}` 下钻某个块（块名就是 `discover_feed_playlist` / `discover_playlist` 这类），换页/展开「更多」用 |
-| `FeedMode` | ✅ | `feed_mode_block[1]` + `feed_mode_bar` | 45 个场景音乐（`feed_scene_mode{scene_mode_id, sub_queue_type}`，标题如「图书馆/专注模式/摸鱼」）+ 偏好栏 3 项（`feed_preference_mode{mode}`，如 `default`=推荐） |
-| `FeedSongTab` | ✅ | `items[6]` | 单曲推荐流，`entity.track_wrapper.track` + `predict_info.model_preds`（打分，做排序/过滤可用） |
+| `FeedMode` | ✅ | `feed_mode_block[1]` + `feed_mode_bar` | 45 个场景音乐（`feed_scene_mode{scene_mode_id, sub_queue_type}`，标题如「图书馆/专注模式/摸鱼」）；偏好栏**只回当前选中的那一个**（实测只回 `default`=推荐），`familiar`/`fresh` 两个取值来自 IDL 常量（`PreferenceModeFamiliar`/`PreferenceModeFresh`），不是响应里枚举出来的 |
+| `FeedSongTab` | ✅ | `items[6]` | 单曲推荐流，`entity.track_wrapper.track` + `predict_info.model_preds`（打分，做排序/过滤可用）。`preference_mode` 实测对**任意值**都回 6 首（随机流，不能当验证），有效取值靠 IDL 常量。2026-10-17 补测：App 口径全量 body（`feed_mode:'track'`/`count`/会话计数/`played_tracks`〔字段名按 `MediaPlayed` 同构推，IDL 里 `TrackPlayed` 是 opaque〕）上游全收，`count=3` 就回 3 首；但「熟悉/新鲜是否改变出歌分布」仍未验证。core 现按此口径发，`played_tracks` 默认**不带**（只本地记历史、播放时长未向上游上报，主动带会暴露「只播不报」） |
 | `FeedPlaylistSquare` | ✅ | `items[14~17]` + `categories` | 歌单广场；`items[].entity.playlist` |
-| `FeedRadioTracks` | ✅ | `items[6]` | 电台续播：`radio_id` = 场景队列条目的 `inner_block_id` |
+| `FeedRadioTracks` | ✅ | `items[6]` | 电台续播：`radio_id` 实测两种都吃 —— 场景的 `scene_mode_id`（短数字，如 `2/3/5/48`）或首页场景块的 `inner_block_id`（雪花大数），各回 6 首 |
 | `GetChartDetail` | ✅ | `chart{…}`（~150KB） | 整榜明细：`chart_id` 取榜单块的 `inner_block_id` → `chart{title,count_tracks,period,release_time,track_ranks[{rank,track}],style{desc,bg_url…}}`。**不是** `hot_song_chart` 这种常量名（那样回 `1000004`） |
 | `GetFeaturedContents` | ✅ | `ok_thin`（空） | 精选推荐位，实测无数据，别指望 |
 
@@ -160,12 +160,14 @@ blocks[1] type=discover_top_song_list
 | `Sug` | ✅ | `sugs[10]` | 搜索联想。`{suggestion, content_type:'artist'\|'playlist'\|'track', entity:<kind>.id, group_id}` —— 只回词条与 id，不回完整实体 |
 | `SuggestWords` | ✅ | `suggest_words[6]` | 推荐搜索词，`{keyword, type, group_id}`，**是真实 track id**，当「猜你想搜」用 |
 | `SearchCategories` | ✅ | `search_category_tabs[7]` | 搜索页分类 tab，`{search_type, name}`，空 body 即可 |
-| `Search` | ✅ | `result_groups[1]`（track ~114KB） | **官方搜索，匿名可用**。走 `/luna/search/<type>`（非 pc 变体），q → `result_groups[{id,next_cursor,has_more,items}]`，分页靠 `next_cursor`；`search_type` 取 `SearchCategories` 的 7 个值（all/track/video/artist/album/playlist/user，all 会回 `top_results`）。**坑**：不能带 `debug_params`（传 `{}`/`'null'` 都回 `1000004`，不发就正常），且 `/luna/pc/search/<type>` 恒 `200+0字节` |
-| `Search2023` | 登录 | `result_groups[1]` + `extra{log_extra}` | h5 版搜索（`/luna/h5/search/`），**带会话可用**（已验）。注意 `result_groups[].data` 装结果（`Search` 那条叫 `items`，字段名不一样），另有 `display_view_all`/`display_title`/`display_type` 供渲染 |
+| `Search` | ✅ | `result_groups[{id,next_cursor,has_more,items}]`（track ~114KB） | **官方搜索，匿名可用**。走 `/luna/search/<type>`（非 pc 变体），分页靠 `next_cursor`；`search_type` 取 `SearchCategories` 的 7 个值（all/track/video/artist/album/playlist/user，all 会回 `top_results`）。结果实体在 `items[].entity.<kind>`（如 `entity.artist` / `entity.playlist`，**不是** `*_wrapper`）。**坑**：不能带 `debug_params`（传 `{}`/`'null'` 都回 `1000004`，不发就正常），且 `/luna/pc/search/<type>` 恒 `200+0字节` |
+| `Search2023` | 登录 | ~~`result_groups[].data`~~ | **已弃用，不再调用**：h5 旧接口（`/luna/h5/search/`），2023 年的东西可能过时，老接口更易被风控。搜索一律走 `Search` |
 | `FlowSearch` | ✗ | HTTP 404 | `/luna/flow/search/<type>` 这条 path 线上不存在 |
 | `GetSearchBlock` | ✅ | `hint_words[1]` | 只有 1 条占位提示词；`search_chart_block` 恒空（那是 h5/移动端的东西） |
 
 > `Search` 是首选；`Sug` / `SuggestWords` 做下拉与「猜你想搜」。三者字段名都以真实响应为准。
+>
+> **用户搜索（`search_type=user`）匿名与带会话都拿不到**：`/luna/search/user` 回 `200` 但 **body 里没有 `result_groups`**（175 字节，只有 `status_info`/`extra`），试过改 `search_method`（track/user/search/空）、`search_scene=user`、`scene_name=search_page` 都一样；`all` 的结果分组里也没有 `users` 分组。属**未验证 / 上游不返回**（PC 客户端那个「用户」tab 走哪条路尚未找到，不拿旧 h5 接口凑）。`artist`/`album`/`playlist` 匿名正常，实体在 `items[].entity.<kind>`。
 
 ### 3.4 曲目 / 专辑 / 艺人
 
@@ -346,8 +348,9 @@ blocks[1] type=discover_top_song_list
 
 **⑤ 场景电台 / 榜单**
 `FeedMode` 列 45 个场景 → 选中一个场景走 `DiscoverView` sceneMode 版拿 `discover_radio` 队列，
-或直接 `FeedRadioTracks { radio_id: <inner_block_id> }` 拿 6 首续播；榜单在 `DiscoverView` 空 body 版的
+或直接 `FeedRadioTracks { radio_id: <scene_mode_id 短数字 或 inner_block_id> }` 拿 6 首续播；榜单在 `DiscoverView` 空 body 版的
 `discover_top_song_list` 块里（热歌/新歌/欧美，各 48~50 首），要整榜再 `GetChartDetail { chart_id: <榜单块的 inner_block_id> }`。
+偏好流走 `FeedSongTab { preference_mode }`，取值 `default`/`familiar`/`fresh`（见 IDL 常量）。
 
 ---
 
@@ -370,7 +373,7 @@ blocks[1] type=discover_top_song_list
 三轮下来「读 + 写」都验过了（2026-10-17 又补了 8 条媒体类，见 §1）：
 
 - **匿名轮**：82 条里 32 条直接拿到数据（发现页/搜索/榜单/详情/评论/歌单广场/分享链接）。
-- **登录轮**：6 条翻盘（`GetMyInfo`/`GetMyPlaylists`/`GetBlockUserList`/`GetUploaderInfo`/`GetMyPrivacySetting`/`Search2023`），
+- **登录轮**：6 条翻盘（`GetMyInfo`/`GetMyPlaylists`/`GetBlockUserList`/`GetUploaderInfo`/`GetMyPrivacySetting`/`Search2023`；**`Search2023` 其后已弃用**，见 §3.3），
   3 条回空但结构正常（账号里没数据：`GetMyMixedCollections`/`GetRecentPlayedMedia`/`GetDigitalAlbums`）。
 - **写接口轮**：29 条实测**全部 `status_code=0`**（含 4 条换参数/换 path 翻案）；唯一不通的是**非写接口**的 `QueryTokenStatus`（上游 v1 GET 路由 500）。
   账号数据全程可回滚，收尾 11 项复查全过（详见 §3.12）。

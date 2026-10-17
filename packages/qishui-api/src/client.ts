@@ -1,20 +1,17 @@
-import { endpointFn, type EndpointName, type RequestOf, type ResponseOf } from './endpoints.js'
-import type { IRequestCaller } from './idl/_common.js'
-import { createCaller, type TransportOptions } from './transport.js'
-import { CookieJar, type CookieMap } from './cookies.js'
 import { registerDevice } from './auth/device.js'
-import { startQrLogin, type LoginContext, type QrLogin } from './auth/qr.js'
+import { type LoginContext, type QrLogin, startQrLogin } from './auth/qr.js'
+import { CookieJar, type CookieMap } from './cookies.js'
+import { type EndpointName, endpointFn, type RequestOf, type ResponseOf } from './endpoints.js'
+import type { IRequestCaller } from './idl/_common.js'
 import type { DeviceIdentity } from './params.js'
+import { createCaller, type TransportOptions } from './transport.js'
 
 /**
  * thrift 声明的 required 字段，官方客户端自己也会省略（服务端说了算），
  * 所以入参用 DeepPartial，避免调用方为了类型补齐一堆无意义的空值。
  */
-export type DeepPartial<T> = T extends Array<infer U>
-  ? Array<DeepPartial<U>>
-  : T extends object
-    ? { [K in keyof T]?: DeepPartial<T[K]> }
-    : T
+export type DeepPartial<T> =
+  T extends Array<infer U> ? Array<DeepPartial<U>> : T extends object ? { [K in keyof T]?: DeepPartial<T[K]> } : T
 
 export type RequestInput<K extends EndpointName> = DeepPartial<RequestOf<K>>
 
@@ -61,11 +58,7 @@ export async function createClient(options: ClientOptions = {}): Promise<Client>
     fetchImpl: options.fetchImpl,
 
     async request(key, req, opts) {
-      const fn = endpointFn(key) as unknown as (
-        c: IRequestCaller,
-        r: unknown,
-        ctx: unknown,
-      ) => Promise<any>
+      const fn = endpointFn(key) as unknown as (c: IRequestCaller, r: unknown, ctx: unknown) => Promise<any>
       // context.__key 让 transport 能区分跨模块重名端点
       const context: Record<string, unknown> = { __key: key }
       if (opts?.timeout) context.timeout = opts.timeout

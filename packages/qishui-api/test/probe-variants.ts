@@ -4,7 +4,7 @@
 // 直打逻辑共用 test/raw.ts（与 run.ts 同一套，保证「接口结论只看响应」）。
 import fs from 'node:fs'
 import { CATALOG, type Ctx } from './catalog.ts'
-import { loadDevice, probeVariants, classifyAttempts } from './raw.ts'
+import { classifyAttempts, loadDevice, probeVariants } from './raw.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
 const device = loadDevice(ROOT)
@@ -27,7 +27,7 @@ const DEFAULT = [
   'GetMediaPlayer',
   'GetVideoV2',
 ]
-const targets = process.argv.slice(2).filter((a) => !a.includes('=') )
+const targets = process.argv.slice(2).filter((a) => !a.includes('='))
 const overrides: Record<string, string> = {}
 for (const a of process.argv.slice(2)) {
   const i = a.indexOf('=')
@@ -45,8 +45,11 @@ for (const name of list) {
     continue
   }
   for (const a of attempts) {
-    const head = a.statusCode !== undefined ? `code=${a.statusCode} ${a.statusMsg ?? ''}` : a.error ?? a.text.slice(0, 150)
-    console.log(`  - ${a.method.padEnd(4)} ${a.path.padEnd(38)} http=${a.http} len=${String(a.len).padStart(6)}  ${head}`)
+    const head =
+      a.statusCode !== undefined ? `code=${a.statusCode} ${a.statusMsg ?? ''}` : (a.error ?? a.text.slice(0, 150))
+    console.log(
+      `  - ${a.method.padEnd(4)} ${a.path.padEnd(38)} http=${a.http} len=${String(a.len).padStart(6)}  ${head}`,
+    )
   }
   const c = classifyAttempts(attempts)
   console.log(`  => ${c.verdict}  ${c.sample ?? c.detail}`)

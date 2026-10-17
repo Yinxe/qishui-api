@@ -6,13 +6,14 @@
 // **扫的是「汽水音乐」App**，不是抖音：二维码内容 = bff-pc.qishui.com/light/invoke/scan_login?token=…
 // （汽水 PC 客户端同款深链，passport 侧 aid=386088 = com.soda.music）。
 // 本机没有 qrencode / python-qrcode，这里借 npx 缓存里的 qrcode-terminal 画 ASCII 二维码，不给项目加依赖。
-import fs from 'node:fs'
+
 import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { CookieJar } from '../dist/cookies.js'
 import { createClient } from '../dist/index.js'
 import { API_BASE, APP_ID, APP_VERSION, CHANNEL, userAgent } from '../dist/params.js'
-import { CookieJar } from '../dist/cookies.js'
 
 const ROOT = new URL('..', import.meta.url).pathname
 const DEVICE_FILE = ROOT + 'qishui-device.json'
@@ -47,7 +48,11 @@ function renderQr(text: string): string | null {
     try {
       return execFileSync(
         process.execPath,
-        ['-e', `require(${JSON.stringify(mod)}).generate(process.argv[1],{small:true},(s)=>process.stdout.write(s))`, text],
+        [
+          '-e',
+          `require(${JSON.stringify(mod)}).generate(process.argv[1],{small:true},(s)=>process.stdout.write(s))`,
+          text,
+        ],
         { encoding: 'utf8' },
       )
     } catch {
@@ -67,7 +72,13 @@ async function newClient() {
 
 const needState = () => {
   if (!fs.existsSync(STATE_FILE)) throw new Error(`没有中间态 ${STATE_FILE}，先跑 --start`)
-  return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) as { token: string; scanUrl: string; expiresAt: number; cookies: Record<string, string>; device: any }
+  return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) as {
+    token: string
+    scanUrl: string
+    expiresAt: number
+    cookies: Record<string, string>
+    device: any
+  }
 }
 
 async function start() {
@@ -79,14 +90,26 @@ async function start() {
   const qr = await client.qrLogin()
   fs.writeFileSync(
     STATE_FILE,
-    JSON.stringify({ token: qr.token, scanUrl: qr.scanUrl, expiresAt: qr.expiresAt, cookies: client.exportCookies(), device: client.device }, null, 2),
+    JSON.stringify(
+      {
+        token: qr.token,
+        scanUrl: qr.scanUrl,
+        expiresAt: qr.expiresAt,
+        cookies: client.exportCookies(),
+        device: client.device,
+      },
+      null,
+      2,
+    ),
   )
   console.log('[登录] 请用**汽水音乐 App**扫码（我的 → 扫一扫）：\n')
   const art = renderQr(qr.scanUrl)
   if (art) console.log(art)
   else console.log('（本机没有可用二维码渲染器，把下面这条链接丢给任意二维码生成器）')
   console.log(qr.scanUrl + '\n')
-  console.log(`[登录] 中间态已存 ${STATE_FILE}（token 过期时间 ${new Date(qr.expiresAt).toLocaleTimeString()}），接着跑 --poll`)
+  console.log(
+    `[登录] 中间态已存 ${STATE_FILE}（token 过期时间 ${new Date(qr.expiresAt).toLocaleTimeString()}），接着跑 --poll`,
+  )
 }
 
 async function poll(timeoutMs: number) {
@@ -107,7 +130,19 @@ async function poll(timeoutMs: number) {
     ...JSSDK,
   }
   const url = `${API_BASE}/passport/web/check_qrconnect/?${new URLSearchParams(common)}`
-  const STATUS: Record<string, string> = { '1': 'waiting', '2': 'scanned', '3': 'confirmed', '4': 'expired', new: 'waiting', waiting: 'waiting', scanned: 'scanned', scan: 'scanned', confirm: 'confirmed', confirmed: 'confirmed', expired: 'expired' }
+  const STATUS: Record<string, string> = {
+    '1': 'waiting',
+    '2': 'scanned',
+    '3': 'confirmed',
+    '4': 'expired',
+    new: 'waiting',
+    waiting: 'waiting',
+    scanned: 'scanned',
+    scan: 'scanned',
+    confirm: 'confirmed',
+    confirmed: 'confirmed',
+    expired: 'expired',
+  }
   const deadline = Date.now() + timeoutMs
   let last = ''
   while (Date.now() < deadline) {
@@ -123,7 +158,12 @@ async function poll(timeoutMs: number) {
     try {
       const res = await fetch(url, {
         method: 'POST',
-        headers: { 'user-agent': userAgent(), accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded', ...(cookies.header() ? { cookie: cookies.header() } : {}) },
+        headers: {
+          'user-agent': userAgent(),
+          accept: 'application/json',
+          'content-type': 'application/x-www-form-urlencoded',
+          ...(cookies.header() ? { cookie: cookies.header() } : {}),
+        },
         body: form.toString(),
       })
       const setCookie = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : []
@@ -146,7 +186,11 @@ async function poll(timeoutMs: number) {
     return
   }
   fs.writeFileSync(SESSION_FILE, JSON.stringify(cookies.toObject(), null, 2))
-  const client = await createClient({ device: st.device, cookies: JSON.parse(fs.readFileSync(SESSION_FILE, 'utf8')), timeout: 20_000 })
+  const client = await createClient({
+    device: st.device,
+    cookies: JSON.parse(fs.readFileSync(SESSION_FILE, 'utf8')),
+    timeout: 20_000,
+  })
   try {
     const me: any = await client.request('GetMyInfo', {})
     console.log(`[登录] 会话已写入 ${SESSION_FILE}  昵称=${me.my_info?.nickname ?? '?'}  uid=${me.my_info?.id ?? '?'}`)

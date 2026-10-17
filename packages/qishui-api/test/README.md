@@ -11,6 +11,8 @@
 | `sweep-all.ts` | 全量扫 320 个端点（启发式参数），找精选清单之外还有哪些匿名可用 |
 | `probe-variants.ts` | 变体试探：某端点回空/404 时，把它的每条 path 变体（pc / 非 pc、GET / POST）都打一遍；可带 `k=v` 覆盖参数 |
 | `probe-search.ts` | `Search` 系的手工参数矩阵（定位「不带 `debug_params` + 非 pc 变体」这个组合） |
+| `probe-feedmode.ts` | `FeedMode` 偏好/场景 + `FeedSongTab` 的 `preference_mode` + `FeedRadioTracks` 的 `radio_id`（短数字 `scene_mode_id` vs 雪花 `inner_block_id`）实测 |
+| `check-catalog.ts` | **参数回归闸门**（`pnpm run check:catalog`）：把 `catalog.ts` 每条端点的参数与 IDL 声明逐字核对（必填/位置/类型），当前 90 条 0 问题 |
 | `dump.ts` | 抓一批匿名接口的**完整响应**到 `/tmp/opencode/samples/*.json`，写文档/核对字段名用 |
 | `dump-details.ts` | 同上，补详情类（专辑/艺人/用户/权益/统计/Launch） |
 | `dump-login.ts` | 抓**登录态才拿到数据**那批的完整响应（`login-*.json`），文档字段靠它；跑一次就够 |
@@ -26,6 +28,7 @@ node --experimental-strip-types test/probe-writes.ts             # 写接口换�
 node --experimental-strip-types test/login.ts --start           # 出二维码（汽水音乐 App 扫）
 node --experimental-strip-types test/login.ts --poll            # 等扫码完成、落会话
 node --experimental-strip-types test/probe-variants.ts Search   # 试某个端点的所有 path 变体
+pnpm run check:catalog                                        # catalog 参数 vs IDL 一致性核对（0 问题才是干净）
 node --experimental-strip-types test/sweep-all.ts               # 320 端点全量扫
 node --experimental-strip-types test/dump.ts                    # 抓样本响应
 ```
@@ -35,7 +38,7 @@ node --experimental-strip-types test/dump.ts                    # 抓样本响�
 结果明细落在 `/tmp/opencode/endpoint-report.json`。
 
 > 上层 [`qishui-core`](../../qishui-core) 的端到端冒烟在 `packages/qishui-core/test/smoke.ts`
-> （会话迁移 → 曲库 → 播放器 → 媒体缓存落盘/命中，36 步），跑之前先 `pnpm --filter qishui-core run build`。
+> （会话迁移 → 曲库 → 播放器 → 媒体缓存落盘/命中，39 步），跑之前先 `pnpm --filter qishui-core run build`。
 
 **记录口径**：`UnsupportedError` 那类「本库自己抛的异常」不算接口结论 —— 接口能不能用只看真实响应
 （上游拒答就写清 `1000062`/空响应，并标注口径：**匿名/登录/会员三档里哪些试过、哪些没试**）。

@@ -33,6 +33,8 @@ export interface Entry {
   label?: string
   auth: AuthLevel
   write?: boolean
+  /** 已弃用：不再调用，也不会被实测台发送（理由写进 capability） */
+  deprecated?: boolean
   /** 这个接口能拿到什么 —— 文档正文就靠这一行 */
   capability: string
   params: (c: Ctx) => Record<string, unknown>
@@ -77,8 +79,7 @@ export const CATALOG: Entry[] = [
     name: 'DiscoverView',
     label: '推荐页版（空 body）',
     auth: 'anon',
-    capability:
-      '首页大盘：热歌榜/新歌榜/欧美榜（discover_track_top_list）+ 推荐歌单 + 场景队列，一次 159 个 resources',
+    capability: '首页大盘：热歌榜/新歌榜/欧美榜（discover_track_top_list）+ 推荐歌单 + 场景队列，一次 159 个 resources',
     params: () => ({}),
   },
   {
@@ -151,14 +152,17 @@ export const CATALOG: Entry[] = [
     group: '搜索',
     name: 'Search',
     auth: 'anon',
-    capability: '官方搜索（/luna/search/<type>）：q → result_groups[{id,next_cursor,has_more,items}]，分页靠 next_cursor。**匿名可用**（track 一次 ~114KB 完整实体）；search_type 取 SearchCategories 的 7 个值（all/track/video/artist/album/playlist/user）',
+    capability:
+      '官方搜索（/luna/search/<type>）：q → result_groups[{id,next_cursor,has_more,items}]，分页靠 next_cursor。**匿名可用**（track 一次 ~114KB 完整实体）；search_type 取 SearchCategories 的 7 个值（all/track/video/artist/album/playlist/user）',
     params: (c) => searchParams(c),
   },
   {
     group: '搜索',
     name: 'Search2023',
     auth: 'login',
-    capability: 'h5 版搜索（/luna/h5/search）：**带会话可用**（已验）。结果在 result_groups[].data（不是 Search 的 items），另有 display_view_all/display_title/display_type + extra{log_extra}',
+    deprecated: true,
+    capability:
+      '【已弃用，不再调用】h5 版搜索（/luna/h5/search）：2023 年的旧 h5 接口，要登录且可能过时，老接口更易被风控。搜索结果一律走 Search（/luna/search）',
     params: (c) => searchParams(c),
   },
   {
@@ -216,8 +220,11 @@ export const CATALOG: Entry[] = [
     group: '曲目 / 专辑 / 艺人',
     name: 'GetRelatedMedia',
     auth: 'anon',
-    capability: '相关推荐：给一首曲目 → 6 首相关曲目（含 album / artists），播放页「相似歌曲」',
-    params: (c) => ({ media_id: c.trackId, media_type: 'track', scene: '' }),
+    capability:
+      '相关推荐：给一首曲目 → 6 首相关曲目（含 album / artists），播放页「相似歌曲」。**必须用 `media_list` 指定曲目**：' +
+      '该端点的 IDL 只映射 `media_list`/`artist_ids`/`scene_name`/`media_type`/`req_count`…，写 `media_id` 会被静默丢弃（上游当没指定，回通用推荐；' +
+      '2026-10-17 定点复测：`media_id` 版与 `media_list` 版都回 `items[6]`，但条目内容不同）。core 的 `catalog.related()` 另带 `full_media`/`req_count`',
+    params: (c) => ({ media_list: [{ id: c.trackId, type: 'track' }] }),
   },
 
   // ---------------------------------------------------------------- 播放 / 媒体地址
@@ -232,7 +239,8 @@ export const CATALOG: Entry[] = [
     group: '播放 / 媒体地址',
     name: 'MCheckMedia',
     auth: 'anon',
-    capability: '批量可播性检查：media_list → 每条的权益判定（VIP/无版权/下架），播放前先问它（**这个端点就是 media_list**，别和 CollectMediaList 的 media 混淆）',
+    capability:
+      '批量可播性检查：media_list → 每条的权益判定（VIP/无版权/下架），播放前先问它（**这个端点就是 media_list**，别和 CollectMediaList 的 media 混淆）',
     params: (c) => ({ media_list: [{ id: c.trackId, type: 'track' }] }),
   },
   {
@@ -310,28 +318,32 @@ export const CATALOG: Entry[] = [
     group: '播放 / 媒体地址',
     name: 'GetTrack',
     auth: 'gated',
-    capability: '单曲信息（非 h5 path `/luna/track`）。匿名实测：`1000062 应用版本有风险`（上游客户端完整性校验）。库照发请求、不拦。**带会话/VIP 后未验证**',
-    params: (c) => ({ track_id: c.trackId, media_type: 'track', queue_type: '' }),
+    capability:
+      '单曲信息（非 h5 path `/luna/track`）。匿名实测：`1000062 应用版本有风险`（上游客户端完整性校验）。库照发请求、不拦。**带会话/VIP 后未验证**',
+    params: (c) => ({ track_id: c.trackId, media_type: 'track' }),
   },
   {
     group: '播放 / 媒体地址',
     name: 'GetH5Track',
     auth: 'gated',
-    capability: 'h5 path（`/luna/h5/track`）。匿名实测同 GetTrack：`1000062 应用版本有风险`。库照发请求、不拦。**带会话/VIP 后未验证**',
-    params: (c) => ({ track_id: c.trackId, media_type: 'track', queue_type: '' }),
+    capability:
+      'h5 path（`/luna/h5/track`）。匿名实测同 GetTrack：`1000062 应用版本有风险`。库照发请求、不拦。**带会话/VIP 后未验证**',
+    params: (c) => ({ track_id: c.trackId, media_type: 'track' }),
   },
   {
     group: '播放 / 媒体地址',
     name: 'GetH5TrackV2',
     auth: 'gated',
-    capability: 'h5 v2（`/luna/h5/track_v2`）。匿名实测：`1000062 应用版本有风险`。库照发请求、不拦。**带会话/VIP 后未验证**',
+    capability:
+      'h5 v2（`/luna/h5/track_v2`）。匿名实测：`1000062 应用版本有风险`。库照发请求、不拦。**带会话/VIP 后未验证**（这条用 `track.GetTrackV2Request`，比 GetTrack/GetH5Track 多一个必填的 `queue_type`）',
     params: (c) => ({ track_id: c.trackId, media_type: 'track', queue_type: '' }),
   },
   {
     group: '播放 / 媒体地址',
     name: 'GetTrackPlayerInfo',
     auth: 'gated',
-    capability: '播放器信息（`/luna/track_player`）。匿名实测：`1000062 应用版本有风险`。库照发请求、不拦。**带会话/VIP 后未验证**',
+    capability:
+      '播放器信息（`/luna/track_player`）。匿名实测：`1000062 应用版本有风险`。库照发请求、不拦。**带会话/VIP 后未验证**',
     params: (c) => ({ track_id: c.trackId, type: 'track' }),
   },
 
@@ -379,14 +391,16 @@ export const CATALOG: Entry[] = [
     group: '歌单 / 收藏（读）',
     name: 'GetMyPlaylists',
     auth: 'login',
-    capability: '我的歌单（已验 playlists[]）：含「我喜欢的音乐」(type=1)、「抖音收藏的音乐」(type=4) —— 取收藏曲目的唯一入口；条目带 title/count_tracks/url_cover/stats/type/from_feed/owner/all_sort_types',
+    capability:
+      '我的歌单（已验 playlists[]）：含「我喜欢的音乐」(type=1)、「抖音收藏的音乐」(type=4) —— 取收藏曲目的唯一入口；条目带 title/count_tracks/url_cover/stats/type/from_feed/owner/all_sort_types',
     params: () => ({ cursor: 0, count: 20, ab_param: '' }),
   },
   {
     group: '歌单 / 收藏（读）',
     name: 'GetMyMixedCollections',
     auth: 'login',
-    capability: '我的收藏混排：只装「收藏的歌单/专辑」，没有收藏的曲目（曲目在自建歌单里）。已验：不再被拦，status_code=0 —— 该账号没数据所以是空的',
+    capability:
+      '我的收藏混排：只装「收藏的歌单/专辑」，没有收藏的曲目（曲目在自建歌单里）。已验：不再被拦，status_code=0 —— 该账号没数据所以是空的',
     params: () => ({ cursor: 0, count: 20 }),
   },
   {
@@ -522,8 +536,9 @@ export const CATALOG: Entry[] = [
     name: 'DeleteCollectedMediaList',
     auth: 'login',
     write: true,
-    capability: '批量取消收藏',
-    params: (c) => ({ scene: 'track', media: [{ id: c.trackId, type: 'track' }] }),
+    capability:
+      '批量取消收藏。**参数是 `media[]`**（不是 `scene`+`media`：`CollectMediaList` 的 `scene` 在这个端点不存在，会被 IDL 静默丢弃）',
+    params: (c) => ({ media: [{ id: c.trackId, type: 'track' }] }),
   },
   {
     group: '歌单 / 收藏（写）',
@@ -547,7 +562,8 @@ export const CATALOG: Entry[] = [
     group: '用户 / 社交',
     name: 'GetUserInfo',
     auth: 'anon',
-    capability: '用户资料：昵称/头像/签名/关注粉丝数（别人的主页）。**风控敏感**：连打两次就被 captcha 拦（带会话也一样），降频重试',
+    capability:
+      '用户资料：昵称/头像/签名/关注粉丝数（别人的主页）。**风控敏感**：连打两次就被 captcha 拦（带会话也一样），降频重试',
     params: (c) => ({ user_id: c.userId, sec_uid: '' }),
   },
   {
@@ -584,7 +600,8 @@ export const CATALOG: Entry[] = [
     group: '用户 / 社交',
     name: 'GetBlockUserList',
     auth: 'login',
-    capability: '黑名单列表（分页，回 next_cursor）。**必须登录**：匿名回 1000004，带会话正常（已验）——「得登录才有数据」的典型',
+    capability:
+      '黑名单列表（分页，回 next_cursor）。**必须登录**：匿名回 1000004，带会话正常（已验）——「得登录才有数据」的典型',
     params: () => ({ cursor: 0, count: 20 }),
   },
   {
@@ -632,7 +649,8 @@ export const CATALOG: Entry[] = [
     name: 'CreateComment',
     auth: 'login',
     write: true,
-    capability: '发评论。**group_type 必须 0(Track)**（用 1 回 status_code=5）；曲目评论区关着时回 3056，换一首就能发（实测通过）',
+    capability:
+      '发评论。**group_type 必须 0(Track)**（用 1 回 status_code=5）；曲目评论区关着时回 3056，换一首就能发（实测通过）',
     params: (c) => ({ group_id: c.trackId, group_type: 0, text: 'qishui-api 写测', comment_type: 0 }),
   },
   {
@@ -664,8 +682,10 @@ export const CATALOG: Entry[] = [
     group: '行为上报',
     name: 'ShareCount',
     auth: 'anon',
-    capability: '分享计数上报',
-    params: (c) => ({ item_id: c.trackId, item_type: 'track' }),
+    capability:
+      '分享计数上报。**曲目要塞进 `items[]`**（顶层 `item_id`/`item_type` 会被 IDL 静默丢弃）；`share.ShareItem` 在 IDL 里是 `any`，' +
+      '字段名按 `GetShareInfo` 的 `item_id`/`item_type` 推——2026-10-17 定点复测：空 body 与 `items[]` 两版返回相同（都是空 JSON，无 `status_code`），上游不校验形状',
+    params: (c) => ({ items: [{ item_id: c.trackId, item_type: 'track' }] }),
   },
   {
     group: '行为上报',
@@ -679,7 +699,8 @@ export const CATALOG: Entry[] = [
     group: '行为上报',
     name: 'GetReportReason',
     auth: 'login',
-    capability: '举报原因枚举（举报弹窗的选项列表）。**report_type 是字符串枚举**：`track` 可用（实测 `report_reasons[]` 7 条，`{code:"4001", reason:"色情低俗"}`…）；给数字回 1000004',
+    capability:
+      '举报原因枚举（举报弹窗的选项列表）。**report_type 是字符串枚举**：`track` 可用（实测 `report_reasons[]` 7 条，`{code:"4001", reason:"色情低俗"}`…）；给数字回 1000004',
     params: () => ({ report_type: 'track' }),
   },
   {
@@ -687,7 +708,8 @@ export const CATALOG: Entry[] = [
     name: 'Report',
     auth: 'login',
     write: true,
-    capability: '提交举报。**参数**：content_id + report_type(字符串，"track") + report_reason_code（取 GetReportReason 的 `code`，如 "4001"）；path 用非 pc 的 `/luna/report`（pc 那条会回 101「你已举报过」）。给数字/占位参数上游直接 500 —— 这才是之前判死的原因',
+    capability:
+      '提交举报。**参数**：content_id + report_type(字符串，"track") + report_reason_code（取 GetReportReason 的 `code`，如 "4001"）；path 用非 pc 的 `/luna/report`（pc 那条会回 101「你已举报过」）。给数字/占位参数上游直接 500 —— 这才是之前判死的原因',
     params: (c) => ({ content_id: c.trackId, report_type: 'track', report_reason_code: '4001' }),
   },
 
@@ -705,7 +727,8 @@ export const CATALOG: Entry[] = [
     name: 'UpdateMyPrivacySetting',
     auth: 'login',
     write: true,
-    capability: '隐私设置写。参数是 4 个数值开关：follow_info_visibility / sync_video_to_luna / my_favorite_visibility / music_wall_visibility（写测里用「读到的原值回写」验证通道，不改任何东西）',
+    capability:
+      '隐私设置写。参数是 4 个数值开关：follow_info_visibility / sync_video_to_luna / my_favorite_visibility / music_wall_visibility（写测里用「读到的原值回写」验证通道，不改任何东西）',
     params: () => ({}),
   },
 
@@ -766,7 +789,8 @@ export const CATALOG: Entry[] = [
     group: '商业化 / 会员',
     name: 'QueryTokenStatus',
     auth: 'login',
-    capability: '**上游 500**：GET `/luna/pc/commerce/offers/tokens/status`（v1）无论参数都回 HTTP 500；同 token 走 POST 的 v2 `GetOffersTokensStatusForPC` 正常 → 这条路疑似已下线',
+    capability:
+      '**上游 500**：GET `/luna/pc/commerce/offers/tokens/status`（v1）无论参数都回 HTTP 500；同 token 走 POST 的 v2 `GetOffersTokensStatusForPC` 正常 → 这条路疑似已下线',
     params: () => ({ token: '' }),
   },
 ]

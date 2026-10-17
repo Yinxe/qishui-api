@@ -1,6 +1,6 @@
 import { QishuiError } from '../errors.js'
 import { getImageUrl, type ImageResource } from './image.js'
-import { resolveShareLink, type ResolveOptions, type ShareItem } from './share.js'
+import { type ResolveOptions, resolveShareLink, type ShareItem } from './share.js'
 
 /** KRC 逐字歌词的一个词：带本词的起止毫秒 */
 export interface ShareLyricWord {
@@ -150,7 +150,8 @@ function toMedia(item: ShareItem, loader: any, coverWidth?: number): ShareMedia 
     throw new QishuiError(`分享页没有给出可播地址（多为版权或 VIP 限制）：${item.kind}/${item.id}`)
 
   // getImageUrl 拿不到图时给空串，所以用 || 依次回落
-  const albumCover = item.kind === 'track' ? getImageUrl(info?.album?.url_cover as ImageResource, { width: coverWidth }) : ''
+  const albumCover =
+    item.kind === 'track' ? getImageUrl(info?.album?.url_cover as ImageResource, { width: coverWidth }) : ''
   const cover = albumCover || track?.coverURL || track?.metaURL || undefined
 
   return {
@@ -161,7 +162,13 @@ function toMedia(item: ShareItem, loader: any, coverWidth?: number): ShareMedia 
     duration_ms:
       info?.duration ?? (typeof track?.duration === 'number' ? Math.round(track.duration * 1000) : undefined),
     title: info?.name ?? track?.videoName,
-    artist: info?.artists?.map((a: any) => a?.name).filter(Boolean).join(',') || track?.artistName || undefined,
+    artist:
+      info?.artists
+        ?.map((a: any) => a?.name)
+        .filter(Boolean)
+        .join(',') ||
+      track?.artistName ||
+      undefined,
     cover_url: cover,
     vid: track?.vid,
     expires_at: expiresAtOf(play_url),
@@ -181,21 +188,26 @@ function toMedia(item: ShareItem, loader: any, coverWidth?: number): ShareMedia 
  * 不请求 goapi 的 `GetTrackV2`/`GetMediaPlayer`/`GetVideoV2`，也不构造它们的签名。
  * 地址是带签名的，`expires_at` 到期就废，需要重新解析。
  */
-export async function getShareMedia(
-  input: string | ShareItem,
-  options: ShareMediaOptions = {},
-): Promise<ShareMedia> {
+export async function getShareMedia(input: string | ShareItem, options: ShareMediaOptions = {}): Promise<ShareMedia> {
   const item = await resolveShareLink(input, options)
   if (!PAGE_KINDS.has(item.kind))
     throw new QishuiError(`分享页只有 track / ugc_video 带可播地址，当前是 ${item.kind}/${item.id}`)
 
   const res = await (options.fetchImpl ?? fetch)(pageUrlFor(item), {
-    headers: { 'user-agent': options.userAgent ?? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36' },
+    headers: {
+      'user-agent':
+        options.userAgent ??
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+    },
+    signal: options.signal,
   })
   if (!res.ok) throw new QishuiError(`分享页 HTTP ${res.status}：${item.kind}/${item.id}`)
 
   const loaderData = extractRouterData(await res.text())?.loaderData
   const loader = item.kind === 'track' ? loaderData?.track_page : loaderData?.ugc_video_page
-  if (!loader) throw new QishuiError(`分享页缺少 loaderData.${item.kind === 'track' ? 'track_page' : 'ugc_video_page'}，页面可能已改版`)
+  if (!loader)
+    throw new QishuiError(
+      `分享页缺少 loaderData.${item.kind === 'track' ? 'track_page' : 'ugc_video_page'}，页面可能已改版`,
+    )
   return toMedia(item, loader, options.cover_width)
 }

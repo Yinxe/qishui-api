@@ -21,17 +21,17 @@ const dump = async (tag: string, key: any, params: any) => {
   }
 }
 
-const discover = await dump('discoverView', 'DiscoverView', {})
+await dump('discoverView', 'DiscoverView', {})
 await new Promise((r) => setTimeout(r, 1200))
-const songTab: any = await dump('feedSongTab', 'FeedSongTab', {})
+await dump('feedSongTab', 'FeedSongTab', {})
 await new Promise((r) => setTimeout(r, 1200))
-const related = await dump('relatedMedia', 'GetRelatedMedia', { media_id: '7168861366286190604', media_type: 'track', scene: '' })
+await dump('relatedMedia', 'GetRelatedMedia', { media_list: [{ id: '7168861366286190604', type: 'track' }] })
 await new Promise((r) => setTimeout(r, 1200))
-const share = await dump('shareInfo', 'GetShareInfo', { item_type: 'track', item_id: '7168861366286190604', extra: {}, scene: '' })
+await dump('shareInfo', 'GetShareInfo', { item_type: 'track', item_id: '7168861366286190604', extra: {}, scene: '' })
 await new Promise((r) => setTimeout(r, 1200))
-const comments: any = await dump('listComments', 'ListComments', { group_id: '7168861366286190604', cursor: 0, count: 20, group_type: 1 })
+await dump('listComments', 'ListComments', { group_id: '7168861366286190604', cursor: 0, count: 20, group_type: 1 })
 await new Promise((r) => setTimeout(r, 1200))
-const playlist = await dump('playlistDetail', 'GetPlaylistDetail', {
+await dump('playlistDetail', 'GetPlaylistDetail', {
   playlist_id: '7031087145604745223',
   cursor: 0,
   count: 20,
@@ -40,12 +40,15 @@ const playlist = await dump('playlistDetail', 'GetPlaylistDetail', {
   ab_param: '',
 })
 await new Promise((r) => setTimeout(r, 1200))
-const sug = await dump('sug', 'Sug', { q: '晴天', sug_scene: 'search_sug', sug_search_id: '' })
+await dump('sug', 'Sug', { q: '晴天', sug_scene: 'search_sug', sug_search_id: '' })
 await new Promise((r) => setTimeout(r, 1200))
-const sblock = await dump('searchBlock', 'GetSearchBlock', {})
+await dump('searchBlock', 'GetSearchBlock', {})
 await new Promise((r) => setTimeout(r, 1200))
 await dump('feedMode', 'FeedMode', {})
 await new Promise((r) => setTimeout(r, 1200))
 await dump('feedPlaylistSquare', 'FeedPlaylistSquare', { category_id: '' })
 await new Promise((r) => setTimeout(r, 1200))
-await dump('discoverMix', 'DiscoverMix', { block_type: 'discover_feed_playlist', sub_channel_id: 'discover_feed_playlist' })
+await dump('discoverMix', 'DiscoverMix', {
+  block_type: 'discover_feed_playlist',
+  sub_channel_id: 'discover_feed_playlist',
+})

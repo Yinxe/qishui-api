@@ -1,6 +1,6 @@
 {
   "name": "qishui-api",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "汽水音乐 (SodaMusic) PC 端接口 TypeScript 客户端（320 端点 IDL + 纯 HTTP 请求层）",
   "type": "module",
   "main": "./dist/index.js",
@@ -16,7 +16,8 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "check:catalog": "node --experimental-strip-types test/check-catalog.ts"
   },
   "engines": {
     "node": ">=20"

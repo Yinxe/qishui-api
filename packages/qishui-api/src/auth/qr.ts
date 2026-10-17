@@ -1,6 +1,6 @@
-import { API_BASE, APP_ID, APP_VERSION, CHANNEL, userAgent, type DeviceIdentity } from '../params.js'
 import type { CookieJar } from '../cookies.js'
 import { AuthRequiredError, QishuiError } from '../errors.js'
+import { API_BASE, APP_ID, APP_VERSION, CHANNEL, type DeviceIdentity, userAgent } from '../params.js'
 
 /** passport "lite" jssdk 参数：缺任一项会被网关判成版本过低（error_code 4031） */
 const JSSDK = {
@@ -45,7 +45,13 @@ export interface QrLogin {
   wait(intervalMs?: number, timeoutMs?: number): Promise<QrStatus>
 }
 
-async function call(ctx: LoginContext, method: 'GET' | 'POST', path: string, query: Record<string, string>, form?: Record<string, string>) {
+async function call(
+  ctx: LoginContext,
+  method: 'GET' | 'POST',
+  path: string,
+  query: Record<string, string>,
+  form?: Record<string, string>,
+) {
   const url = `${ctx.baseUrl ?? API_BASE}${path}?${new URLSearchParams(query)}`
   const headers: Record<string, string> = {
     'user-agent': userAgent(),
@@ -103,35 +109,24 @@ export async function startQrLogin(ctx: LoginContext): Promise<QrLogin> {
   }
 
   // 真正要编码的是 bff-pc 的 scan_login 深链，token 取自 qrcode_index_url
-  const indexToken = d.qrcode_index_url
-    ? new URL(d.qrcode_index_url).searchParams.get('token')
-    : null
+  const indexToken = d.qrcode_index_url ? new URL(d.qrcode_index_url).searchParams.get('token') : null
   const scanUrl = new URL('https://bff-pc.qishui.com/light/invoke/scan_login')
   scanUrl.searchParams.set('token', indexToken ?? d.token)
   scanUrl.searchParams.set('os', 'Windows')
   scanUrl.searchParams.set('computer_name', 'qishui-api')
   const content = scanUrl.toString().replaceAll('+', '%20')
 
-  const expiresAt = Math.min(
-    (d.expire_time ?? Math.floor(Date.now() / 1000) + 60) * 1000,
-    Date.now() + 300_000,
-  )
+  const expiresAt = Math.min((d.expire_time ?? Math.floor(Date.now() / 1000) + 60) * 1000, Date.now() + 300_000)
 
   async function check(): Promise<QrStatus> {
-    const r = await call(
-      ctx,
-      'POST',
-      '/passport/web/check_qrconnect/',
-      common,
-      {
-        need_logo: 'false',
-        need_short_url: 'false',
-        is_frontier: 'true',
-        token: d.token,
-        is_new_login: '1',
-        next: base,
-      },
-    )
+    const r = await call(ctx, 'POST', '/passport/web/check_qrconnect/', common, {
+      need_logo: 'false',
+      need_short_url: 'false',
+      is_frontier: 'true',
+      token: d.token,
+      is_new_login: '1',
+      next: base,
+    })
     return STATUS_MAP[String(r?.data?.status ?? '')] ?? 'unknown'
   }
 

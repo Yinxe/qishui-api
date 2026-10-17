@@ -12,7 +12,10 @@ export const StatusCode = {
 } as const
 
 export class QishuiError extends Error {
-  constructor(message: string, readonly detail?: unknown) {
+  constructor(
+    message: string,
+    readonly detail?: unknown,
+  ) {
     super(message)
     this.name = new.target.name
   }
@@ -41,7 +44,10 @@ export class AuthRequiredError extends QishuiError {}
  * 官方客户端在这里会弹出验证码窗口，纯 HTTP 客户端无法替用户完成，只能上抛。
  */
 export class RiskControlError extends QishuiError {
-  constructor(readonly kind: 'captcha' | 'passport-second-verify', readonly challenge: string) {
+  constructor(
+    readonly kind: 'captcha' | 'passport-second-verify',
+    readonly challenge: string,
+  ) {
     super(`命中风控(${kind})，需人工完成验证后重试`)
   }
 }

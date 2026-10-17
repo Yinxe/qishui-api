@@ -1,9 +1,9 @@
 // Search 系接口的手工变体试探：绕过 transport 的自动选路，直接按 path × method × 参数形态打。
 //   node --experimental-strip-types test/probe-search.ts
-import fs from 'node:fs'
+
 import { randomUUID } from 'node:crypto'
-import { createHash } from 'node:crypto'
-import { commonParams, userAgent, API_BASE, bodyMd5 } from '../dist/params.js'
+import fs from 'node:fs'
+import { API_BASE, bodyMd5, commonParams, userAgent } from '../dist/params.js'
 
 const ROOT = new URL('..', import.meta.url).pathname
 const device = JSON.parse(fs.readFileSync(ROOT + 'qishui-device.json', 'utf8'))
@@ -12,8 +12,13 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 async function raw(path: string, method: 'GET' | 'POST', query: Record<string, string>, body?: unknown) {
   const url = new URL(path, API_BASE)
-  for (const [k, v] of Object.entries({ ...common, ...query })) if (v !== undefined && v !== null) url.searchParams.set(k, String(v))
-  const headers: Record<string, string> = { 'user-agent': userAgent(), accept: 'application/json', 'x-luna-is-local-user': '0' }
+  for (const [k, v] of Object.entries({ ...common, ...query }))
+    if (v !== undefined && v !== null) url.searchParams.set(k, String(v))
+  const headers: Record<string, string> = {
+    'user-agent': userAgent(),
+    accept: 'application/json',
+    'x-luna-is-local-user': '0',
+  }
   let payload: string | undefined
   if (method === 'POST' && body !== undefined) {
     payload = JSON.stringify(body)
@@ -54,9 +59,19 @@ const cases: Array<[string, string, 'GET' | 'POST', Record<string, string>, unkn
   ['裸 GET artist · debug=""', '/luna/search/artist', 'GET', baseQuery('artist', '')],
   ['裸 GET playlist · debug=""', '/luna/search/playlist', 'GET', baseQuery('playlist', '')],
   ['裸 GET · method=search', '/luna/search/track', 'GET', { ...baseQuery('track', ''), search_method: 'search' }],
-  ['裸 GET · 无 cursor/search_scene', '/luna/search/track', 'GET', { q: '晴天', search_id: SEARCH_ID, search_method: 'track', debug_params: '' }],
+  [
+    '裸 GET · 无 cursor/search_scene',
+    '/luna/search/track',
+    'GET',
+    { q: '晴天', search_id: SEARCH_ID, search_method: 'track', debug_params: '' },
+  ],
   ['裸 POST · body 带 debug=""', '/luna/search/track', 'POST', {}, { ...baseQuery('track', ''), search_type: 'track' }],
-  ['pc GET · debug="" + scene_name', '/luna/pc/search/track', 'GET', { ...baseQuery('track', ''), scene_name: 'search_page' }],
+  [
+    'pc GET · debug="" + scene_name',
+    '/luna/pc/search/track',
+    'GET',
+    { ...baseQuery('track', ''), scene_name: 'search_page' },
+  ],
   ['pc GET · method=search', '/luna/pc/search/track', 'GET', { ...baseQuery('track', ''), search_method: 'search' }],
 ]
 

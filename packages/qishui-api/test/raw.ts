@@ -5,7 +5,7 @@
 // ③ 库返回了什么就记什么 —— 本库不代上游下结论（早先那种「自己抛 UnsupportedError 拦截请求」已删除）。
 import fs from 'node:fs'
 import { ENDPOINT_DATA } from '../dist/endpoints.js'
-import { commonParams, userAgent, API_BASE, bodyMd5 } from '../dist/params.js'
+import { API_BASE, bodyMd5, commonParams, userAgent } from '../dist/params.js'
 
 export type EndpointDef = (typeof ENDPOINT_DATA)[number]
 
@@ -60,14 +60,25 @@ export function fillPath(path: string, params: Record<string, unknown>): string 
   return missing ? null : filled
 }
 
-async function send(device: any, path: string, method: string, query: Record<string, unknown>, body?: Record<string, unknown>, cookie?: string) {
+async function send(
+  device: any,
+  path: string,
+  method: string,
+  query: Record<string, unknown>,
+  body?: Record<string, unknown>,
+  cookie?: string,
+) {
   const url = new URL(path, API_BASE)
   for (const [k, v] of Object.entries({ ...commonParams({ device }), ...query })) {
     if (v === undefined || v === null) continue
     if (Array.isArray(v)) for (const i of v) url.searchParams.append(k, String(i))
     else url.searchParams.set(k, String(v))
   }
-  const headers: Record<string, string> = { 'user-agent': userAgent(), accept: 'application/json', 'x-luna-is-local-user': '0' }
+  const headers: Record<string, string> = {
+    'user-agent': userAgent(),
+    accept: 'application/json',
+    'x-luna-is-local-user': '0',
+  }
   if (cookie) headers.cookie = cookie
   let payload: string | undefined
   if (method === 'POST' && body !== undefined) {
@@ -95,7 +106,13 @@ export async function probeVariants(
     const { query, body } = splitParams(def, params, p.method)
     try {
       const r = await send(opts.device, path, p.method, query, p.method === 'POST' ? body : undefined, opts.cookie)
-      const a: Attempt = { method: p.method, path, http: r.http, len: r.len, text: r.text.replace(/\s+/g, ' ').slice(0, 400) }
+      const a: Attempt = {
+        method: p.method,
+        path,
+        http: r.http,
+        len: r.len,
+        text: r.text.replace(/\s+/g, ' ').slice(0, 400),
+      }
       if (r.text) {
         try {
           const j = JSON.parse(r.text)
@@ -124,7 +141,11 @@ export async function probeVariants(
 }
 
 /** 把逐条观测归成一个接口级结论（只看响应，不看库） */
-export function classifyAttempts(attempts: Attempt[]): { verdict: 'ok_json' | 'ok_thin' | 'client_rejected' | 'biz_error' | 'empty_body' | 'error'; detail: string; sample?: string } {
+export function classifyAttempts(attempts: Attempt[]): {
+  verdict: 'ok_json' | 'ok_thin' | 'client_rejected' | 'biz_error' | 'empty_body' | 'error'
+  detail: string
+  sample?: string
+} {
   if (!attempts.length) return { verdict: 'error', detail: '没有可打的 path（路径参数缺失）' }
   const withData = attempts.find((a) => a.statusCode === 0 && a.meaningful?.length)
   if (withData) {
@@ -139,7 +160,11 @@ export function classifyAttempts(attempts: Attempt[]): { verdict: 'ok_json' | 'o
   // 1000062 = 上游明确回「应用版本有风险，请从应用商店下载正式版本」：这是上游对客户端的拒绝，
   // 不是参数问题、也不是本库的策略 —— 换个参数 / 带 cookie 都不会变。
   const gated = attempts.find((a) => a.statusCode === 1000062)
-  if (gated) return { verdict: 'client_rejected', detail: `status_code=1000062 ${gated.statusMsg ?? ''}（${gated.method} ${gated.path}）` }
+  if (gated)
+    return {
+      verdict: 'client_rejected',
+      detail: `status_code=1000062 ${gated.statusMsg ?? ''}（${gated.method} ${gated.path}）`,
+    }
   const rejected = attempts.find((a) => a.statusCode !== undefined && a.statusCode !== 0)
   if (rejected) {
     return {
@@ -150,6 +175,10 @@ export function classifyAttempts(attempts: Attempt[]): { verdict: 'ok_json' | 'o
   const dead = attempts.find((a) => a.http === 200 && a.len === 0)
   if (dead) return { verdict: 'empty_body', detail: `${dead.method} ${dead.path} → 200 + 0 字节` }
   const err = attempts.find((a) => a.error || a.http >= 400)
-  if (err) return { verdict: 'error', detail: err.error ? `${err.method} ${err.path} ${err.error}` : `HTTP ${err.http} (${err.method} ${err.path})` }
+  if (err)
+    return {
+      verdict: 'error',
+      detail: err.error ? `${err.method} ${err.path} ${err.error}` : `HTTP ${err.http} (${err.method} ${err.path})`,
+    }
   return { verdict: 'error', detail: `${attempts[0].len} 字节响应无法归类` }
 }

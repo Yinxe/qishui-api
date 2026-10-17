@@ -4,11 +4,20 @@
 //
 // 说明：这是「依次发一遍、看回什么」的实测器，不是断言式测试。
 // 写接口在未登录时会被 1000016 挡掉（安全），登录后默认跳过（LLM/人要看就 ALLOW_WRITE=1）。
-import fs from 'node:fs'
+
 import { randomUUID } from 'node:crypto'
-import { createClient, registerDevice, QishuiError, ApiError, AuthRequiredError, RiskControlError, TransportError } from '../dist/index.js'
-import { CATALOG, GROUPS, type Ctx, type Entry } from './catalog.ts'
-import { probeVariants, classifyAttempts } from './raw.ts'
+import fs from 'node:fs'
+import {
+  ApiError,
+  AuthRequiredError,
+  createClient,
+  QishuiError,
+  RiskControlError,
+  registerDevice,
+  TransportError,
+} from '../dist/index.js'
+import { CATALOG, type Ctx, type Entry, GROUPS } from './catalog.ts'
+import { classifyAttempts, probeVariants } from './raw.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
 const DEVICE_FILE = ROOT + 'qishui-device.json'
@@ -81,7 +90,12 @@ function harvest(root: unknown, opts: { radio?: boolean } = {}) {
       ctx.chartId = node.inner_block_id
     }
     if (!ctx.vid && typeof node.vid === 'string' && node.duration != null) ctx.vid = node.vid
-    if (!ctx.mixBlockType && typeof node.type === 'string' && /^discover_(playlist|track)/.test(node.type) && path.length <= 4) {
+    if (
+      !ctx.mixBlockType &&
+      typeof node.type === 'string' &&
+      /^discover_(playlist|track)/.test(node.type) &&
+      path.length <= 4
+    ) {
       ctx.mixBlockType = node.type
     }
     for (const [k, v] of Object.entries(node)) walk(v, [...path, k])
@@ -107,7 +121,11 @@ if (prevReport?.ctx) {
   const discover: any = await tryCall('DiscoverView', {}, 'DiscoverView')
   if (discover) harvest(discover)
   await sleep(PACE_MS)
-  const scene: any = await tryCall('DiscoverView', { first_request: true, pc_new_discover_request: true }, 'DiscoverView(sceneMode)')
+  const scene: any = await tryCall(
+    'DiscoverView',
+    { first_request: true, pc_new_discover_request: true },
+    'DiscoverView(sceneMode)',
+  )
   if (scene) harvest(scene, { radio: true })
   await sleep(PACE_MS)
   const songTab: any = await tryCall('FeedSongTab', {}, 'FeedSongTab')
@@ -119,7 +137,11 @@ if (prevReport?.ctx) {
   // 有 trackId + artistId 后，补齐 commentId / radioId / playlistId
   if (ctx.trackId) {
     await sleep(PACE_MS)
-    const comments: any = await tryCall('ListComments', { group_id: ctx.trackId, cursor: 0, count: 20, group_type: 1 }, 'ListComments')
+    const comments: any = await tryCall(
+      'ListComments',
+      { group_id: ctx.trackId, cursor: 0, count: 20, group_type: 1 },
+      'ListComments',
+    )
     if (comments) harvest(comments)
     const first = comments?.comments?.[0] ?? comments?.comment_list?.[0]
     if (first?.id) ctx.commentId = String(first.id)
@@ -132,7 +154,16 @@ console.log(
 )
 
 // ---------------------------------------------------------------- 依次实测
-type Verdict = 'ok_json' | 'ok_thin' | 'login_required' | 'biz_error' | 'client_rejected' | 'empty_body' | 'risk_control' | 'skipped' | 'error'
+type Verdict =
+  | 'ok_json'
+  | 'ok_thin'
+  | 'login_required'
+  | 'biz_error'
+  | 'client_rejected'
+  | 'empty_body'
+  | 'risk_control'
+  | 'skipped'
+  | 'error'
 interface Result {
   group: string
   name: string
@@ -190,16 +221,44 @@ for (const group of GROUPS) {
   for (const e of entries) {
     n++
     const label = e.label ? `${e.name} · ${e.label}` : e.name
+    if (e.deprecated) {
+      console.log(`  ${String(n).padStart(2)}. ${label.padEnd(46)} SKIP   已弃用，不发请求`)
+      results.push({
+        group,
+        name: e.name,
+        label: e.label,
+        verdict: 'skipped',
+        detail: '已弃用',
+        sent: false,
+      })
+      continue
+    }
     const known = prevVerdicts.get(labelOf(e))
     if (known && DONE_VERDICTS.has(known)) {
-      console.log(`  ${String(n).padStart(2)}. ${label.padEnd(46)} SKIP   沿用上轮结论（${known}），未重发（FORCE=1 可重测）`)
+      console.log(
+        `  ${String(n).padStart(2)}. ${label.padEnd(46)} SKIP   沿用上轮结论（${known}），未重发（FORCE=1 可重测）`,
+      )
       // 注意：这里要把**上轮的结论**记下来，不能记 'skipped' —— 否则下一轮就丢了这条的结论，会重复打
-      results.push({ group, name: e.name, label: e.label, verdict: known as Verdict, detail: `未重发（沿用上轮结论：${known}）`, sent: false })
+      results.push({
+        group,
+        name: e.name,
+        label: e.label,
+        verdict: known as Verdict,
+        detail: `未重发（沿用上轮结论：${known}）`,
+        sent: false,
+      })
       continue
     }
     if (e.write && SKIP_WRITE) {
       console.log(`  ${String(n).padStart(2)}. ${label.padEnd(46)} SKIP   有会话，写接口默认不跑（ALLOW_WRITE=1 可开）`)
-      results.push({ group, name: e.name, label: e.label, verdict: 'skipped', detail: '有会话，写接口默认跳过', sent: false })
+      results.push({
+        group,
+        name: e.name,
+        label: e.label,
+        verdict: 'skipped',
+        detail: '有会话，写接口默认跳过',
+        sent: false,
+      })
       continue
     }
     if (e.auth === 'gated') {
@@ -207,12 +266,25 @@ for (const group of GROUPS) {
       // POST 请求 transport 不回退，只看库选中的那一条可能恰好是「空响应」的变体，信息量不够。
       const attempts = await probeVariants(e.name, e.params(ctx) as any, { device, paceMs: PACE_MS })
       for (const a of attempts) {
-        const tail = a.statusCode !== undefined ? `code=${a.statusCode} ${a.statusMsg ?? ''}` : (a.error ?? '（无 body）')
-        console.log(`     · ${a.method.padEnd(4)} ${a.path.padEnd(32)} http=${a.http} len=${String(a.len).padStart(6)}  ${tail}`)
+        const tail =
+          a.statusCode !== undefined ? `code=${a.statusCode} ${a.statusMsg ?? ''}` : (a.error ?? '（无 body）')
+        console.log(
+          `     · ${a.method.padEnd(4)} ${a.path.padEnd(32)} http=${a.http} len=${String(a.len).padStart(6)}  ${tail}`,
+        )
       }
       const c = classifyAttempts(attempts)
-      console.log(`  ${String(n).padStart(2)}. ${label.padEnd(46)} ${c.verdict.padEnd(14)} ${(c.sample ?? c.detail).slice(0, 64)}`)
-      results.push({ group, name: e.name, label: e.label, verdict: c.verdict, detail: `【上游·全变体】${c.detail}`, sample: c.sample, sent: true })
+      console.log(
+        `  ${String(n).padStart(2)}. ${label.padEnd(46)} ${c.verdict.padEnd(14)} ${(c.sample ?? c.detail).slice(0, 64)}`,
+      )
+      results.push({
+        group,
+        name: e.name,
+        label: e.label,
+        verdict: c.verdict,
+        detail: `【上游·全变体】${c.detail}`,
+        sample: c.sample,
+        sent: true,
+      })
       continue
     }
     let verdict: Verdict = 'error'
@@ -258,7 +330,13 @@ const tally = new Map<string, number>()
 for (const r of results) tally.set(r.verdict, (tally.get(r.verdict) ?? 0) + 1)
 const sent = results.filter((r) => r.sent).length
 console.log('\n=== 汇总 ===')
-console.log(`共 ${results.length} 条（本次发出 ${sent} 条、未重发 ${results.length - sent} 条）：` + [...tally.entries()].map(([k, v]) => `${k}=${v}`).join('  '))
+console.log(
+  `共 ${results.length} 条（本次发出 ${sent} 条、未重发 ${results.length - sent} 条）：` +
+    [...tally.entries()].map(([k, v]) => `${k}=${v}`).join('  '),
+)
 fs.mkdirSync('/tmp/opencode', { recursive: true })
-fs.writeFileSync(REPORT_OUT, JSON.stringify({ at: new Date().toISOString(), loggedIn: client.isLoggedIn(), ctx, results }, null, 2))
+fs.writeFileSync(
+  REPORT_OUT,
+  JSON.stringify({ at: new Date().toISOString(), loggedIn: client.isLoggedIn(), ctx, results }, null, 2),
+)
 console.log(`明细 JSON → ${REPORT_OUT}`)

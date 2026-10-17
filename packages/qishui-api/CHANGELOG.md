@@ -3,6 +3,25 @@
 格式参考 Keep a Changelog；版本号是本库自身语义化版本，**上游快照版本用 git tag `snapshot-v<客户端版本>-<序号>` 表达**。
 详见 `docs/MAINTENANCE.md`。
 
+## 0.1.1 — 2026-10-17
+
+### Added
+
+- `test/check-catalog.ts`（`pnpm run check:catalog`）：把 `catalog.ts` 里每个端点的参数与 IDL 声明逐字核对（必填/位置/类型），当前 **90 条 0 问题**，作为改参数后的回归闸门
+- `test/probe-feedmode.ts`：`FeedSongTab` 的 `preference_mode`、`FeedRadioTracks` 的 `radio_id` 两种形态实测
+
+### Corrected（实测推翻了先前的判断）
+
+- **搜索结果实体的壳**：在 `result_groups[].items[].entity.<kind>`（`entity.track`/`entity.artist`/`entity.album`/`entity.playlist`），**不是**详情接口那套 `*_wrapper`；只认 wrapper 会把歌手/专辑/歌单全解析成空
+- `FeedMode` 的 `feed_mode_bar` **只回当前选中的那一个**（实测只回 `default`=推荐），不是枚举 3 项；`familiar`/`fresh` 两个取值来自 IDL 常量（`PreferenceModeFamiliar`/`PreferenceModeFresh`）。`FeedSongTab` 的 `preference_mode` 对**任意值**都回 6 首（随机流，不能拿「能回曲」当验证）
+- `FeedRadioTracks` 的 `radio_id` 实测**两种都吃**：场景的 `scene_mode_id`（短数字，如 `2/3/5/48`）或首页场景块的 `inner_block_id`（雪花大数），各回 6 首
+- **`search_type=user` 与 `video` 上游不返回**：`/luna/search/<type>` 回 `200` 但 body 里没有 `result_groups`（只有 `status_info`/`extra`），换 `search_method`/`search_scene`/`scene_name`/带会话都一样，`all` 的分组里也没有 `users`。属**未验证 / 上游不返回**（只有 `track`/`artist`/`album`/`playlist` 能出）
+- `catalog.ts` 四处参数修正（`check-catalog` 抓出）：`GetRelatedMedia` 用 `media_list`、`DeleteCollectedMediaList` 只留 `media[]`（此前误带 `media_list`）、`ShareCount` 用 `items[]`、`GetH5TrackV2` 保留 `queue_type`
+
+### Deprecated
+
+- **`Search2023`（h5 `/luna/h5/search`）**：不再调用（2023 年的旧 h5 接口，要登录、可能过时、易被风控）；搜索一律走 `Search`（`/luna/search/<type>`）。`test/catalog.ts` 里标 `deprecated: true`，实测台不再发送
+
 ## 0.1.0 — 2026-10-15
 
 对齐上游快照：汽水音乐 PC **v3.7.0**（官方分发包 SHA-256 `e58578ae…b0e4`）。

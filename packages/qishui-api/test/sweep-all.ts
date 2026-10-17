@@ -4,7 +4,7 @@
 // 注意：debug_params 一律不发（实测带了就 1000004）；gated 的三个播放地址接口跳过。
 import fs from 'node:fs'
 import { ENDPOINT_DATA } from '../dist/endpoints.js'
-import { commonParams, userAgent, API_BASE, bodyMd5 } from '../dist/params.js'
+import { API_BASE, bodyMd5, commonParams, userAgent } from '../dist/params.js'
 import { CATALOG, type Ctx } from './catalog.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
@@ -17,7 +17,8 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 function guess(name: string): string | number | undefined {
   const n = name.toLowerCase()
   if (n === 'debug_params') return undefined // 带了就 1000004
-  if (/^(track_id|track_ids|media_id|media_ids|item_id|content_id|group_id|id|ids|video_id|modal_id)$/.test(n)) return ctx.trackId
+  if (/^(track_id|track_ids|media_id|media_ids|item_id|content_id|group_id|id|ids|video_id|modal_id)$/.test(n))
+    return ctx.trackId
   if (/album_id/.test(n)) return ctx.albumId
   if (/artist_id/.test(n)) return ctx.artistId
   if (/playlist_id|playlist_ids/.test(n)) return ctx.playlistId
@@ -31,7 +32,12 @@ function guess(name: string): string | number | undefined {
   if (/^(count|limit|size|page_size|num)$/.test(n)) return 20
   if (/search_type|search_method/.test(n)) return 'track'
   if (/^search_id|^from_search_id/.test(n)) return ctx.searchId
-  if (/^(scene|scene_name|ab_param|from_query|extra|report_param|debug|sug_scene|sug_search_id|session_id|locale)$/.test(n)) return ''
+  if (
+    /^(scene|scene_name|ab_param|from_query|extra|report_param|debug|sug_scene|sug_search_id|session_id|locale)$/.test(
+      n,
+    )
+  )
+    return ''
   return undefined
 }
 
@@ -77,14 +83,23 @@ for (const def of ENDPOINT_DATA) {
         if (Array.isArray(v)) for (const i of v) url.searchParams.append(k, String(i))
         else url.searchParams.set(k, String(v))
       }
-      const headers: Record<string, string> = { 'user-agent': userAgent(), accept: 'application/json', 'x-luna-is-local-user': '0' }
+      const headers: Record<string, string> = {
+        'user-agent': userAgent(),
+        accept: 'application/json',
+        'x-luna-is-local-user': '0',
+      }
       let payload: string | undefined
       if (p.method === 'POST') {
         payload = JSON.stringify(body)
         headers['content-type'] = 'application/json; charset=utf-8'
         headers['x-ss-stub'] = bodyMd5(payload)
       }
-      const res = await fetch(url.toString(), { method: p.method, headers, body: payload, signal: AbortSignal.timeout(20_000) })
+      const res = await fetch(url.toString(), {
+        method: p.method,
+        headers,
+        body: payload,
+        signal: AbortSignal.timeout(20_000),
+      })
       const text = await res.text()
       let verdict = 'other'
       let detail = `http=${res.status} len=${text.length}`
@@ -105,7 +120,10 @@ for (const def of ENDPOINT_DATA) {
             })
             if (meaning.length) {
               verdict = 'ok_json'
-              detail = meaning.slice(0, 5).map((k) => `${k}${Array.isArray(j[k]) ? `[${j[k].length}]` : ''}`).join(',')
+              detail = meaning
+                .slice(0, 5)
+                .map((k) => `${k}${Array.isArray(j[k]) ? `[${j[k].length}]` : ''}`)
+                .join(',')
             } else verdict = 'ok_thin'
           }
         } catch {
@@ -113,9 +131,26 @@ for (const def of ENDPOINT_DATA) {
         }
       }
       if (verdict === 'ok_json' || verdict === 'ok_thin' || verdict === 'empty_body') done = true
-      results.push({ key: def.key, name: def.name, method: p.method, path, official: def.official, inCatalog: catalogNames.has(def.name), verdict, detail, params: Object.keys(params) })
+      results.push({
+        key: def.key,
+        name: def.name,
+        method: p.method,
+        path,
+        official: def.official,
+        inCatalog: catalogNames.has(def.name),
+        verdict,
+        detail,
+        params: Object.keys(params),
+      })
     } catch (err) {
-      results.push({ key: def.key, name: def.name, method: p.method, path, verdict: 'ERR', detail: String(err).slice(0, 60) })
+      results.push({
+        key: def.key,
+        name: def.name,
+        method: p.method,
+        path,
+        verdict: 'ERR',
+        detail: String(err).slice(0, 60),
+      })
     }
     await sleep(900)
   }
@@ -128,5 +163,7 @@ console.log('扫描条目（path 次数）：', results.length, JSON.stringify(t
 console.log('\n=== 拿到数据的端点（ok_json / ok_thin），★ = 不在精选清单里 ===')
 for (const r of results) {
   if (r.verdict !== 'ok_json' && r.verdict !== 'ok_thin') continue
-  console.log(`  ${r.inCatalog ? ' ' : '★'} ${r.verdict.padEnd(9)} ${r.official ? '官方' : '    '} ${r.method.padEnd(4)} ${r.name.padEnd(34)} ${r.path.replace('/luna', '').padEnd(46)} ${r.detail.slice(0, 60)}`)
+  console.log(
+    `  ${r.inCatalog ? ' ' : '★'} ${r.verdict.padEnd(9)} ${r.official ? '官方' : '    '} ${r.method.padEnd(4)} ${r.name.padEnd(34)} ${r.path.replace('/luna', '').padEnd(46)} ${r.detail.slice(0, 60)}`,
+  )
 }

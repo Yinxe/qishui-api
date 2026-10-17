@@ -10,7 +10,9 @@ const brief = (v: any, d = 0, maxd = 2): string => {
   if (Array.isArray(v)) return `[${v.length}]` + (v.length ? `(${brief(v[0], d + 1, maxd)})` : '')
   if (v && typeof v === 'object') {
     if (d >= maxd) return `{${Object.keys(v).slice(0, 12).join(',')}}`
-    return `{${Object.keys(v).map((k) => `${k}:${brief(v[k], d + 1, maxd)}`).join(', ')}}`
+    return `{${Object.keys(v)
+      .map((k) => `${k}:${brief(v[k], d + 1, maxd)}`)
+      .join(', ')}}`
   }
   return JSON.stringify(v)?.slice(0, 26) ?? 'null'
 }
@@ -46,7 +48,8 @@ for (const [key, tag, params] of tries) {
   try {
     const r: any = await client.request(key as any, params)
     const keys = Object.keys(r).filter((k) => !['status_code', 'status_info', 'log_id', 'headers'].includes(k))
-    console.log(`[try] ${key.padEnd(24)} ${tag.padEnd(26)} ok  ${brief(keys.reduce((a: any, k) => ((a[k] = r[k]), a), {}), 0, 1).slice(0, 220)}`)
+    const picked = Object.fromEntries(keys.map((k) => [k, r[k]]))
+    console.log(`[try] ${key.padEnd(24)} ${tag.padEnd(26)} ok  ${brief(picked, 0, 1).slice(0, 220)}`)
   } catch (err: any) {
     console.log(`[try] ${key.padEnd(24)} ${tag.padEnd(26)} ${err.name} ${String(err.message).slice(0, 70)}`)
   }

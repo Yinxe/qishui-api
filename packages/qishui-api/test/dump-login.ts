@@ -17,7 +17,9 @@ const brief = (v: any, d = 0, maxd = 2): string => {
   if (Array.isArray(v)) return `[${v.length}]` + (v.length ? `(${brief(v[0], d + 1, maxd)})` : '')
   if (v && typeof v === 'object') {
     if (d >= maxd) return `{${Object.keys(v).slice(0, 16).join(',')}}`
-    return `{${Object.keys(v).map((k) => `${k}:${brief(v[k], d + 1, maxd)}`).join(', ')}}`
+    return `{${Object.keys(v)
+      .map((k) => `${k}:${brief(v[k], d + 1, maxd)}`)
+      .join(', ')}}`
   }
   return JSON.stringify(v)?.slice(0, 24) ?? 'null'
 }
@@ -39,5 +41,11 @@ await dump('myPlaylists', 'GetMyPlaylists')
 await dump('blockUserList', 'GetBlockUserList', { cursor: '', count: 20 })
 await dump('uploaderInfo', 'GetUploaderInfo', { sec_user_id: '' })
 await dump('myPrivacySetting', 'GetMyPrivacySetting')
-await dump('search2023', 'Search2023', { search_type: 'track', q: '晴天', cursor: '0', search_id: 'x', search_method: 'track' })
+await dump('search2023', 'Search2023', {
+  search_type: 'track',
+  q: '晴天',
+  cursor: '0',
+  search_id: 'x',
+  search_method: 'track',
+})
 await dump('userInfoRetry', 'GetUserInfo', { user_id: '3617835472921684' })

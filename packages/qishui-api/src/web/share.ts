@@ -1,6 +1,6 @@
-import { getImageUrl, type ImageResource } from './image.js'
-import { QishuiError } from '../errors.js'
 import type { Client } from '../client.js'
+import { QishuiError } from '../errors.js'
+import { getImageUrl, type ImageResource } from './image.js'
 
 /** 分享链接的条目类型；官方 path 段就是这个词，未知形态原样透传 */
 export type ShareKind =
@@ -65,6 +65,8 @@ export interface ResolveOptions {
   fetchImpl?: typeof fetch
   /** 最多跟几跳；抖音短链实测一跳 */
   maxHops?: number
+  /** 透传给 fetch 的中断信号（core 的媒体缓存拿它取消下载前的解析） */
+  signal?: AbortSignal
 }
 
 /**
@@ -80,7 +82,12 @@ export async function resolveShareLink(input: string | ShareItem, options: Resol
   const fetchImpl = options.fetchImpl ?? fetch
   let current = /^https?:\/\//i.test(input) ? input : `https://qishui.douyin.com/s/${input}`
   for (let hop = 0; hop < (options.maxHops ?? 4); hop++) {
-    const res = await fetchImpl(current, { method: 'GET', redirect: 'manual', headers: { 'user-agent': 'Mozilla/5.0' } })
+    const res = await fetchImpl(current, {
+      method: 'GET',
+      redirect: 'manual',
+      headers: { 'user-agent': 'Mozilla/5.0' },
+      signal: options.signal,
+    })
     const location = res.headers.get('location')
     if (!location) break
     current = new URL(location, current).toString()
@@ -133,7 +140,11 @@ function toTrackRef(t: any, coverWidth?: number): TrackRef | undefined {
     name: track.name ?? '',
     duration_ms: typeof track.duration === 'number' ? track.duration : undefined,
     album: track.album
-      ? { album_id: track.album.id ? String(track.album.id) : undefined, name: track.album.name, release_date: track.album.release_date }
+      ? {
+          album_id: track.album.id ? String(track.album.id) : undefined,
+          name: track.album.name,
+          release_date: track.album.release_date,
+        }
       : undefined,
     artists: (track.artists ?? []).map((a: any) => ({ artist_id: a?.id ? String(a.id) : undefined, name: a?.name })),
     cover_url: getImageUrl(track.album?.url_cover as ImageResource, { width: coverWidth }),
