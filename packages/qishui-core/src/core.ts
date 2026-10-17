@@ -47,7 +47,7 @@ export interface QishuiOptions {
   device?: DeviceIdentity
   /** 显式注入 cookie（默认读激活账号的 accounts/<uid>.json） */
   cookies?: CookieMap | CookieJar
-  /** 本次实例激活的账号（uid 或昵称；优先于 config.activeUid。`--as` 走这里） */
+  /** 本次实例激活的账号（uid 或昵称；优先于 config.activeUid，解析不到直接报错不回退。`--as` 走这里） */
   account?: string
   /** 自定义 fetch（代理/测试用） */
   fetchImpl?: typeof fetch
@@ -143,7 +143,8 @@ export class QishuiCore {
       device: options.device,
       cookies: options.cookies,
       logger: options.logger,
-      activeUid: options.account ?? loaded.config.activeUid,
+      explicitUid: options.account,
+      activeUid: loaded.config.activeUid,
       onActivate: (uid) => {
         loaded.config.activeUid = uid
         return saveConfig(loaded.paths, loaded.config)

@@ -17,7 +17,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node --experimental-strip-types test/smoke.ts"
+    "test": "vitest run"
   },
   "engines": {
     "node": ">=20"

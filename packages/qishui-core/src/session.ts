@@ -87,8 +87,10 @@ export interface SessionOptions {
   device?: DeviceIdentity
   cookies?: CookieMap | CookieJar
   logger?: (line: string) => void
-  /** 期望激活的账号（`createQishui({account})` / 全局 `--as` 传这里，优先于 index 的 lastUsedAt） */
+  /** 期望激活的账号（config.activeUid 传这里）：解析不出就回退默认，不抛错 */
   activeUid?: string
+  /** 本实例显式指定的账号（`createQishui({account})` / 全局 `--as`）：解析不出或没留存会话直接抛错 */
+  explicitUid?: string
   /** 激活账号变化时回调（core 用它写回 config.activeUid） */
   onActivate?: (uid: string | undefined) => void | Promise<void>
 }
@@ -124,11 +126,20 @@ export class SessionManager {
     this.deviceIdentity = this.options.device ?? deviceFile?.device
     const index = readJsonSync<AccountsIndexFile>(this.paths.accountsIndexFile)
     this.index = Array.isArray(index?.accounts) ? index.accounts : []
-    const wanted = this.softResolve(this.options.activeUid) ?? this.pickDefaultUid()
-    if (wanted) {
-      const account = readJsonSync<SessionFile>(this.paths.accountFile(wanted))
-      if (account?.cookies) {
-        this.current = { ...account, v: 1, uid: wanted }
+    if (this.options.explicitUid) {
+      // --as / createQishui({account})：指哪打哪，解析不出或只剩空壳直接抛错——静默落到别的号比报错危险
+      const uid = this.resolveUid(this.options.explicitUid)
+      const account = readJsonSync<SessionFile>(this.paths.accountFile(uid))
+      if (!account?.cookies || !Object.keys(account.cookies).length)
+        throw new NotLoggedInError(`账号 ${uid} 没有留存会话（登出过或没登录过），需要重新登录`)
+      this.current = { ...account, v: 1, uid }
+    } else {
+      const wanted = this.softResolve(this.options.activeUid) ?? this.pickDefaultUid()
+      if (wanted) {
+        const account = readJsonSync<SessionFile>(this.paths.accountFile(wanted))
+        if (account?.cookies) {
+          this.current = { ...account, v: 1, uid: wanted }
+        }
       }
     }
     if (!Object.keys(this.current.cookies).length) {

@@ -73,6 +73,12 @@ export function core(): Promise<QishuiCore> {
     dataDir: state.dataDir,
     account: state.as,
     logger: state.verbose ? (line: string) => process.stderr.write(dim(`· ${line}`) + '\n') : undefined,
+  }).catch((err: unknown) => {
+    // --as 指错号：原样转述「没有该号 / 没有留存会话 / 昵称撞号」，别被通用映射吞成「需要登录」
+    if (state.as && err instanceof NotLoggedInError) {
+      throw new CliError(err.message, '单命令临时换号只认已入库账号：先看 `qishui accounts`')
+    }
+    throw err
   })
   return corePromise
 }
