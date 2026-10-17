@@ -37,8 +37,7 @@ node --experimental-strip-types test/dump.ts                    # 抓样本响�
 （`write.ts`），只碰自己刚造的数据、收藏类先查再决定要不要取消，收尾回读确认账号回到原样。
 结果明细落在 `/tmp/opencode/endpoint-report.json`。
 
-> 上层 [`qishui-core`](../../qishui-core) 的端到端冒烟在 `packages/qishui-core/test/smoke.ts`
-> （会话迁移 → 曲库 → 播放器 → 媒体缓存落盘/命中，39 步），跑之前先 `pnpm --filter qishui-core run build`。
+> 上层 [`qishui-core`](../../qishui-core) / [`qishui-cli`](../../qishui-cli) 的单测在各自 `test/*.test.ts`（**vitest，全程离线**：core 注入 mock fetch，cli 起 `dist/cli.js` + 预置假设备/缓存）——**上游可达性只由本实测台负责**。
 
 **记录口径**：`UnsupportedError` 那类「本库自己抛的异常」不算接口结论 —— 接口能不能用只看真实响应
 （上游拒答就写清 `1000062`/空响应，并标注口径：**匿名/登录/会员三档里哪些试过、哪些没试**）。

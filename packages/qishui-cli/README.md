@@ -209,7 +209,7 @@ core.player.play(tracks) ─► source 事件 ─► mpv 子进程（本地文�
 - 曲终由 **mpv 到 EOF** 或 **core 时钟走完 `durationMs`** 任一先到触发推进 —— 元数据时长常比真实音频长（试听片段/转码），只信时钟会在歌播完后空转，所以 `mpv` 的 EOF 必须兜住。
 - 进度条与 `seek` 以 mpv 的 `time-pos` 为准，偏差超过 500ms 才回写 core 的时钟（避免两边来回跳）。
 - 拿不到 IPC（换了不支持的老播放器）就退化成纯播放，进度退回 core 的时钟。
-- 每次会话结束都会收掉 mpv（`quit` → SIGTERM → SIGKILL），**不留野进程**（冒烟里有断言）。
+- 每次会话结束都会收掉 mpv（`quit` → SIGTERM → SIGKILL），**不留野进程**（单测里有断言）。
 
 其他模式：
 
@@ -229,24 +229,23 @@ qishui play playlist:<id> --no-cache  # 不落盘，只用远程签名地址
 | `QISHUI_PLAYER` | 播放器命令（默认 `mpv`），例如 `QISHUI_PLAYER=ffplay` |
 | `QISHUI_MPV_ARGS` | 追加给播放器的参数，空白分隔，例如 `QISHUI_MPV_ARGS=--ao=null`（无音频设备的环境） |
 | `NO_COLOR` | 关颜色（等价 `--no-color`） |
-| `QISHUI_CLI_TEST_HOME` | 冒烟台用的数据目录（默认 `/tmp/opencode/qishui-cli-test-home`） |
 
 **退出码**：`0` 成功；`1` 命令失败（上游拒答、目标解析不出、有下载失败项、`cache verify` 发现问题等）。错误信息走 stderr，形如 `✗ 一句话` + 缩进的「下一步」提示。
 
-## 7. 冒烟测试
+## 7. 单元测试
 
 ```bash
-pnpm run build                        # 先构建（core/api 也要）
-pnpm --filter qishui-cli run test     # 64 项断言
+pnpm run build                        # 先构建（core/api 也要；测试跑的是 dist/cli.js）
+pnpm --filter qishui-cli run test     # vitest：3 个文件 32 项
 ```
 
-`test/smoke.ts` 是**纯 node 脚本**（`node --experimental-strip-types`，不引测试框架），跑构建产物 `dist/cli.js`，三层覆盖：
+`test/*.test.ts` 用 **vitest** 起构建产物 `dist/cli.js`；数据目录由 `test/support/cli.ts` mkdtemp 造并**预置假 device.json**（不触发设备注册），全程**不打上游**：
 
-1. **离线**：`--help`/未知命令/未知选项的退出码、`--json` 形状、`NO_COLOR` 无转义、`config get/set` 落盘；
-2. **匿名接口**：搜索（含 `--raw` 对比、`--no-id`/`--id false`、默认带 id）、发现（`discover home`、`modes` 偏好/场景、`cache policy` 分档、`feed --mode` 非法值报错）、首页、榜单、曲目+歌词、评论、分享链接、`--list`/`--print-path`/`download --out`/`cache`；
-3. **mpv 播放**：自己造 3 秒 WAV 塞进媒体缓存（不依赖 ffmpeg），起真 mpv → EOF → 自动切下一首 → 收尾，核对 JSON 结果、`reason=finished`、**无残留 mpv 进程**、本地历史与统计；有 `script(1)` 时再用 PTY 按 `q` 验快捷键。
+1. `cli.test.ts`：`--help`/未知命令/未知选项退出码、`--json` 形状、`NO_COLOR` 无转义、`config get/set` 落盘、`cache policy` 分档、多账号离线机制（`accounts`/`use` 未知号报错/`--as` 指错号**直接报错不回落**/`feed --exclude` 与 `discover feed --mode` 非法值）；
+2. `format.test.ts`：时长/体积格式化与实体一行式描述（纯函数，直接 import `../dist/format.js`）；
+3. `playback.test.ts`：`seedTrack` 预置实体缓存 + 媒体缓存（自造 3 秒 WAV，不依赖 ffmpeg），验 `--list`（● 已缓存）、`--print-path --json`（kind=cache 零网络）、`download --out` 导出、`cache stats/list`；再起真 mpv（`QISHUI_MPV_ARGS=--ao=null` 不出声）→ EOF → 自动切下一首 → 收尾，核对 JSON 结果、`reason=finished`、**无残留 mpv 进程**、本地历史与统计；有 `script(1)` 时再用 PTY 按 `q` 验快捷键。
 
-用独立数据目录，不碰 `~/.qishui`。**真打上游**，所以需要网络。
+mpv / script(1) 不在本机只跳过对应分节（`describe.skipIf`）。上游可达性结论由 `qishui-api` 实测台负责，不进单测。
 
 ## 8. 已知边界
 

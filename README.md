@@ -33,8 +33,8 @@ pnpm run check:catalog      # 端点参数与 IDL 的一致性核对（纯 node 
 pnpm run cli <args>         # 跑 CLI（pnpm 12 不加 `--`，直接跟在 cli 后）
 pnpm run cli search 晴天 --json
 
-pnpm --filter qishui-core run test   # 端到端冒烟（真打上游，用独立数据目录）
-pnpm --filter qishui-cli run test    # CLI 冒烟（64 项：离线 + 匿名接口 + 真 mpv 播放）
+pnpm test                            # core/cli 单测（vitest，全程离线：mock 上游 / 独立数据目录）
+pnpm --filter qishui-cli run test    # 只跑 CLI（含真 mpv 会话，--ao=null 不出声）
 ```
 
 pnpm 版本钉在本文件同目录的 `package.json` `packageManager` 字段，Node ≥ 20（`node --experimental-strip-types` 跑 `.ts` 测试脚本）。质量检测只用 **Biome** 一个工具（`check` / `check:fix` / `format`），不引入 ESLint + Prettier。

@@ -14,12 +14,12 @@
 - **匿名结论不是终局**：登录/会员是没试过的变量，文档里区分「匿名拿不到」与「未验证」。
 - **写接口安全**：无会话只验拦截；有会话默认跳过，`ALLOW_WRITE=1` 才发；已实测的写接口必须可回滚。
 - **实测过的接口不重复发**（防风控）：`packages/qishui-api/test/run.ts` 自动 SKIP 已有结论的条目，`FORCE=1` 才重测。
-- 实测台是纯 node 脚本（`node --experimental-strip-types`），不引入 vitest；core/cli 的冒烟在各自 `test/smoke.ts`（跑构建产物，用独立数据目录）。
+- **上游契约只在实测台验**：`packages/qishui-api/test/*` 是纯 node 脚本（`node --experimental-strip-types`）；core/cli 的测试用 **vitest**（`pnpm test`），单测一律不打上游——core 注入 mock fetch，cli spawn 构建产物 + 独立数据目录（预置 device.json/实体/媒体缓存，mpv 用 `--ao=null`）。测试从 `../dist` 导入，改完 src 先 `pnpm run build` 再跑。
 - 质量检测只用 **Biome** 单工具：`pnpm run check`（检查）/ `check:fix`（写回）/ `format`（只格式化），不引入 ESLint + Prettier；类型检查走根 `tsconfig.json`（`pnpm run typecheck`），全仓库一处口径。
 - **缓存分档唯一真相**：`packages/qishui-core/src/cache/policy.ts`——两个正交维度都在这一个文件：TTL 档 `CacheTtl`（`none`/`entity`/`chart`/`config`/`staticEnum`/`account`）与账号隔离档 `CacheScope`/`KIND_SCOPE`（`account`/`viewer` 落 `cache/entities/_acct/<uid>/`，`public` 共享；媒体缓存始终跨号共享）。原则是「只有长时间不变的数据才落盘」——实时数据（搜索/推荐流/首页/最近播放）`ttlMs: 0`（`EntityCache.set` 见 0 跳过写盘）；改档只动这个文件，各服务引用档位不写死秒数；`qishui cache policy` 打同一张表（含「账号隔离」表）。
 - CLI 硬规矩（续）：**人读输出默认带 id**（`--no-id` / `--id false` 关）；`type:id` 这种复合写法只用于 `qishui play` 目标，`chart`/`radio`/`playlist` 取详情只要冒号后面的裸 id——列表头写清 `type:id`，别让人误当 id 本身。
 - CLI 的一条硬规矩：**一份数据两条出路**——默认渲染给人看，`--json` 出同一份数据的结构化形态（`--raw` 才带上游原始响应）；命令里用 `output.emit(render, data)` 收口，别各写一套。
-- **多账号**：设备身份与账号解耦（`~/.qishui/device.json` 全体共用一台，换号不触发新注册）；每号一份 `~/.qishui/accounts/<uid>.json`（cookie，0600）。激活号以 `config.activeUid` 为准，切号 `qishui use`、单命令临时换号 `--as`；账号私有/带我态数据按 uid 隔离（见上条 `_acct/<uid>`）。`packages/qishui-api/qishui-{device,session}.json` 与 `~/.qishui/accounts/` 下同口径：已 gitignore，勿提交、勿外传。
+- **多账号**：设备身份与账号解耦（`~/.qishui/device.json` 全体共用一台，换号不触发新注册）；每号一份 `~/.qishui/accounts/<uid>.json`（cookie，0600）。激活号以 `config.activeUid` 为准，切号 `qishui use`、单命令临时换号 `--as`（`--as` 指错号/空壳号直接报错，绝不静默回落激活号；config 存的激活号解析不出才回落 lastUsedAt）；账号私有/带我态数据按 uid 隔离（见上条 `_acct/<uid>`）。`packages/qishui-api/qishui-{device,session}.json` 与 `~/.qishui/accounts/` 下同口径：已 gitignore，勿提交、勿外传。
 - CLI 跑法：`pnpm run cli <args>`（pnpm 12 会把 `--` 原样传给脚本，**别加**）。
 - 远端保持本地：**不 push**。
 - 文档分工：`docs/APP_ENDPOINTS.md` 记端点实测结论；各包 `README.md` 记用法；各包 `CHANGELOG.md` 记变更。

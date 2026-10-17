@@ -2,6 +2,13 @@
 
 本包（`qishui-cli`）的变更记录，最新在上。
 
+## Unreleased
+
+### Changed
+
+- **测试从冒烟台改为 vitest 单测**：删 `test/smoke.ts`（64 项、真打上游），改为 `test/cli.test.ts`（命令面/配置/分档表/多账号离线机制）+ `test/format.test.ts`（格式化纯函数）+ `test/playback.test.ts`（`seedTrack` 预置实体+媒体缓存后队列/落盘/导出全零网络，真 mpv `--ao=null` 会话 + PTY 按 `q`；缺 mpv/script 只跳分节）+ `test/support/`。数据目录 mkdtemp 并预置假 `device.json`，**不碰 `~/.qishui`、不打上游**；`QISHUI_CLI_TEST_HOME` 环境变量随之取消
+- **`--as` 指错号/空壳号现在直接报错**（原来会静默用激活号跑）：错误原样转述「没有账号 …」/「没有留存会话 …」，并带「先看 `qishui accounts`」提示，不被通用映射吞成「需要登录」
+
 ## 0.2.0 — 2026-10-17
 
 ### Added

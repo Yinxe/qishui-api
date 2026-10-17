@@ -30,8 +30,8 @@ pnpm install
 pnpm --filter qishui-api run build     # core 依赖 api 的 dist
 pnpm --filter qishui-core run build    # tsc --strict（noUnusedLocals）
 
-# 端到端冒烟（真打上游，用独立数据目录，不碰 ~/.qishui）
-node --experimental-strip-types packages/qishui-core/test/smoke.ts
+# 单测（vitest，全程离线：注入 mock 上游 + 独立数据目录；先 pnpm build）
+pnpm --filter qishui-core run test
 ```
 
 ```ts
@@ -292,7 +292,7 @@ qishui.player.dispose()
 
 **媒体缓存的关键行为**（`MediaCache`）：
 
-- `peek(id)` / `has(id)`：**纯读盘，零网络**（所以「命中缓存不再发 url 请求」是硬保证，冒烟里有断言）。
+- `peek(id)` / `has(id)`：**纯读盘，零网络**（所以「命中缓存不再发 url 请求」是硬保证，单测里有断言）。
 - `ensure(track)`：完整命中直接返回；缺音频/歌词/封面才去拉一次分享页补齐。
 - 音频下载用 `.part` + `Range: bytes=N-` **断点续传**（回 200 就重下），下完用 `content-range` 的总长核对再 rename。
 - `stats()` / `list()` / `verify({fix})` / `prune({maxBytes, maxAgeMs})` / `clear()` / `evict(id)`。
@@ -373,7 +373,7 @@ await qishui.session.importFrom({
 - 扫码用的是**汽水音乐 App**，`scanUrl` 是 `bff-pc.qishui.com` 深链；**抖音扫码是错的**。
 - 每号 cookie 以 `0600` 落 `accounts/<uid>.json`，能免登录直接复用；`importFrom` 会把 cookie 就地注入已建好的 `Client`（无需重启进程）。
 - **设备身份与账号解耦**：全体账号共用 `device.json` 一台「设备」，换号不触发新注册（少一次风控暴露面）。
-- 切号时 cookie jar **先清后灌**：上一号的独有 cookie 不会残留（冒烟有断言）。
+- 切号时 cookie jar **先清后灌**：上一号的独有 cookie 不会残留（单测有断言）。
 - 拿不到身份时的读接口行为：匿名可读的那批照常返回；`1000016` 由 `qishui-api` 抛 `AuthRequiredError`，core 前置检查抛 `NotLoggedInError`。
 
 ## 9. 错误模型
@@ -412,9 +412,10 @@ qishui.saveConfig()              // 把内存里的 config 写回 config.json
 qishui.dispose()                 // 停播放器时钟、关掉句柄
 ```
 
-冒烟测试 `test/smoke.ts` 覆盖：会话迁移 → 账号 → 曲库（含「磁盘缓存命中零请求」断言）→ 搜索 → 发现/榜单 →
-评论读 → 播放器状态机 → 媒体落盘/断点/校验 → 本地历史 → 缓存统计/清理 → **多账号机制**（旧 session.json 迁移、
-`_acct/<uid>` 隔离、切号编排、`--as` 临时态、`logout --purge` —— 这段全程零网络）。**真打上游**（除多账号段），用独立数据目录，跑之前先 `pnpm build`。
+单测 `test/*.test.ts`（vitest，跑之前先 `pnpm run build`——测试从 `../dist` 导入）覆盖：会话迁移 →
+**多账号机制**（`_acct/<uid>` 隔离、切号编排、`--as` 严格临时态、`logout --purge`）→ 实体缓存分档/命中零请求 →
+曲库/搜索（mock 上游）→ 媒体落盘/断点/校验/清理 → 播放器状态机 → 本地历史 → paths/parse/policy。
+**全程不打上游**（注入 mock fetch + 独立数据目录）；上游可达性结论只由 `qishui-api` 实测台负责。
 
 ## 11. 已知边界（没验的就说没验）
 

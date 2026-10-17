@@ -2,6 +2,13 @@
 
 本包（`qishui-core`）的变更记录，最新在上。
 
+## Unreleased
+
+### Changed
+
+- **测试从冒烟台改为 vitest 单测**：删 `test/smoke.ts`（真打上游），新增 `test/*.test.ts` 10 个文件（session/store/catalog/search/media/player/history/parse/paths/policy + `support/mockUpstream.ts`）——**全程零网络**：注入 mock fetch + 独立数据目录，覆盖旧冒烟台的可离线断言（缓存命中零请求、媒体断点/校验、播放器状态机、多账号机制）；上游契约回归只由 `qishui-api` 实测台负责。`pnpm --filter qishui-core run test` 跑（先 `pnpm run build`，测试从 `../dist` 导入）
+- **`createQishui({account})` 严格化**（`--as` 的后端通道）：uid/昵称没入库 → 构造期抛「没有账号 …（已入库：…）」；登出留下的空壳号 → 抛「没有留存会话」。**不再静默回落到激活号**——指错号还照常跑是最危险的形态。`config.activeUid`（持久化默认值）照旧软回落 lastUsedAt，两套语义在 `SessionOptions` 上显式分成 `explicitUid` / `activeUid`
+
 ## 0.2.0 — 2026-10-17
 
 ### Added
