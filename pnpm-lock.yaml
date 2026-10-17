@@ -175,6 +175,19 @@ importers:
         specifier: ^7.0.2
         version: 7.0.2
 
+  packages/qishui-core:
+    dependencies:
+      qishui-api:
+        specifier: workspace:*
+        version: link:../qishui-api
+    devDependencies:
+      '@types/node':
+        specifier: ^26.6.5
+        version: 26.6.5
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+
 packages:
 
   '@types/node@26.6.5':
