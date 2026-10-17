@@ -9,6 +9,10 @@
 - **测试从冒烟台改为 vitest 单测**：删 `test/smoke.ts`（真打上游），新增 `test/*.test.ts` 10 个文件（session/store/catalog/search/media/player/history/parse/paths/policy + `support/mockUpstream.ts`）——**全程零网络**：注入 mock fetch + 独立数据目录，覆盖旧冒烟台的可离线断言（缓存命中零请求、媒体断点/校验、播放器状态机、多账号机制）；上游契约回归只由 `qishui-api` 实测台负责。`pnpm --filter qishui-core run test` 跑（先 `pnpm run build`，测试从 `../dist` 导入）
 - **`createQishui({account})` 严格化**（`--as` 的后端通道）：uid/昵称没入库 → 构造期抛「没有账号 …（已入库：…）」；登出留下的空壳号 → 抛「没有留存会话」。**不再静默回落到激活号**——指错号还照常跑是最危险的形态。`config.activeUid`（持久化默认值）照旧软回落 lastUsedAt，两套语义在 `SessionOptions` 上显式分成 `explicitUid` / `activeUid`
 
+### Fixed
+
+- **榜单名次丢失**：上游实测 `track_ranks[].rank` 只有 `rank_type/rank_delta/track_id`，**没有名次数字**，`parseChart` 原来死磕 `rank.rank` 导致 `ChartData.ranks[].rank` 恒为 undefined（CLI `chart <id>` 的名次列整列空白）。现按「数组位次」补名次（跳过非曲目项后 1..n，与 App 显示一致）；上游若哪天给了数字仍优先用数字
+
 ## 0.2.0 — 2026-10-17
 
 ### Added

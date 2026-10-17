@@ -124,4 +124,19 @@ describe('parseChart：track_ranks → ranks', () => {
     expect(chart.ranks[0]).toMatchObject({ rank: 1, trend: 'up', delta: '2' })
     expect(chart.ranks[1]?.track.id).toBe('7002')
   })
+
+  it('上游实测不给 rank 数字（只有 rank_type/delta）→ 按数组位次补名次', () => {
+    const chart = parseChart({
+      id: 'chart-1',
+      track_ranks: [
+        {
+          rank: { rank_type: 'up', rank_delta: '5', track_id: '7001' },
+          track: { entity: { track_wrapper: { track } } },
+        },
+        { rank: { rank_type: 'up', rank_delta: '16' }, track: trackEntity('7002') },
+      ],
+    })
+    expect(chart.ranks.map((r) => r.rank)).toEqual([1, 2])
+    expect(chart.ranks[0]).toMatchObject({ trend: 'up', delta: '5' })
+  })
 })

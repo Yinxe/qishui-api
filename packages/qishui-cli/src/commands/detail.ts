@@ -7,7 +7,7 @@
 import type { Command } from 'commander'
 import type { Comment } from 'qishui-core'
 import { assertLoggedIn, CliError, core, describeError } from '../context.js'
-import { ago, commentLine, count, duration, userLine } from '../format.js'
+import { ago, commentLine, count, duration, until, userLine } from '../format.js'
 import {
   dim,
   emit,
@@ -302,7 +302,7 @@ export function registerDetailCommands(program: Command): void {
             ['时长', media?.duration_ms ? duration(media.duration_ms) : undefined],
             ['mime', media?.mime_type],
             ['vid', media?.vid],
-            ['过期', media?.expires_at ? ago(media.expires_at) : undefined],
+            ['过期', media?.expires_at ? until(media.expires_at) : undefined],
             ['链接', meta.links?.short_link ?? meta.links?.share_link],
           ])
           if (meta.related?.length) {

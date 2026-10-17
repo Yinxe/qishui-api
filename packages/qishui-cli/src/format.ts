@@ -43,14 +43,25 @@ export function day(unixSec?: number): string | undefined {
   return new Date(unixSec * 1000).toISOString().slice(0, 10)
 }
 
-/** unix 秒 → `3 天前` / `2026-10-17` */
+/** unix 秒 → `3 天前` / `2026-10-17`（未来时间给日期，不误报「刚刚」） */
 export function ago(unixSec?: number): string | undefined {
   if (!unixSec) return undefined
   const diff = Date.now() - unixSec * 1000
+  if (diff < 0) return day(unixSec)
   if (diff < 60_000) return '刚刚'
   if (diff < 3600_000) return `${Math.floor(diff / 60_000)} 分钟前`
   if (diff < 86_400_000) return `${Math.floor(diff / 3600_000)} 小时前`
   if (diff < 30 * 86_400_000) return `${Math.floor(diff / 86_400_000)} 天前`
+  return day(unixSec)
+}
+
+/** 未来的 unix 秒 → `58 分钟后` / `6 小时后` / `2026-11-02`；已过 → `已过期`（签名地址/会员到期用） */
+export function until(unixSec?: number): string | undefined {
+  if (!unixSec) return undefined
+  const diff = unixSec * 1000 - Date.now()
+  if (diff <= 0) return '已过期'
+  if (diff < 3600_000) return `${Math.max(1, Math.round(diff / 60_000))} 分钟后`
+  if (diff < 48 * 3600_000) return `${Math.round(diff / 3600_000)} 小时后`
   return day(unixSec)
 }
 

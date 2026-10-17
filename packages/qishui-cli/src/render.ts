@@ -13,7 +13,9 @@ import { duration, trackArtists, trackTitle } from './format.js'
 import { printTable, withIdColumn } from './output.js'
 
 /** 三线表：序号 / 曲目 / 歌手 / 时长（+ id 列按全局开关）；VIP/试听这类标记只在详情与播放链路提醒 */
+/** 空列表不打表：`search --type all` 每组只有一种实体，剩下的组会把版面塞满空表 */
 export function printTrackList(tracks: Track[], opts: { start?: number } = {}): void {
+  if (!tracks.length) return
   const start = opts.start ?? 0
   const table = withIdColumn(
     ['序号', '曲目', '歌手', '时长'],
@@ -29,6 +31,7 @@ export function printTrackList(tracks: Track[], opts: { start?: number } = {}): 
 }
 
 export function printAlbumList(albums: Album[]): void {
+  if (!albums.length) return
   const table = withIdColumn(
     ['序号', '专辑', '歌手', '曲目数', '发行'],
     albums.map((album, index) => {
@@ -51,6 +54,7 @@ export function printAlbumList(albums: Album[]): void {
 }
 
 export function printArtistList(artists: Artist[]): void {
+  if (!artists.length) return
   const table = withIdColumn(
     ['序号', '歌手', '曲目数', '专辑数'],
     artists.map((artist, index) => {
@@ -68,6 +72,7 @@ export function printArtistList(artists: Artist[]): void {
 }
 
 export function printPlaylistList(playlists: Playlist[], opts: { owned?: boolean } = {}): void {
+  if (!playlists.length) return
   const rows = playlists.map((playlist, index) => {
     const data = playlist.data
     const marks: string[] = []

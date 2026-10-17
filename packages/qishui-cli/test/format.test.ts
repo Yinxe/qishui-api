@@ -17,6 +17,7 @@ import {
   totalDuration,
   trackArtists,
   trackTitle,
+  until,
   userLine,
 } from '../dist/format.js'
 
@@ -51,6 +52,17 @@ describe('时间与数量', () => {
     expect(ago(nowSec - 5 * 86_400)).toBe('5 天前')
     expect(ago(nowSec - 40 * 86_400)).toBe(day(nowSec - 40 * 86_400))
     expect(ago(undefined)).toBeUndefined()
+    // 未来时间不该误报「刚刚」（link 过期字段就栽在这）
+    expect(ago(nowSec + 3600)).toBe(day(nowSec + 3600))
+  })
+
+  it('until：未来时刻从分钟到日期，已过给「已过期」', () => {
+    const nowSec = Math.floor(Date.now() / 1000)
+    expect(until(nowSec + 1800)).toBe('30 分钟后')
+    expect(until(nowSec + 4 * 3600)).toBe('4 小时后')
+    expect(until(nowSec + 20 * 86_400)).toBe(day(nowSec + 20 * 86_400))
+    expect(until(nowSec - 10)).toBe('已过期')
+    expect(until(undefined)).toBeUndefined()
   })
 
   it('count：万/亿进位，边界小数位跟着量级走', () => {

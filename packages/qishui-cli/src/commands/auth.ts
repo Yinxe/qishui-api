@@ -7,7 +7,7 @@
  */
 import type { Command } from 'commander'
 import { CliError, core, describeError, globals } from '../context.js'
-import { ago, count, membershipLine, userLine } from '../format.js'
+import { ago, count, membershipLine, until, userLine } from '../format.js'
 import { qrHint, renderQr } from '../loginQr.js'
 import { dim, emit, green, heading, isJsonMode, print, printKeyValues, printTable, warn, yellow } from '../output.js'
 
@@ -194,7 +194,7 @@ export function registerAuthCommands(program: Command): void {
             print(membershipLine(membership))
             const download = membership.downloadEntitlement as { remaining_download_quota?: number } | undefined
             printKeyValues([
-              ['到期', membership.vipExpireAt ? ago(membership.vipExpireAt) : undefined],
+              ['到期', membership.vipExpireAt ? until(membership.vipExpireAt) : undefined],
               ['无损权益', membership.hasLosslessEntitlement ? '有' : undefined],
               ['剩余下载', download?.remaining_download_quota],
             ])

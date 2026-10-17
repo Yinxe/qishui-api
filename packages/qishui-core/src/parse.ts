@@ -369,11 +369,12 @@ export function parseComment(raw: any, opts: ParseOptions = {}): CommentData {
 
 export function parseChart(raw: any, opts: ParseOptions = {}): ChartData {
   const ranks: ChartRank[] = []
+  // 上游实测只给 `rank: {rank_type, rank_delta, track_id}`，名次本身 = 数组位次（App 也这么显示）
   for (const item of Array.isArray(raw.track_ranks) ? raw.track_ranks : []) {
     const track = unwrap(item?.track ?? item)
     if (!looksLikeTrack(track)) continue
     ranks.push({
-      rank: num(item?.rank?.rank ?? item?.rank),
+      rank: num(item?.rank?.rank ?? item?.rank) ?? ranks.length + 1,
       trend: str(item?.rank?.rank_type),
       delta: str(item?.rank?.rank_delta),
       track: parseTrack(track, opts),

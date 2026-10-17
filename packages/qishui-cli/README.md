@@ -236,7 +236,7 @@ qishui play playlist:<id> --no-cache  # 不落盘，只用远程签名地址
 
 ```bash
 pnpm run build                        # 先构建（core/api 也要；测试跑的是 dist/cli.js）
-pnpm --filter qishui-cli run test     # vitest：3 个文件 32 项
+pnpm --filter qishui-cli run test     # vitest：3 个文件（cli/format/playback）
 ```
 
 `test/*.test.ts` 用 **vitest** 起构建产物 `dist/cli.js`；数据目录由 `test/support/cli.ts` mkdtemp 造并**预置假 device.json**（不触发设备注册），全程**不打上游**：

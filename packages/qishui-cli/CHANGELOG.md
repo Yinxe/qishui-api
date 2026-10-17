@@ -9,6 +9,13 @@
 - **测试从冒烟台改为 vitest 单测**：删 `test/smoke.ts`（64 项、真打上游），改为 `test/cli.test.ts`（命令面/配置/分档表/多账号离线机制）+ `test/format.test.ts`（格式化纯函数）+ `test/playback.test.ts`（`seedTrack` 预置实体+媒体缓存后队列/落盘/导出全零网络，真 mpv `--ao=null` 会话 + PTY 按 `q`；缺 mpv/script 只跳分节）+ `test/support/`。数据目录 mkdtemp 并预置假 `device.json`，**不碰 `~/.qishui`、不打上游**；`QISHUI_CLI_TEST_HOME` 环境变量随之取消
 - **`--as` 指错号/空壳号现在直接报错**（原来会静默用激活号跑）：错误原样转述「没有账号 …」/「没有留存会话 …」，并带「先看 `qishui accounts`」提示，不被通用映射吞成「需要登录」
 
+### Fixed
+
+全命令真跑走查（匿名、独立数据目录）抓到的三处：
+- **`search --type all` 空表墙**：每组只有一种实体，但四个 `print*List` 对空数组也照打「表头+横线」，一组结果塞满四张空表。现在空列表直接不打（`render.ts` 四处护栏）
+- **`chart <id>` 名次列整列空白**：上游不给名次数字（core 的 `parseChart` 已按数组位次补），表格随之有 1..n
+- **`link` 的「过期 刚刚」**：未来时刻被 `ago()` 误判（差值 <60 秒分支含了负数）。新增 `until()`——`25 小时后` / `30 分钟后` / 远期给日期 / 已过给 `已过期`；`link` 过期行与 `whoami` 会员「到期」都改用它，`ago()` 本身也对未来时间回落到日期不再谎报「刚刚」
+
 ## 0.2.0 — 2026-10-17
 
 ### Added
