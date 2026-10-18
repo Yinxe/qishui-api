@@ -1,8 +1,11 @@
 import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { displayWidth } from '../dist/ui/format.js'
+
+// 每条用例都要起一个 PTY：等第一帧（2.4s）+ 几次按键 + 收尾，默认 5 秒不够用
+vi.setConfig({ testTimeout: 40_000 })
 
 const CLI = fileURLToPath(new URL('../dist/cli.js', import.meta.url))
 const NODE = process.execPath
@@ -10,7 +13,8 @@ const ESC = String.fromCharCode(27)
 
 const which = (bin: string) => spawnSync('sh', ['-c', `command -v ${bin}`], { encoding: 'utf8' }).status === 0
 
-const run = (sh: string, timeout = 30_000) => spawnSync('sh', ['-c', sh], { encoding: 'utf8', timeout })
+// 60 秒：机器被别的进程压满时，一条 PTY 用例（起进程 + 等第一帧 + 按键）能慢到 30 秒以上
+const run = (sh: string, timeout = 60_000) => spawnSync('sh', ['-c', sh], { encoding: 'utf8', timeout })
 
 const stripAnsi = (s: string) => s.replace(/\p{Control}\[[0-9;?]*[a-zA-Z]/gu, '')
 
@@ -24,8 +28,13 @@ const lastFrame = (raw: string): string[] =>
  * 骨架模式：`QISHUI_TUI_STUB=1` 时 TUI 不创建 core（也就不会连网注册设备身份 / 读账号），
  * 只画外壳——单测因此完全不碰上游。
  */
-const ptyRun = (keys: string, env = '', size = 'stty rows 24 cols 100') =>
-  run(`(sleep 1.2; ${keys}; sleep 0.8) | QISHUI_TUI_STUB=1 ${env} script -qec "${size}; ${NODE} ${CLI}" /dev/null`)
+/**
+ * `wait` = 起进程到第一帧画完的等待。冷启动要先把 ink（+ react/yoga）加载进来，
+ * 实测机器有负载时光这一项就要 1 秒以上；等不够就会出现「按键/点击比第一帧先到」的假失败
+ * （点了没反应、`q` 落在渲染前）。所以这里给足 2.4 秒，别指望 1.2 秒够用。
+ */
+const ptyRun = (keys: string, env = '', size = 'stty rows 24 cols 100', wait = 2.4) =>
+  run(`(sleep ${wait}; ${keys}; sleep 0.8) | QISHUI_TUI_STUB=1 ${env} script -qec "${size}; ${NODE} ${CLI}" /dev/null`)
 
 /** 点击 = 按下 + 抬起落在同一格（xterm-mouse 默认 `clickDistanceThreshold: 1`，差两格就发不出 click） */
 const click = (y: number, x: number) => `printf '\\033[<0;${x};${y}M\\033[<0;${x};${y}m'`
@@ -64,7 +73,7 @@ it('TTY 里画出侧边栏 + 播放条 + 提示行，按 q 退出', { skip: !whi
   expect(pty.stdout).toContain(`${ESC}[?1049l`) // 退出还原
 
   const frame = stripAnsi(pty.stdout)
-  for (const label of ['搜索', '发现', '听歌', '我的', '设置']) expect(frame).toContain(label)
+  for (const label of ['搜索', '发现', '听歌', '我的', '本地', '设置']) expect(frame).toContain(label)
   // 榜单不再是侧边栏一级项（首页榜单块在「发现」里已经摊平）
   expect(frame).not.toContain('榜单')
   expect(frame).toContain('没有在播的曲目')
@@ -157,6 +166,29 @@ it('我的页（骨架）= 账号 + 收藏 + 歌单一页收齐；设置/歌单�
   expect(frame).toContain('Enter 打开 / 操作菜单')
 })
 
+it('本地页（骨架）= 本地喜欢 / 历史 / 歌单 / 文件夹 一页收齐；键位 5 直达、6 到设置', {
+  skip: !which('script'),
+  timeout: 40_000,
+}, () => {
+  // 5 = 本地（侧边栏第 5 项）。骨架模式下 core 是 undefined，所以只验分区与入口画得出来
+  const pty = ptyRun("printf '5'; sleep 0.5; printf 'q'")
+  expect(pty.status).toBe(0)
+  const frame = lastFrame(pty.stdout).join('\n')
+  expect(frame).toContain('本地库（不出网，匿名可用）')
+  for (const section of ['本地喜欢', '播放历史', '本地歌单', '音乐文件夹'])
+    expect(frame, `本地页缺分区「${section}」`).toContain(section)
+  expect(frame).toContain('新建本地歌单')
+  expect(frame).toContain('添加文件夹')
+  // 账号侧的东西不混进来（那边是「我的」）
+  expect(frame).not.toContain('当前账号')
+  expect(frame).not.toContain('设置与缓存')
+
+  // 6 = 设置（原来的第 5 项往后挪了一位）
+  const toSettings = ptyRun("printf '6'; sleep 0.5; printf 'q'")
+  expect(toSettings.status).toBe(0)
+  expect(lastFrame(toSettings.stdout).join('\n')).toContain('设置与缓存')
+})
+
 it('我的页：账号行 Enter 打开「账号操作」菜单（登录 / 换号 / 退出都在这里，骨架下也能开）', {
   skip: !which('script'),
 }, () => {
@@ -191,14 +223,14 @@ it('鼠标：QISHUI_TUI_MOUSE=0 时完全不接管鼠标', { skip: !which('scrip
 it('鼠标：点侧边栏导航行切页；内容区第一列（接缝列）不算侧边栏', { skip: !which('script'), timeout: 40_000 }, () => {
   const ref = lastFrame(ptyRun("printf 'q'").stdout)
   const y = rowOf(ref, '我的') // 侧边栏第 4 项所在行
-  expect(ref[0].startsWith(' 发现')).toBe(true)
+  expect(ref[0].startsWith(' 听歌')).toBe(true) // 启动页是「听歌」
 
   const hit = ptyRun(`${click(y, 5)}; sleep 0.5; printf 'q'`)
   expect(lastFrame(hit.stdout)[0].startsWith(' 我的')).toBe(true)
 
   // 侧边栏宽 16：库的闭区间判定会把第 17 列也算进去，而第 17 列正是内容区第一列——归属只能给内容
   const seam = ptyRun(`${click(y, 17)}; sleep 0.5; printf 'q'`)
-  expect(lastFrame(seam.stdout)[0].startsWith(' 发现')).toBe(true)
+  expect(lastFrame(seam.stdout)[0].startsWith(' 听歌')).toBe(true)
 })
 
 it('鼠标：分区条目页也是单击直达——点「我的」的「我喜欢的音乐」直接进列表页', {
@@ -219,25 +251,26 @@ it('鼠标：分区条目页也是单击直达——点「我的」的「我喜�
 
 it('鼠标：抬起坐标漂移（发不出 click）也照样触发——按下即生效', { skip: !which('script'), timeout: 40_000 }, () => {
   const ref = lastFrame(ptyRun("printf 'q'").stdout)
-  const y = rowOf(ref, '听歌')
-  // 按下在「听歌」行，抬起漂到 +3 列 +1 行：超出 clickDistanceThreshold:1，click 永远不会发
+  // 锚点用「本地」：启动页是「听歌」，而面包屑第一段也是「听歌」，拿它反查行号会落到表头
+  const y = rowOf(ref, '本地')
+  // 按下在「本地」行，抬起漂到 +3 列 +1 行：超出 clickDistanceThreshold:1，click 永远不会发
   const pty = ptyRun(`${driftClick(y, 5)}; sleep 0.5; printf 'q'`)
-  expect(lastFrame(pty.stdout)[0].startsWith(' 听歌')).toBe(true)
+  expect(lastFrame(pty.stdout)[0].startsWith(' 本地')).toBe(true)
 })
 
 it('鼠标：侧边栏滚轮挪游标，Enter 落到对应导航项', { skip: !which('script'), timeout: 40_000 }, () => {
   const ref = lastFrame(ptyRun("printf 'q'").stdout)
-  const y = rowOf(ref, '听歌')
-  // 游标默认停在「发现」（第 2 项），向下滚 1 格到「听歌」（第 3 项），Enter 即切页
+  const y = rowOf(ref, '本地')
+  // 游标默认停在「听歌」（启动页 = 第 3 项），向下滚 1 格到「我的」（第 4 项），Enter 即切页
   const pty = ptyRun(`${wheel(y, 5, 1)}; printf '\\r'; sleep 0.5; printf 'q'`)
-  expect(lastFrame(pty.stdout)[0].startsWith(' 听歌')).toBe(true)
+  expect(lastFrame(pty.stdout)[0].startsWith(' 我的')).toBe(true)
 })
 
 it('鼠标：点面包屑第一段直接退回该层', { skip: !which('script'), timeout: 40_000 }, () => {
   const ref = lastFrame(ptyRun("printf 'q'").stdout)
-  const pty = ptyRun(`printf 'S'; sleep 0.5; ${click(1, colOf(ref, '发现', '发现'))}; sleep 0.5; printf 'q'`)
+  const pty = ptyRun(`printf 'S'; sleep 0.5; ${click(1, colOf(ref, '听歌', '听歌'))}; sleep 0.5; printf 'q'`)
   const frame = lastFrame(pty.stdout)
-  expect(frame[0].startsWith(' 发现')).toBe(true)
+  expect(frame[0].startsWith(' 听歌')).toBe(true)
   expect(frame.join('\n')).not.toContain('设置与缓存')
 })
 
@@ -257,6 +290,89 @@ it('鼠标：搜索页点分类 tab 切分类，点输入行后能直接打字',
   const frame = lastFrame(pty.stdout).join('\n')
   expect(frame).toContain('[歌手]') // 点 tab 生效
   expect(frame).toContain('关键词 abc') // 点输入行进了编辑态
+})
+
+it('播放页（f）：独立页面 + 左右两栏（左曲目信息/歌词，右播放队列），不再是覆盖层', {
+  skip: !which('script'),
+  timeout: 40_000,
+}, () => {
+  // 先按 2 落在「发现」（启动页是「听歌」），再 f 进播放页——这一条验的是压栈，不依赖启动页
+  const pty = ptyRun("printf '2'; sleep 0.5; printf 'f'; sleep 0.8; printf 'q'")
+  expect(pty.status).toBe(0)
+  const frame = lastFrame(pty.stdout).join('\n')
+  // 面包屑多一段「正在播放」= 它是压栈的页面，不是弹层
+  expect(frame).toContain('发现 / 正在播放')
+  expect(frame).toContain('播放队列')
+  // 右栏头带「这是哪份队列」的入口（Q / 点它开书架）
+  expect(frame).toContain('[队列]')
+  expect(frame).toContain('歌词')
+  expect(frame).toContain('没有在播的曲目')
+  expect(frame).toContain('队列为空')
+  // 播放页自己的提示行（t 换栏、Enter 开这一行的操作菜单）
+  expect(frame).toContain('t 歌词/队列')
+  expect(frame).toContain('Enter 操作菜单')
+})
+
+it('播放队列书架（Q）：列出所有队列，骨架模式下一句「还没有播放队列」；Esc 关掉', {
+  skip: !which('script'),
+  timeout: 40_000,
+}, () => {
+  // 弹层开着时 `q` 让位给弹层（全局键不生效），所以先 Esc 关掉再 q 退出；
+  // 弹层那一帧从整段输出里找（`lastFrame` 是关掉之后的画面）
+  const pty = ptyRun("printf '2'; sleep 0.5; printf 'Q'; sleep 1; printf '\\033'; sleep 0.4; printf 'q'")
+  expect(pty.status).toBe(0)
+  const all = stripAnsi(pty.stdout)
+  expect(all).toContain('播放队列')
+  // 骨架模式不建 core：书架是空的，但入口本身要能打开（不是一句「稍后再试」）
+  expect(all).toContain('还没有播放队列')
+  expect(all).toContain('Enter / 点击 切过去')
+  // Esc 关掉后回到发现页
+  const after = lastFrame(pty.stdout).join('\n')
+  expect(after).not.toContain('还没有播放队列')
+  expect(after).toContain('发现')
+})
+
+it('播放页：t 在左（歌词）右（队列）两栏之间换焦点，f 退回原页', { skip: !which('script'), timeout: 40_000 }, () => {
+  const switched = ptyRun("printf '2'; sleep 0.4; printf 'f'; sleep 0.6; printf 't'; sleep 0.6; printf 'q'")
+  expect(switched.status).toBe(0)
+  expect(lastFrame(switched.stdout).join('\n')).toContain('焦点：队列')
+
+  // 同一个键进出：`f` 再按一次回到底下的页面（发现），播放页整块消失
+  const back = ptyRun("printf '2'; sleep 0.4; printf 'f'; sleep 0.6; printf 'f'; sleep 0.6; printf 'q'")
+  expect(back.status).toBe(0)
+  const frame = lastFrame(back.stdout)
+  // 增量重绘不会整屏清（这一路没有新的 ESC[2J），字节流里仍留着播放页写过的几行；
+  // 所以看「最后写出去的那一行提示行」：播放页是 `t 歌词/队列`，底下页面是 `f 正在播放`
+  const lastLine = frame.filter((line) => line.trim().length > 0).pop() ?? ''
+  expect(lastLine, '关掉播放页后底下页面的提示行应回来').toContain('f 正在播放')
+  expect(lastLine).not.toContain('歌词/队列')
+})
+
+it('播放页窄屏：歌词 / 队列用 tab 切换（队列不再被藏掉），宽屏仍是两栏没有 tab', {
+  skip: !which('script'),
+  timeout: 40_000,
+}, () => {
+  // 56 列：侧边栏收成 4 列图标栏，内容区 52 列 < SPLIT_MIN(64) → 单栏 + tab
+  const narrow = 'stty rows 24 cols 56'
+  const lyrics = ptyRun("printf 'f'; sleep 0.6; printf 'q'", '', narrow)
+  expect(lyrics.status).toBe(0)
+  const first = lastFrame(lyrics.stdout).join('\n')
+  expect(first, '当前栏用方括号标出').toContain('[歌词]')
+  expect(first, '另一栏也在，只是没方括号').toContain(' 队列 ')
+  expect(first).toContain('焦点：歌词')
+
+  const queue = ptyRun("printf 'f'; sleep 0.6; printf 't'; sleep 0.6; printf 'q'", '', narrow)
+  expect(queue.status).toBe(0)
+  const second = lastFrame(queue.stdout).join('\n')
+  expect(second, 't 换到队列栏').toContain('[队列]')
+  expect(second).toContain(' 歌词 ')
+  expect(second).toContain('播放队列')
+  expect(second).toContain('焦点：队列')
+
+  // 宽屏（100 列）是两栏并排，没有 tab 行
+  const wide = ptyRun("printf '2'; sleep 0.4; printf 'f'; sleep 0.6; printf 'q'")
+  expect(wide.status).toBe(0)
+  expect(lastFrame(wide.stdout).join('\n')).not.toContain('[歌词]')
 })
 
 it('resize 后按新行数重排（备用屏；画面不超过新行数）', { skip: !which('script') }, () => {

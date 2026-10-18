@@ -147,7 +147,8 @@ export function useCursor(count: number, handlers: CursorHandlers): { cursor: nu
 }
 
 /**
- * 统一的「列表行」：选中 = 反色 + `>` 前缀 + accent；未选中留一格对齐位。
+ * 统一的「列表行」：选中 = **下划线 + accent 色 + `>` 前缀**；未选中留一格对齐位。
+ * 不用反色块：整行反色在浅色/透明背景下会糊成一条，还把行内的颜色信息（在播绿、错误红）盖掉。
  * `SectionView` 与各弹层的手搓选中行都收敛到这里，全 App 一个「被选中」的样子。
  */
 export function Row({
@@ -164,7 +165,7 @@ export function Row({
 }) {
   return (
     <Box flexShrink={0}>
-      <Text inverse={selected} color={selected ? COLOR.accent : undefined} wrap="truncate-end">
+      <Text underline={selected} color={selected ? COLOR.accent : undefined} wrap="truncate-end">
         {`${selected ? (prefix ?? SELECT_PREFIX) : ' '}${label}`}
       </Text>
       {note ? <Text dimColor> {note}</Text> : null}

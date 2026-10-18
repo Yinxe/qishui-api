@@ -8,7 +8,14 @@
  * radio/tracks」这一条。
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { createQishui, type FeedModeRef, formatFeedMode, parseFeedMode, type QishuiCore } from '../dist/index.js'
+import {
+  createQishui,
+  type FeedModeRef,
+  formatFeedMode,
+  parseFeedMode,
+  type QishuiCore,
+  radioFlowParams,
+} from '../dist/index.js'
 import { createMockUpstream, MOCK_DEVICE } from './support/mockUpstream.js'
 import { makeTempDir, rmDir } from './support/tmp.js'
 
@@ -59,7 +66,10 @@ describe('feedModeTracks', () => {
     const call = mock.calls.find((c) => c.url.includes('/luna/pc/feed/song-tab'))
     expect(call?.url).toBeTruthy()
     expect(mock.calls.some((c) => c.url.includes('/luna/pc/feed/radio/tracks'))).toBe(false)
-    expect(JSON.parse(call?.body ?? '{}').preference_mode).toBe('familiar')
+    const body = JSON.parse(call?.body ?? '{}')
+    // App 口径：偏好档也是塞进 feed_preference（顶层 preference_mode 是本项目额外发的兼容字段）
+    expect(body.feed_preference).toEqual({ preference_mode: 'familiar' })
+    expect(body.preference_mode).toBe('familiar')
     expect(tracks.map((t) => t.id)).toEqual(['7101', '7102', '7103', '7104', '7105', '7106'])
   })
 
@@ -91,5 +101,65 @@ describe('feedModeTracks', () => {
     mock.resetCalls()
     await core.discover.feedModeTracks(ref)
     expect(mock.calls.filter((c) => c.url.includes('/luna/pc/feed/song-tab'))).toHaveLength(1)
+  })
+})
+
+describe('FeedSongTab 请求口径对齐 App', () => {
+  const feedBody = (): Record<string, any> =>
+    JSON.parse(mock.calls.find((c) => c.url.includes('/luna/pc/feed/song-tab'))?.body ?? '{}')
+
+  it('带会话字段（is_did_first_request / did_first_use_time / feed_counts）与 played_media 种子', async () => {
+    await core.history.append({ id: '7401', name: '曲目 7401', artists: [], durationMs: 61_000 }, { playedMs: 1_500 })
+    await core.discover.feedSongTab()
+    const body = feedBody()
+    // 本机已有播放历史 → 不是设备首刷；did_first_use_time 取本机最早一条记录的时刻
+    expect(body.is_did_first_request).toBe(false)
+    expect(typeof body.did_first_use_time).toBe('number')
+    expect(body.feed_counts).toEqual({ mix_session_count: 1 })
+    // 种子：本地历史（云端 mock 这张表默认空）
+    expect(body.played_media).toEqual([{ media_id: '7401', type: 'track', duration: 61, played_mills: 1_500 }])
+  })
+
+  it('本机没有播放历史：is_did_first_request=true，种子为空就不发 played_media', async () => {
+    await core.discover.feedSongTab()
+    const body = feedBody()
+    expect(body.is_did_first_request).toBe(true)
+    expect(typeof body.did_first_use_time).toBe('number')
+    expect(body.played_media).toBeUndefined()
+  })
+
+  it('withPlayedMedia: false 不带种子（其余口径不变）', async () => {
+    await core.history.append({ id: '7401', name: '曲目 7401', artists: [], durationMs: 61_000 })
+    await core.discover.feedSongTab({ withPlayedMedia: false })
+    expect(feedBody().played_media).toBeUndefined()
+  })
+})
+
+describe('radioTracks 请求口径对齐 App', () => {
+  const radioBody = (): Record<string, any> =>
+    JSON.parse(mock.calls.find((c) => c.url.includes('/luna/pc/feed/radio/tracks'))?.body ?? '{}')
+
+  it('默认带 cursor="" / flow_type=2 / trigger_info=""', async () => {
+    await core.discover.radioTracks('7300000000000000001')
+    expect(radioBody()).toEqual({
+      radio_id: '7300000000000000001',
+      cursor: '',
+      flow_type: 2,
+      trigger_info: '',
+    })
+  })
+
+  it('cursor / flow_type / trigger_info 能显式传（分页与队列来源参数）', async () => {
+    await core.discover.radioTracks('7300000000000000001', { cursor: '20', flowType: 3, triggerInfo: 'feed_radio' })
+    expect(radioBody()).toMatchObject({ cursor: '20', flow_type: 3, trigger_info: 'feed_radio' })
+  })
+
+  it('radioFlowParams 从队列资源的 style.link 里抠参数（App 的取法），拿不到就回缺省', () => {
+    expect(radioFlowParams({ style: { link: 'https://www.qishui.com/?flow_type=4&trigger_info=discover' } })).toEqual({
+      flowType: 4,
+      triggerInfo: 'discover',
+    })
+    expect(radioFlowParams({ style: { link: '' } })).toEqual({ flowType: 2, triggerInfo: '' })
+    expect(radioFlowParams(undefined)).toEqual({ flowType: 2, triggerInfo: '' })
   })
 })

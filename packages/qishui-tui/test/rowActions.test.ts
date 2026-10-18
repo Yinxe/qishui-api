@@ -8,7 +8,7 @@ import type { QishuiCore, TrackData } from 'qishui-core'
 import { beforeEach, expect, it, vi } from 'vitest'
 import type { UiValue } from '../dist/ui/context.js'
 import type { Entry } from '../dist/ui/entries.js'
-import { buildRowActions } from '../dist/ui/rowActions.js'
+import { buildQueueTrackActions, buildRowActions, buildTrackActions } from '../dist/ui/rowActions.js'
 import type { ListRow } from '../dist/ui/useList.js'
 
 const T1 = '7068138081588611073'
@@ -291,7 +291,14 @@ it('歌单行：自己的歌单才有改名/删除，「我喜欢的音乐」不
   expect(labels(mine.entries)).toEqual(['打开歌单', '播放整张', '收藏这张歌单', '改名', '删歌单'])
   await pick(mine.entries, 'play').onEnter?.()
   await flush()
-  expect(mine.play).toHaveBeenCalledWith([trackData(T1), trackData(T2)], undefined)
+  // 「播放整张」进的是**这张歌单自己的队列**（不是当前页的临时队列）
+  // 第二参 = 从第一首起（正在听这张时再点「播放整张」也该从头放）
+  expect(mine.play).toHaveBeenCalledWith([trackData(T1), trackData(T2)], T1, {
+    kind: 'playlist',
+    id: 'playlist:p-1',
+    title: '歌单 · 歌单甲',
+    load: expect.any(Function),
+  })
 })
 
 it('「我的歌单」列表：调用方确证归属后，上游没回 owner 也给改名/删除；「我喜欢的音乐」照样不给', async () => {
@@ -321,7 +328,7 @@ it('搜索结果里的歌单行：不必先打开，菜单里就能整张播出�
   expect(labels(entries)).toContain('播放整张')
   await pick(entries, 'play').onEnter?.()
   await flush()
-  expect(play).toHaveBeenCalledWith([trackData(T1), trackData(T2)], undefined)
+  expect(play).toHaveBeenCalledWith([trackData(T1), trackData(T2)], T1, expect.objectContaining({ kind: 'playlist' }))
   // 整张播只是读歌单 + 出声，不写库
   expect(calls).toEqual([])
 })
@@ -331,7 +338,11 @@ it('榜单 / 艺人页里的专辑行：菜单里也能直接播整张', async (
   expect(labels(entries)).toContain('播放整张')
   await pick(entries, 'play').onEnter?.()
   await flush()
-  expect(play).toHaveBeenCalledWith([trackData(T1)], undefined)
+  // 专辑是浏览型结果 → 临时队列（和搜索/榜单同口径）
+  expect(play).toHaveBeenCalledWith([trackData(T1)], undefined, {
+    kind: 'temporary',
+    title: '临时 · 专辑 专辑甲',
+  })
   expect(calls).toEqual([])
 })
 
@@ -381,4 +392,101 @@ it('评论 / 加入歌单 / 举报 只是换弹层，不自己发请求', async 
   expect(overlays.map((o) => o.kind)).toEqual(['comments', 'add', 'report'])
   await pick(entries, 'detail').onEnter?.()
   expect(push).toHaveBeenCalledWith({ kind: 'track', id: T1 })
+})
+
+/**
+ * 播放页的两种菜单（当前曲目 / 队列行）都不经过 `ListRow` —— 播放器手里只有 `TrackData`，
+ * 所以它们走 `buildTrackActions` / `buildQueueTrackActions`。这里验的是「与列表页同一份条目」。
+ */
+function buildPlayerMenu(kind: 'current' | 'queue', opts: CoreOptions = {}) {
+  const { core, calls } = makeCore(opts)
+  const overlays: { kind?: string }[] = []
+  const push = vi.fn()
+  const play = vi.fn()
+  const closeOverlay = vi.fn()
+  const toast = vi.fn()
+  const ui = {
+    toast,
+    bump: vi.fn(),
+    pop: vi.fn(),
+    go: vi.fn(),
+    push,
+    openOverlay: (overlay: { kind?: string }) => overlays.push(overlay),
+    closeOverlay,
+  } as unknown as UiValue
+  // 播放器手里是 TrackData，水印在 `state.isCollected`（不是实体上的 `liked`）
+  const track = { id: T1, data: { ...trackData(T1), state: { isCollected: true } }, liked: true }
+  const jump = vi.fn()
+  const remove = vi.fn()
+  const entries =
+    kind === 'queue'
+      ? buildQueueTrackActions({
+          ui,
+          core: core as unknown as QishuiCore,
+          track,
+          position: 2,
+          jump,
+          remove,
+          play,
+        })
+      : buildTrackActions({ ui, core: core as unknown as QishuiCore, track, play })
+  return { entries, overlays, push, play, jump, remove, calls, closeOverlay, toast }
+}
+
+it('播放页的当前曲目：菜单就是「曲目本体」那一份（没有播放/队尾，那是列表页的事）', async () => {
+  const { entries, overlays, push } = buildPlayerMenu('current')
+  expect(labels(entries)).toEqual([
+    '我的喜欢（切换）',
+    '评论',
+    '详情',
+    '加入歌单',
+    '相似歌曲（播放入队）',
+    '不感兴趣',
+    '举报',
+  ])
+  // 水印来自实体 `state.isCollected`，不用等 `isLiked` 翻整张收藏
+  expect(pick(entries, 'like').note).toBe('已喜欢')
+  await pick(entries, 'comments').onEnter?.()
+  await pick(entries, 'add').onEnter?.()
+  await pick(entries, 'report').onEnter?.()
+  expect(overlays.map((o) => o.kind)).toEqual(['comments', 'add', 'report'])
+  await pick(entries, 'detail').onEnter?.()
+  expect(push).toHaveBeenCalledWith({ kind: 'track', id: T1 })
+})
+
+it('播放页的队列行：同一份条目 + 前置「立即播放」/ 后置「从队列移除」，执行只动队列', async () => {
+  const { entries, jump, remove, calls, play, closeOverlay } = buildPlayerMenu('queue')
+  expect(labels(entries)).toEqual([
+    '立即播放这首',
+    '我的喜欢（切换）',
+    '评论',
+    '详情',
+    '加入歌单',
+    '相似歌曲（播放入队）',
+    '不感兴趣',
+    '举报',
+    '从队列移除',
+  ])
+  expect(pick(entries, 'jump').note).toBe('队列第 3 首')
+
+  await pick(entries, 'jump').onEnter?.()
+  await pick(entries, 'remove-from-queue').onEnter?.()
+  // 先关菜单再动手（菜单盖着时 toast 与列表刷新都会被挡住）
+  expect(closeOverlay).toHaveBeenCalledTimes(2)
+  expect(jump).toHaveBeenCalledTimes(1)
+  expect(remove).toHaveBeenCalledTimes(1)
+  // 队列上的动作不写库、不换整队
+  expect(calls).toEqual([])
+  expect(play).not.toHaveBeenCalled()
+})
+
+it('播放页未登录：写类项照旧置灰并补「去登录」，队列的立即播放/移除不受影响', async () => {
+  const { entries, overlays } = buildPlayerMenu('queue', { loggedIn: false })
+  expect(entries.filter((e) => e.disabled).map((e) => e.key)).toEqual(['like', 'add', 'dislike', 'report'])
+  expect(pick(entries, 'jump').disabled).toBeFalsy()
+  expect(pick(entries, 'remove-from-queue').disabled).toBeFalsy()
+  const last = entries[entries.length - 1] as Entry
+  expect(last.label).toBe('去登录（汽水音乐 App 扫码）')
+  await last.onEnter?.()
+  expect(overlays.map((o) => o.kind)).toEqual(['login'])
 })

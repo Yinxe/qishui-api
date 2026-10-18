@@ -30,7 +30,7 @@ export function TrackDetailScreen({ id, active }: { id: string; active: boolean 
       {
         key: 'play',
         label: '播放这首',
-        onEnter: () => void playRef.current([track.data], track.id),
+        onEnter: () => void playRef.current([track.data], track.id, { kind: 'temporary', title: '临时 · 曲目详情' }),
       },
       {
         key: 'like',
@@ -44,11 +44,15 @@ export function TrackDetailScreen({ id, active }: { id: string; active: boolean 
         onEnter: () => {
           void (async () => {
             try {
-              const related = await core?.catalog.related(track.id, 30)
+              const related = await core?.catalog.related(track, 30)
               if (related?.length)
                 await playRef.current(
                   related.map((item) => item.data),
                   related[0].id,
+                  {
+                    kind: 'temporary',
+                    title: '临时 · 相似歌曲',
+                  },
                 )
             } catch (err) {
               ui.toast(err instanceof Error ? err.message : String(err), 'error')

@@ -3,15 +3,20 @@
  *
  * 这不是列表页 —— 上游的 `FeedSongTab`/`FeedRadioTracks` 每次只随机回一小批（实测 6 首），
  * 是「随机播放的批次来源」，凑一屏来浏览是假象。所以这一页只做一件事：**定当前模式**（只能一个值），
- * 选中即按它取一批起播，播完由 `../feedStream.ts` 自动续下一批。
+ * 选中即按它取一批起播，播完由 core 的**推荐队列**（`QueueBook`，滑动窗口 + 自动续批）接着来。
  *
  * 两个「当前」要分清：`(x)` = 本机记住的 `config.feedMode`；`（上游当前）` = 上游 `feed_mode_bar`
  * 里那一条（它只是上游栏的显示，不是本机真相源），两者不一致就并存显示。
  */
 import { Box } from 'ink'
-import { FEED_PREFERENCE_MODES, type FeedModeRef, type FeedModeView, formatFeedMode } from 'qishui-core'
+import {
+  FEED_PREFERENCE_MODES,
+  type FeedModeRef,
+  type FeedModeView,
+  formatFeedMode,
+  RECOMMEND_REFILL_AT,
+} from 'qishui-core'
 import { useCore } from '../core/context.js'
-import { FEED_REFILL_AT } from '../feedStream.js'
 import { useUi } from '../ui/context.js'
 import { type Entry, type Section, SectionView, useEntries } from '../ui/entries.js'
 import { listHeight } from '../ui/layout.js'
@@ -94,7 +99,7 @@ export function buildListenSections(ctx: ListenCtx): Section[] {
     stream.push({
       key: 'stop',
       label: '停止自动续播',
-      note: `剩 ${FEED_REFILL_AT} 首就补一批 · 当前 ${feedModeLabel(ctx.modes, ctx.current)}`,
+      note: `剩 ${RECOMMEND_REFILL_AT} 首就补一批 · 当前 ${feedModeLabel(ctx.modes, ctx.current)}`,
       onEnter: ctx.stop,
     })
   } else if (ctx.current) {

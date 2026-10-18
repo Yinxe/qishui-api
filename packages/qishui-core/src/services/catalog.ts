@@ -13,6 +13,7 @@ import {
   parseChart,
   parseTrackRef,
 } from '../parse.js'
+import { buildPlayedMedia } from '../playedMedia.js'
 import type { AlbumData, ChartData, Paged, TrackData } from '../types.js'
 import { num, str } from '../util.js'
 
@@ -157,17 +158,46 @@ export class CatalogService {
     }
   }
 
-  /** 相关推荐（播放页「相似歌曲」） */
-  async related(id: string, count = 8, opts: { refresh?: boolean } = {}): Promise<Track[]> {
+  /**
+   * 相关推荐（播放页「相似歌曲」）。
+   *
+   * 请求口径对齐 App 的 `RelatedQueueItem`（`recovered/src/services/queue/items/related.ts`）：
+   * **1 个种子**（`media_list: [{ id, type: 'track' }]`）+ 该曲全部 `artist_ids` +
+   * `scene_name`（App 固定传 `'search'`，它那条队列就是「搜索推荐」）+
+   * `played_media`（待播队列 + 云端/本地播放历史，≤30 条，见 `buildPlayedMedia()`）。
+   *
+   * 两处**有意保留的差异**（App 不传，我们传）：
+   *  - `full_media: true` —— 要响应里的完整曲目实体（album/artists/duration）；
+   *  - `req_count: count` —— 一次要几首由调用方定（App 用上游默认 6）。
+   *
+   * `track` 传 `Track` 实体时直接用它的 artists（零额外请求）；只传 id 时先看本地缓存，
+   * 缓存没有才补一次 `MGetMedia`（拿 artist_ids，之后走缓存）。
+   * 界面手里常常只有 `TrackData`（播放器队列/播放页），所以 `{ id, data }` 这种形态也收。
+   */
+  async related(
+    track: string | Track | { id: string; data: TrackData },
+    count = 8,
+    opts: { refresh?: boolean; sceneName?: string } = {},
+  ): Promise<Track[]> {
+    const id = typeof track === 'string' ? track : track.id
+    const artistIds =
+      typeof track === 'string'
+        ? await this.relatedArtistIds(track)
+        : track.data.artists.map((artist) => artist.id).filter(Boolean)
+    const played = await buildPlayedMedia(this.core)
+    const body: Record<string, unknown> = {
+      media_list: [{ id, type: 'track' }],
+      // App 只有「搜索推荐」这一条实现，scene_name 固定 'search'；别的场景显式传 sceneName
+      scene_name: opts.sceneName ?? 'search',
+      full_media: true,
+      req_count: count,
+    }
+    if (artistIds.length) body.artist_ids = artistIds
+    if (played.length) body.played_media = played
     const { value } = await this.core.cache.fetch<any>(
       'related',
       `${id}-${count}`,
-      () =>
-        this.core.request('GetRelatedMedia', {
-          media_list: [{ id, type: 'track' }],
-          full_media: true,
-          req_count: count,
-        }),
+      () => this.core.request('GetRelatedMedia', body),
       { force: opts.refresh, ttlMs: CacheTtl.none },
     )
     const items = Array.isArray(value.items) ? value.items : []
@@ -175,6 +205,18 @@ export class CatalogService {
     return (tracks.length ? tracks : collectTracks(value, this.parseOpts, count))
       .slice(0, count)
       .map((d) => new Track(this.core, d))
+  }
+
+  /** `related()` 的 artist_ids：本地缓存命中就白拿，没有才 MGetMedia 补一次（失败就当没拿到） */
+  private async relatedArtistIds(id: string): Promise<string[]> {
+    const cached = await this.loadCached(id)
+    if (cached) return cached.artists.map((artist) => artist.id).filter(Boolean)
+    try {
+      const [track] = await this.tracks([id])
+      return track?.data.artists.map((artist) => artist.id).filter(Boolean) ?? []
+    } catch {
+      return []
+    }
   }
 
   /** 用分享接口给的轻量引用造 Track（GetShareInfo/GetRelatedMedia 的短字段版） */

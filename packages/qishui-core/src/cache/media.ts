@@ -38,11 +38,16 @@ export interface CachedMediaMeta {
   plays: number
 }
 
-/** 播放源：要么是本地已就绪的文件，要么是签名远程地址 */
+/**
+ * 播放源：三种
+ *  - `cache`：媒体缓存里已就绪的文件（我们自己下的）；
+ *  - `remote`：上游签名地址（约 24h 过期）；
+ *  - `local`：**用户自己磁盘上的文件**（本地库扫出来的曲目，core 不下载也不缓存，直接交给播放器）。
+ */
 export interface PlaySource {
   track: TrackData
-  kind: 'cache' | 'remote'
-  /** kind=cache 时的本地音频路径 */
+  kind: 'cache' | 'remote' | 'local'
+  /** kind=cache / kind=local 时的本地音频路径 */
   path?: string
   /** kind=remote 时的签名地址（约 24h 过期） */
   url?: string

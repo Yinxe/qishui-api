@@ -96,9 +96,9 @@ export class Track {
     return this.core.media.lyrics(this.data, opts)
   }
 
-  /** 相关推荐（播放页「相似歌曲」） */
-  related(count = 8): Promise<Track[]> {
-    return this.core.catalog.related(this.id, count)
+  /** 相关推荐（播放页「相似歌曲」）：传实体本身，`artist_ids` 直接取这里的 artists（零额外请求） */
+  related(count = 8, opts: { refresh?: boolean; sceneName?: string } = {}): Promise<Track[]> {
+    return this.core.catalog.related(this, count, opts)
   }
 
   comments(opts: { cursor?: number; count?: number } = {}): Promise<Paged<Comment>> {

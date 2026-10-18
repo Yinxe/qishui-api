@@ -39,6 +39,7 @@
 | 播放 | `PlaySource` `PlayerState` `PlayQueueState` | `player.*` `track.source()` | ✅（地址走 web 分享页） |
 | 歌词 | `Lyrics` `LyricLine` `LyricWord` | `track.lyrics()` `player.lyricState()` | ✅ |
 | 本地 | `CachedMediaMeta` `MediaStats` `PlayRecord` `PlayStats` | `cache.*` `history.*` | 本地 |
+| 本地库（喜欢/歌单/文件夹） | `LocalPlaylist` `LocalLibraryFile` `LocalFolder` `LocalStats` `ScanResult` | `local.*`（`likes` / `playlists` / `folders` / `scan` / `history`） | 本地（不出网，匿名可用） |
 
 ---
 
@@ -118,8 +119,8 @@
 
 `FeedModeView{preferences: FeedPreferenceOption[], bar[], scenes: FeedModeOption[], raw}`。
 - `FeedPreferenceOption{mode:'default'|'familiar'|'fresh', label, current}`
-- `FeedModeOption{type:'preference_mode'|'scene_mode', text, preferenceMode?, radioId?, subQueueType?, raw}` —— 45 个场景（图书馆/专注/摸鱼…）的 `radioId` 就是取批次的入参。
-- `FeedModeRef = {kind:'preference', mode} | {kind:'scene', radioId}` —— 「当前用哪个模式听」的唯一形态，配 `parseFeedMode()` / `formatFeedMode()` 落 `config.feedMode`（文法 `preference:<mode>` | `scene:<radioId>`，空串 = 没选过；认不出的一律当没选过，不猜）。
+- `FeedModeOption{type:'preference_mode'|'scene_mode', text, preferenceMode?, sceneModeId?, subQueueType?, raw}` —— 45 个场景（图书馆/专注/摸鱼…）的 `sceneModeId`（`scene_mode_id`，短数字）就是取批次的入参：进 `FeedSongTab` 的 `feed_preference.scene_mode_id`，**不是** `radioTracks()` 的 `radio_id`（那条路是电台队列的雪花 id）。
+- `FeedModeRef = {kind:'preference', mode} | {kind:'scene', sceneModeId}` —— 「当前用哪个模式听」的唯一形态，配 `parseFeedMode()` / `formatFeedMode()` 落 `config.feedMode`（文法 `preference:<mode>` | `scene:<scene_mode_id>`〔纯数字〕，空串 = 没选过；认不出的一律当没选过，不猜——`scene:` 后面是雪花 id 也算认不出，那是电台队列）。
 - `discover.feedModeTracks(ref)` 取值：偏好档走 `FeedSongTab`、场景档走 `FeedRadioTracks`。**两条接口一次只随机回约 6 首**（上游实测 `items[6]`），是「连着播的批次来源」，不是可浏览列表 —— 所以 TUI 里它不占 `ListSource`，只画成「听歌」页的单选台（`DESIGN.md` §4.4）。
 - 上游 `feed_mode_bar` 只回**当前选中的那一条**偏好（`current`），所以 `（上游当前）` 只是上游栏的显示；本机记住的 `(x)` 以 `config.feedMode` 为准，两者不一致就并存显示。
 - `LaunchInfo.boost{genres[{id,name,coverUrl}], langs[{code,name,iconUrl}], needSet}` —— 冷启动首启引导（15 曲风 + 5 语种）。

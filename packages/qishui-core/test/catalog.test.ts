@@ -69,6 +69,32 @@ describe('catalog：stats / related / check', () => {
     expect(related[0].id).toBe('7001')
   })
 
+  it('related() 请求口径对齐 App：1 个种子 + artist_ids + scene_name + played_media', async () => {
+    await core.history.append({ id: T2, name: '曲目 T2', artists: [], durationMs: 61_000 }, { playedMs: 1_500 })
+    // 实体在手：artist_ids 直接取它自己的 artists，不再多打一次 MGetMedia
+    const track = await core.catalog.track(T1)
+    mock.resetCalls()
+    await core.catalog.related(track, 2)
+    const call = mock.calls.find((c) => c.url.includes('/media/related'))
+    const body = JSON.parse(call?.body ?? '{}')
+    expect(body.media_list).toEqual([{ id: T1, type: 'track' }])
+    expect(body.artist_ids).toEqual([`a-${T1}`])
+    expect(body.scene_name).toBe('search')
+    // 两处有意保留的差异：要完整实体、条数由调用方定
+    expect(body.full_media).toBe(true)
+    expect(body.req_count).toBe(2)
+    // 种子：本地历史（mock 的云端最近播放默认空）
+    expect(body.played_media).toEqual([{ media_id: T2, type: 'track', duration: 61, played_mills: 1_500 }])
+  })
+
+  it('related() 只给 id 时也能拿到 artist_ids（走一次 MGetMedia，之后命中缓存）', async () => {
+    mock.resetCalls()
+    await core.catalog.related(T1, 1)
+    expect(mock.calls.some((c) => c.url.includes('/luna/media') && !c.url.includes('related'))).toBe(true)
+    const body = JSON.parse(mock.calls.find((c) => c.url.includes('/media/related'))?.body ?? '{}')
+    expect(body.artist_ids).toEqual([`a-${T1}`])
+  })
+
   it('check()/checkTracks() 空入参不发请求', async () => {
     expect(await core.catalog.check([])).toEqual([])
     expect(await core.catalog.checkTracks([])).toEqual([])

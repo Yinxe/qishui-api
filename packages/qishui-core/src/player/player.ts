@@ -32,8 +32,8 @@ export interface PlayerState {
   repeat: RepeatMode
   shuffle: boolean
   error?: string
-  /** 当前播放源：cache = 本地文件已就绪；remote = 只是签名地址 */
-  source: { kind: 'cache' | 'remote'; path?: string; url?: string; fromCache: boolean } | null
+  /** 当前播放源：cache = 媒体缓存里的文件；remote = 只是签名地址；local = 用户磁盘上的文件 */
+  source: { kind: 'cache' | 'remote' | 'local'; path?: string; url?: string; fromCache: boolean } | null
   /** 试听片段在整首歌里的起点（ms）；整曲可播时为 0 */
   clipStartMs: number
 }
@@ -217,6 +217,23 @@ export class Player {
     this.emitQueue()
   }
 
+  /**
+   * 从队列里移除**播放顺序**第 n 位（上层队列行点的就是这一位）。
+   * 移掉的正好是当前这首时接着播队列里新的当前（空了就 `stop`）——
+   * 否则会留下「在响 A、队列说 B」的分裂状态。
+   */
+  removeFromQueue(position: number): TrackData | undefined {
+    const wasCurrent = position === this.queue.index
+    const removed = this.queue.removeAt(position)
+    if (!removed) return undefined
+    this.emitQueue()
+    if (wasCurrent) {
+      if (this.queue.current) void this.playIndex(this.queue.index)
+      else this.stop()
+    }
+    return removed
+  }
+
   pause(): void {
     if (this.statusValue !== 'playing') return
     this.stopClock()
@@ -326,6 +343,11 @@ export class Player {
   async lyricsFor(input?: TrackInput | null): Promise<Lyrics | undefined> {
     const track = input ? toTrackData(input) : this.current
     if (!track?.id) return undefined
+    // 磁盘上的文件没有上游歌词可拿（也不该拿它的假 id 去问）：照实返回「没有歌词」
+    if (track.localPath) {
+      this.lyricsValue = undefined
+      return undefined
+    }
     this.lyricsValue = await this.core.media.lyrics(track)
     return this.lyricsValue
   }
@@ -382,11 +404,14 @@ export class Player {
 
     let source: PlaySource
     try {
-      source = await this.core.media.resolve(track, {
-        download: opts.download,
-        refresh: opts.refresh,
-        onProgress: opts.onProgress,
-      })
+      // 本地库的曲目（`localPath`）不走上游：直接把磁盘路径当播放源，别为了「解析地址」去问分享页
+      source = track.localPath
+        ? this.core.local.sourceFor(track)
+        : await this.core.media.resolve(track, {
+            download: opts.download,
+            refresh: opts.refresh,
+            onProgress: opts.onProgress,
+          })
     } catch (err) {
       // 解析期间用户已经切到别的歌：这次失败属于上一首，别改当前状态
       if (token !== this.loadToken) return
@@ -429,13 +454,20 @@ export class Player {
   private async recordPlay(source: PlaySource): Promise<void> {
     const track = source.track
     try {
-      // 媒体缓存侧记一次「被拿去播了」（plays 计数 + accessedAt，供 LRU/prune 用，纯本地）
-      await this.core.media.recordPlay(track.id)
-      await this.core.history.append(track, { source: source.kind })
+      // 媒体缓存侧记一次「被拿去播了」（plays 计数 + accessedAt，供 LRU/prune 用，纯本地）。
+      // 本地文件不在媒体缓存里，没有这一笔可记
+      if (source.kind !== 'local') await this.core.media.recordPlay(track.id)
+      await this.core.history.append(track, {
+        source: source.kind,
+        // 记下路径：本地历史据此能重播磁盘文件（云端曲目没有这一项）
+        path: source.kind === 'local' ? source.path : undefined,
+      })
       await this.core.history.compactIfNeeded()
     } catch (err) {
       this.core.logger(`[player] 写播放记录失败：${String(err)}`)
     }
+    // 磁盘上的文件不是上游的曲目，没有「最近播放」可上报
+    if (source.kind === 'local') return
     if (!this.core.config.reportPlayback) return
     try {
       await this.core.account.reportPlayed([track])

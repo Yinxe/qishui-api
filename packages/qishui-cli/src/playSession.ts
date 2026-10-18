@@ -56,7 +56,8 @@ export interface PlaySessionResult {
 
 interface ResolvedSource {
   track: TrackData
-  kind?: 'cache' | 'remote'
+  /** cache = 媒体缓存；remote = 签名地址；local = 用户磁盘上的文件（本地库） */
+  kind?: 'cache' | 'remote' | 'local'
   path?: string
   url?: string
   mime?: string

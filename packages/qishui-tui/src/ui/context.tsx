@@ -50,7 +50,9 @@ export function UiProvider({ children }: { children: ReactNode }) {
   const { stdout } = useStdout()
   const columns = stdout.columns ?? 80
   const rows = stdout.rows ?? 24
-  const [stack, setStack] = useState<Route[]>([{ kind: 'root', root: 'discover' }])
+  // 启动就落在「听歌」：这一页是唯一会自己出声的页（core 一就绪就按记住的模式来一批，见 core/context.tsx），
+  // 想先看别的页按 `1`/`2` 就行
+  const [stack, setStack] = useState<Route[]>([{ kind: 'root', root: 'listen' }])
   const [overlay, setOverlay] = useState<Overlay | null>(null)
   const [focus, setFocus] = useState<Focus>('sidebar')
   const [textFocus, setTextFocus] = useState(false)

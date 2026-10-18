@@ -51,6 +51,8 @@ export class EntityCache {
   private pending = new Map<string, Promise<{ value: unknown; cached: boolean }>>()
   private hits = 0
   private misses = 0
+  /** 落盘失败只提示一次（盘满/只读/权限不对）；缓存是尽力而为，不能把上层调用带崩 */
+  private warnedWrite = false
 
   constructor(
     private paths: CorePaths,
@@ -91,7 +93,15 @@ export class EntityCache {
     const entry: CacheEntry<T> = { v: 1, kind, id, at: Date.now(), expires: Date.now() + ttlMs, data }
     this.memory.set(this.key(kind, id), entry)
     if (ttlMs <= 0) return
-    await writeJsonAtomic(this.pathFor(kind, id), entry)
+    try {
+      await writeJsonAtomic(this.pathFor(kind, id), entry)
+    } catch (err) {
+      // 内存里已经命中，落盘失败只影响「下次冷启动」；别让一次缓存写把搜索/详情整条打挂
+      if (!this.warnedWrite) {
+        this.warnedWrite = true
+        this.options.logger?.(`缓存写盘失败（不影响本次结果）：${(err as Error)?.message ?? err}`)
+      }
+    }
   }
 
   /** 读盘（内存没有时）：TTL 校验后塞回内存 */

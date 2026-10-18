@@ -26,7 +26,9 @@ export function DiscoverScreen({ active }: { active: boolean }) {
   const sections = useMemo<Section[]>(() => {
     if (!home.data) return []
     const push = ui.push
-    const playTrack = (track: Track) => void playRef.current([track.data], track.id)
+    // 首页推荐块 = 浏览型结果 → 临时队列
+    const playTrack = (track: Track) =>
+      void playRef.current([track.data], track.id, { kind: 'temporary', title: '临时 · 首页推荐' })
     return buildSections(home.data, { push, playTrack })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [home.data, ui.push])

@@ -11,13 +11,36 @@
  *  - **写类动作未登录不给选中**（`disabled`），但条目照常列出来，末尾补一个「去登录」的出口 ——
  *    比只弹一句「需要登录」更能让人知道这里本来能做什么。
  *  - **状态只说读到的**：没核对过就不写 note，执行前再真读一次 `isLiked`，不替上游断言已喜欢 / 未喜欢。
+ *
+ * 「曲目本体能做什么」抽成 `buildTrackActions`：列表页的行、播放页的当前曲目、播放页队列里的行
+ * 用的是**同一份**条目（详情 / 喜欢 / 评论 / 加入歌单 / 相似歌曲 / 不感兴趣 / 举报），
+ * 差别只在前后各插几项（列表页插「播放这首」，队列行插「立即播放 / 从队列移除」）。
  */
 import type { QishuiCore, Track, TrackData } from 'qishui-core'
 import type { UiValue } from './context.js'
 import type { Entry } from './entries.js'
 import { truncate } from './format.js'
 import { confirmDeletePlaylist, confirmRemoveFromPlaylist, promptRenamePlaylist } from './playlistActions.js'
+import type { QueueSpec } from './queues.js'
 import type { ListRow } from './useList.js'
+
+/**
+ * 出声入口 = core context 的 `playTracks`。第三个参数是**这份曲目属于哪份播放队列**：
+ * 歌单/专辑行自己带（「播放整张」不该落到当前页的临时队列里），曲目行不带 ——
+ * 由所在页面给默认（歌单页 = 这张歌单的队列，搜索页 = 临时队列）。
+ */
+export type PlayFn = (tracks: TrackData[], startTrackId?: string, queue?: QueueSpec) => void | Promise<void>
+
+/**
+ * 曲目菜单只需要曲目实体的这四样：`id`、`data`（播放与写回水印）、`liked`（上游带的水印）。
+ * `Track` 结构上就满足；播放器那边的 `TrackData` 也能就地拼一个（队列/正在播放里没有实体）。
+ */
+export interface TrackLike {
+  id: string
+  data: TrackData
+  /** 上游带的「我是否喜欢」水印；没带 = `undefined`，不写状态 */
+  liked?: boolean
+}
 
 export interface RowActionOptions {
   ui: UiValue
@@ -27,6 +50,8 @@ export interface RowActionOptions {
   list?: Track[]
   /** 当前页就是一张歌单时带上：菜单里才有改名 / 删歌单 / 把这首移出去 */
   playlist?: { id: string; title: string }
+  /** 当前页是一张**本地**歌单时带上：菜单里才有「从本歌单移出」（本地库自己管，不需要登录） */
+  localPlaylist?: { id: string; title: string }
   /**
    * 调用方已经知道这一行是自己的（「我的歌单」列表就是这种）：
    * 不必等上游在歌单对象里回 `owner.id` —— 那条字段在 `GetMyPlaylists` 里不保证有，
@@ -35,13 +60,68 @@ export interface RowActionOptions {
   owned?: boolean
   /** 写成功之后回调一次（本页要重读时才看得到条目真的进/出，比如取消关注） */
   afterWrite?: () => void
-  /** 出声入口 = core context 的 `playTracks`（单首直接播，多首整列进队列） */
-  play(tracks: TrackData[], startTrackId?: string): void | Promise<void>
+  play: PlayFn
+}
+
+export interface TrackActionOptions {
+  ui: UiValue
+  core?: QishuiCore
+  track: TrackLike
+  /** 插在「曲目本体操作」前面的条目（列表页的播放/下一首/队尾、队列行的立即播放） */
+  lead?: Entry[]
+  /** 追加在后面的条目（队列行的从队列移除、歌单页的移出/改名/删歌单） */
+  tail?: Entry[]
+  afterWrite?: () => void
+  play: PlayFn
 }
 
 export interface RowActions {
   title: string
   entries: Entry[]
+}
+
+export interface QueueTrackActionOptions {
+  ui: UiValue
+  core?: QishuiCore
+  track: TrackLike
+  /** 这一行在队列里的**播放顺序**下标（0 基，与 `player.queue.index` 同一个空间） */
+  position: number
+  /** 跳到这一行（= core 的 `player.playIndex`） */
+  jump(): void
+  /** 把这一行从队列里摘掉（= core 的 `player.removeFromQueue`） */
+  remove(): void
+  play: PlayFn
+}
+
+/**
+ * 播放页右栏（队列行）的菜单：**与当前曲目、与列表页的行同一份**曲目本体条目，
+ * 只在两头各加一项 —— 前置「立即播放这首」（不是「播放这首」：队列里点它要跳到那一行，
+ * 而不是把整队换成一首），后置「从队列移除」。
+ */
+export function buildQueueTrackActions(opts: QueueTrackActionOptions): Entry[] {
+  const { ui, position, jump, remove } = opts
+  /** 先关菜单再动手：菜单盖着时执行，toast 与列表刷新都会被挡住 */
+  const act =
+    (run: () => void): (() => void) =>
+    () => {
+      ui.closeOverlay()
+      run()
+    }
+  return buildTrackActions({
+    ui: opts.ui,
+    core: opts.core,
+    track: opts.track,
+    play: opts.play,
+    lead: [
+      {
+        key: 'jump',
+        label: '立即播放这首',
+        note: `队列第 ${position + 1} 首`,
+        onEnter: act(jump),
+      },
+    ],
+    tail: [{ key: 'remove-from-queue', label: '从队列移除', onEnter: act(remove) }],
+  })
 }
 
 /** 归属只在 `ownerId` 真能对上激活账号时才认定；对不上或上游没给，就不给改名/删除 */
@@ -62,11 +142,10 @@ function likedFromPage(core: QishuiCore, trackId: string, liked?: boolean): bool
   return cached?.tracks ? cached.tracks.some((t) => t.id === trackId) : undefined
 }
 
-export function buildRowActions(opts: RowActionOptions): RowActions {
-  const { ui, core, row, playlist, owned, afterWrite, play } = opts
-  const list = opts.list ?? []
+/** 建条目要用的那一套小工具（列表页与播放页共用同一份口径） */
+function makeKit(opts: { ui: UiValue; core?: QishuiCore; afterWrite?: () => void; play: RowActionOptions['play'] }) {
+  const { ui, core, afterWrite, play } = opts
   const loggedIn = Boolean(core?.loggedIn)
-  const entries: Entry[] = []
 
   /** 先关菜单再执行：否则动作的 toast 会被菜单挡住，且关掉后列表页自己会重读 */
   const act =
@@ -97,18 +176,17 @@ export function buildRowActions(opts: RowActionOptions): RowActions {
     (run: () => Promise<unknown>): (() => void) =>
     () =>
       void run().catch((err: unknown) => ui.toast(err instanceof Error ? err.message : String(err), 'error'))
-  /** 整列播放：把 Track 换成 TrackData 再交给出声入口 */
-  const playAll = (tracks: Track[], startTrackId?: string): Promise<void> =>
-    Promise.resolve(
-      play(
-        tracks.map((t) => t.data),
-        startTrackId,
-      ),
-    )
+  /** 整列播放：把 Track 换成 TrackData 再交给出声入口（第三个参数 = 这批属于哪份队列） */
+  const playAll = (tracks: (Track | TrackData)[], startTrackId?: string, queue?: QueueSpec): Promise<void> => {
+    const data = tracks.map((t) => ('data' in t && t.data ? t.data : (t as TrackData)))
+    // 没指定队列就不传第三参：调用方按「当前页那份队列」兜底（列表页的曲目行就是这个口径）
+    return Promise.resolve(queue ? play(data, startTrackId, queue) : play(data, startTrackId))
+  }
 
   /** 「我的喜欢」：note 报这一行自带的水印（没有再退到内存里那份收藏清单）；状态没读过就留空 */
-  const likedItem = (track: Track): Entry => {
-    const { id: trackId, name } = track
+  const likedItem = (track: TrackLike): Entry => {
+    const { id: trackId } = track
+    const name = track.data.name
     if (!loggedIn || !core) return locked('like', '加入「我的喜欢」')
     const known = likedFromPage(core, trackId, track.liked)
     return item(
@@ -127,6 +205,113 @@ export function buildRowActions(opts: RowActionOptions): RowActions {
       known === undefined ? undefined : known ? '已喜欢' : '未喜欢',
     )
   }
+
+  /** 未登录时末尾补的出口：写类条目都置灰了，总得有一条能走的路 */
+  const loginItem = (): Entry => item('login', '去登录（汽水音乐 App 扫码）', () => ui.openOverlay({ kind: 'login' }))
+
+  return { loggedIn, act, locked, item, write, sheet, popup, task, playAll, likedItem, loginItem }
+}
+
+/**
+ * 一首曲目的「本体操作」（详情 / 喜欢 / 评论 / 加入歌单 / 相似歌曲 / 不感兴趣 / 举报）。
+ *
+ * 列表页的行、播放页的当前曲目、播放页队列里的行共用这一份：`lead` 放各自的前置项
+ * （列表页是播放/下一首/队尾，队列行是立即播放），`tail` 放后置项（从队列移除、歌单改名/删除）。
+ */
+export function buildTrackActions(opts: TrackActionOptions): Entry[] {
+  const { ui, core, track, lead = [], tail = [] } = opts
+  const kit = makeKit(opts)
+  const { item, sheet, popup, write, task, playAll } = kit
+  const trackId = track.id
+  const name = track.data.name
+
+  // 本地库里的曲目（`localPath` = 磁盘上的文件）：只给**纯本地**那一套。
+  // 评论/详情/加入歌单/相似歌曲/不感兴趣/举报都是上游的动作，磁盘文件没有这些；
+  // 反过来「本地喜欢」「加入本地歌单」是本地库自己管的，不需要登录，所以这里也不该出现「（需登录）」。
+  if (track.data.localPath) {
+    const liked = core ? core.local.isTrackLiked(track) : false
+    const localOnly: Entry[] = [
+      item(
+        'local-like',
+        '本地喜欢（切换）',
+        task(async () => {
+          if (!core) return
+          const now = await core.local.toggleLike(track)
+          ui.toast(now ? `已加入本地喜欢：${name}` : `已移出本地喜欢：${name}`, now ? 'success' : 'info')
+          // 就地翻这一行的水印，本页重读之前也先对得上
+          track.data.state = { ...track.data.state, isCollected: now }
+          opts.afterWrite?.()
+        }),
+        liked ? '已喜欢' : '未喜欢',
+      ),
+      sheet('local-add', '加入本地歌单…', () => {
+        if (!core) return ui.toast('core 还没就绪，稍后再试', 'error')
+        const picks: Entry[] = core.local.playlists().map((playlist) => ({
+          key: `lp:${playlist.id}`,
+          label: playlist.title,
+          note: `${playlist.keys.length} 首`,
+          onEnter: kit.act(
+            task(async () => {
+              const added = await core.local.addToPlaylist(playlist.id, [track.data])
+              ui.toast(
+                added ? `已加入《${playlist.title}》` : `《${playlist.title}》里已经有这首了`,
+                added ? 'success' : 'info',
+              )
+              opts.afterWrite?.()
+            }),
+          ),
+        }))
+        if (!picks.length) picks.push({ key: 'none', label: '还没有本地歌单（在「本地」页按 N 新建）', disabled: true })
+        ui.openOverlay({ kind: 'actions', title: '加入本地歌单', entries: picks })
+      }),
+      {
+        key: 'path',
+        label: `文件：${truncate(track.data.localPath, 50)}`,
+        note: '磁盘上的文件',
+        disabled: true,
+      },
+    ]
+    return [...lead, ...localOnly, ...tail]
+  }
+
+  const entries: Entry[] = [...lead]
+  entries.push(
+    kit.likedItem(track),
+    sheet('comments', '评论', () => ui.openOverlay({ kind: 'comments', trackId, title: name })),
+    item('detail', '详情', () => ui.push({ kind: 'track', id: trackId })),
+    popup('add', '加入歌单', () => ui.openOverlay({ kind: 'add', trackIds: [trackId] })),
+    item(
+      'related',
+      '相似歌曲（播放入队）',
+      () =>
+        void (async () => {
+          const related = await core?.catalog.related(track, 30)
+          if (related?.length) await playAll(related, related[0]?.id)
+          else ui.toast('没拿到相似歌曲', 'info')
+        })(),
+    ),
+    // 所属专辑 / 艺人不在这里列：菜单只留「详情」一条入口，专辑与艺人都在详情页里给（避免同一行两项跳转）
+    write(
+      'dislike',
+      '不感兴趣',
+      task(async () => {
+        await core?.feedback.dislike(trackId)
+        ui.toast(`已标记不感兴趣：${name}`, 'info')
+      }),
+    ),
+    popup('report', '举报', () => ui.openOverlay({ kind: 'report', trackId, title: name })),
+  )
+  entries.push(...tail)
+  if (entries.some((entry) => entry.disabled)) entries.push(kit.loginItem())
+  return entries
+}
+
+export function buildRowActions(opts: RowActionOptions): RowActions {
+  const { ui, core, row, playlist, localPlaylist, owned, afterWrite, play } = opts
+  const list = opts.list ?? []
+  const entries: Entry[] = []
+  const kit = makeKit(opts)
+  const { item, write, task, playAll, loginItem } = kit
 
   /** 收藏 / 取消收藏一个实体：note 只报上游带的水印，写完就地翻水印 + 让本页重读 */
   const collectToggle = (opts: {
@@ -157,7 +342,8 @@ export function buildRowActions(opts: RowActionOptions): RowActions {
     const { id: trackId, name } = row
     const data = row.track.data
     const withContext = list.length > 1
-    entries.push(
+    // 前置项：列表页的第一项永远是「播放这首」，所以 `Enter Enter` 就能出声
+    const lead: Entry[] = [
       item(
         'play',
         '播放这首',
@@ -166,58 +352,50 @@ export function buildRowActions(opts: RowActionOptions): RowActions {
       ),
       item('next', '下一首播放', () => core?.player.playNext(data)),
       item('queue', '加入队尾', () => core?.player.enqueue(data)),
-      likedItem(row.track),
-      sheet('comments', '评论', () => ui.openOverlay({ kind: 'comments', trackId, title: name })),
-      item('detail', '详情', () => ui.push({ kind: 'track', id: trackId })),
-      popup('add', '加入歌单', () => ui.openOverlay({ kind: 'add', trackIds: [trackId] })),
-      item(
-        'related',
-        '相似歌曲（播放入队）',
-        () =>
-          void (async () => {
-            const related = await core?.catalog.related(trackId, 30)
-            if (related?.length) await playAll(related, related[0]?.id)
-            else ui.toast('没拿到相似歌曲', 'info')
-          })(),
-      ),
-    )
-    // 所属专辑 / 艺人不在这里列：菜单只留「详情」一条入口，专辑与艺人都在详情页里给（避免同一行两项跳转）
-    entries.push(
-      write(
-        'dislike',
-        '不感兴趣',
-        task(async () => {
-          await core?.feedback.dislike(trackId)
-          ui.toast(`已标记不感兴趣：${name}`, 'info')
-        }),
-      ),
-      popup('report', '举报', () => ui.openOverlay({ kind: 'report', trackId, title: name })),
-    )
-    if (playlist) {
-      // 页面级的歌单操作也挂在这一行的菜单里：一期先把 `e`/`D` 这两个散键收掉，不丢能力
-      entries.push(
-        write('remove', `从《${truncate(playlist.title, 20)}》移出`, () =>
-          confirmRemoveFromPlaylist({
-            ui,
-            core,
-            playlistId: playlist.id,
-            trackId,
-            name,
-            onDone: () => ui.bump(),
-          }),
-        ),
-        write('rename-playlist', '本歌单：改名', () => promptRenamePlaylist({ ui, core, id: playlist.id })),
-        write('delete-playlist', '本歌单：删歌单', () =>
-          confirmDeletePlaylist({
-            ui,
-            core,
-            id: playlist.id,
-            title: playlist.title,
-            onDone: () => ui.pop(),
-          }),
-        ),
-      )
-    }
+    ]
+    // 页面级的歌单操作也挂在这一行的菜单里：一期先把 `e`/`D` 这两个散键收掉，不丢能力
+    const tail: Entry[] = [
+      ...(playlist
+        ? [
+            write('remove', `从《${truncate(playlist.title, 20)}》移出`, () =>
+              confirmRemoveFromPlaylist({
+                ui,
+                core,
+                playlistId: playlist.id,
+                trackId,
+                name,
+                onDone: () => ui.bump(),
+              }),
+            ),
+            write('rename-playlist', '本歌单：改名', () => promptRenamePlaylist({ ui, core, id: playlist.id })),
+            write('delete-playlist', '本歌单：删歌单', () =>
+              confirmDeletePlaylist({
+                ui,
+                core,
+                id: playlist.id,
+                title: playlist.title,
+                onDone: () => ui.pop(),
+              }),
+            ),
+          ]
+        : []),
+      // 本地歌单页：把这首从这张本地歌单移出（本地库自己管，不需要登录）
+      ...(localPlaylist
+        ? [
+            item(
+              'local-remove',
+              `从《${truncate(localPlaylist.title, 20)}》移出`,
+              task(async () => {
+                if (!core) return
+                await core.local.removeFromPlaylist(localPlaylist.id, core.local.keyOf(row.track))
+                ui.toast(`已移出：${name}`, 'success')
+                afterWrite?.()
+              }),
+            ),
+          ]
+        : []),
+    ]
+    entries.push(...buildTrackActions({ ui, core, track: row.track, lead, tail, afterWrite, play }))
   } else if (row.kind === 'playlist') {
     entries.push(
       item('open', '打开歌单', () => ui.push({ kind: 'list', source: { kind: 'playlist', id: row.id } })),
@@ -228,7 +406,14 @@ export function buildRowActions(opts: RowActionOptions): RowActions {
           void (async () => {
             const entity = await core?.catalog.playlist(row.id)
             const tracks = entity ? await entity.allTracks() : []
-            if (tracks.length) await playAll(tracks)
+            if (tracks.length)
+              // 从第一首起：正在听这张时再点「播放整张」也该从头放，不是「什么都没发生」
+              await playAll(tracks, tracks[0]?.id, {
+                kind: 'playlist',
+                id: `playlist:${row.id}`,
+                title: `歌单 · ${row.title}`,
+                load: async () => tracks.map((t) => t.data),
+              })
             else ui.toast('这张歌单没有曲目', 'info')
           })(),
       ),
@@ -281,7 +466,8 @@ export function buildRowActions(opts: RowActionOptions): RowActions {
         () =>
           void (async () => {
             const tracks = await core?.catalog.albumTracks(row.id)
-            if (tracks?.length) await playAll(tracks)
+            if (tracks?.length)
+              await playAll(tracks, undefined, { kind: 'temporary', title: `临时 · 专辑 ${row.title}` })
             else ui.toast('这张专辑没有曲目', 'info')
           })(),
       ),
@@ -336,7 +522,7 @@ export function buildRowActions(opts: RowActionOptions): RowActions {
     )
   }
 
-  if (entries.some((entry) => entry.disabled))
-    entries.push(item('login', '去登录（汽水音乐 App 扫码）', () => ui.openOverlay({ kind: 'login' })))
+  // 曲目行的条目是 `buildTrackActions` 出的，那里已经补过「去登录」，别补第二次
+  if (row.kind !== 'track' && entries.some((entry) => entry.disabled)) entries.push(loginItem())
   return { title: `${row.kind === 'track' ? row.name : row.title} 的操作`, entries }
 }

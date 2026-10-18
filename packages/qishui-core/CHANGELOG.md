@@ -6,6 +6,34 @@
 
 ### Added
 
+- **`core.queues`（`player/queues.ts` 的 `QueueBook`）：按来源分的多份播放队列 + 推荐队列的滑动窗口续批**
+  - **问题**：`Player` 只有一条队列，界面上「换一批推荐 / 点一张歌单 / 搜一首歌」都是整队覆盖 —— 推荐流一旦被覆盖就回不去了，只能从头再取
+  - **做法**：`Player` 仍然只有一条「在播队列」，`QueueBook` 在它上面管**多份**（`recommend` / `playlist` / `liked` / `temporary`），每份记自己的曲目、播到第几首、shuffle 偏好；切走时 `park()` 停放、切回 `activate()` 接着上次那一首，不重新取数。`applying` 守卫让「书架自己改播放器队列」不被误当成用户操作再触发滚窗/续批；`refillGen` 作废在途取数
+  - **四种策略**：`recommend` = 滑动窗口（前进一首踢掉「上上个」、剩 ≤2 首补一批、窗口钳在 2~8 首、顺序播）+ 队列播完自动重启续批、连续 2 批失败停；`playlist` = 整张顺序播、每张一份（`playlist:<id>` / 本地 `local-playlist:<id>`）；`liked` = 随机；`temporary` = 每次 `open` 整队替换（所有浏览型结果共用一份 `temporary`）
+  - **事件**：`queues-changed`（书架/索引变化，界面据此重画）、`queue-note`（续批失败、队列没取到曲目这类要说的话）；`useAccount()` 换号时 `queues.reset()` 整份清空
+  - **接口**：`open(opts)` / `activate(id, startTrackId?)` / `remove(id)` / `list()` / `info()` / `stopRefill()` / `reset()`，外加常量 `RECOMMEND_WINDOW_MAX=8` / `RECOMMEND_REFILL_AT=2` / `RECOMMEND_MAX_FAILURES=2`（包入口导出）
+  - 离线单测 `test/queues.test.ts` 10 条：临时队列整队替换且顺序播、歌单切走再切回不重取、重新打开在播的那张歌单不跳回第一首、喜欢随机、推荐窗口 ≤8 且索引不倒退、只有在播那份推荐队列标「自动续批」、推荐恢复不重取、连续 2 批失败停续批、换号清空
+- **推荐请求的种子 `played_media`：口径对齐官方 App（反编译 `reaSodaMusic`）**
+  - 新增 `buildPlayedMedia(core, opts)`（`src/playedMedia.ts`，包入口导出）：**待播队列**（当前曲目之后、逆序，`played_mills: -1` —— App 对「还没播」就这么标）→ **云端最近播放**（`GetRecentPlayedTracks`，账号级、跨设备，登录态才有）→ **本地 `journal/plays.jsonl`** 里云端没有的按时间新→旧补上；按 `media_id` 去重后截断到 **30 条**（`PLAYED_MEDIA_MAX`，与 App 的 `MAX_COUNT` 同一个值）。`includeQueue`/`includeCloud`/`includeLocal`/`limit` 可分别关。云端没有「听了多久」，本地同曲记录有就补 `played_mills`、没有就不填（不编 0）。未登录/云端失败只剩本地那半，不抛错、不阻断推荐
+  - `feedSongTab()` 默认带 `played_media`（`withPlayedMedia: false` 关），并按 App 的字段集补齐 `is_did_first_request` / `did_first_use_time` / `feed_counts.mix_session_count`，偏好档也按 App 塞进 `feed_preference: {preference_mode}`（顶层 `preference_mode` 降级为兼容字段）。`did_first_use_time` 我们没有 App 那个落盘值，用**本机最早一条播放记录的时刻**当代理（`PlayHistory.firstAt()`，新增），没有历史就取当前时刻；`is_did_first_request` = 进程内第一次请求且本机还没有播放记录
+  - `catalog.related()` 补齐 App 口径：`media_list` 仍是**1 个种子**，另带该曲全部 `artist_ids`、`scene_name`（默认 `'search'`，App 那条队列就是「搜索推荐」）与 `played_media`。保留两处有意差异：`full_media: true`（要完整实体）与 `req_count`（条数由调用方定）
+  - `radioTracks()` 补齐 App 口径：`radio_id` + `cursor` + `flow_type`（默认 2）+ `trigger_info`（默认 `''`）；新增 `radioFlowParams(resource.raw)`，按 App 的做法从队列资源 `style.link` 的查询串里抠后两个参数
+  - 离线单测：`test/playedMedia.test.ts` 5 条（队列逆序/本地/云端+本地混合去重/30 条截断/开关）+ `test/discover.test.ts` 6 条（会话字段、`is_did_first_request` 两态、`withPlayedMedia: false`、radio 参数与 `radioFlowParams`）+ `test/catalog.test.ts` 2 条（`related` 请求体逐字段断言、只给 id 时的 `artist_ids` 补取）
+
+- **`Player.removeFromQueue(position)` + `PlayQueue.removeAt(position)`：按「播放顺序」从队列里移除一首**（TUI 播放页右栏的「从队列移除」）
+  - 老接口 `PlayQueue.remove(index)` 收的是**加入顺序**下标，而界面（TUI 播放页队列、CLI 的 `queue`）画的是**播放顺序** `playOrder`：随机播放时两者不是一回事，同一首还可能在队列里出现两次（`enqueue` 允许重复），拿 id 反查 `items` 会移错行。新方法直接按 `order` 里的位置取，移除位在当前曲目之前时游标跟着左移（保持「还是在听这一首」）
+  - `Player.removeFromQueue` 移完发一次 `queue` 事件（界面才有得重画）；**移掉的正好是当前这首就接着播新的当前**，队列空了就 `stop` —— 否则会留下「在响 A、队列说 B」的分裂状态
+  - 离线单测 `test/player.test.ts` 2 条：移当前这首会切到新的当前、队列移空会停、不存在的位置不动也不发事件；随机播放下仍按「界面看到的那一行」移除
+
+- **本地库 `core.local`：本地喜欢 / 本地歌单 / 音乐文件夹（纯本地、不出网、跨账号共享）**
+  - **落盘**：`<数据目录>/local/library.json`（`paths.localLibraryFile`）—— 一张表三件事：`tracks` 曲目快照索引（本地文件与云端曲目都留一份，列表页因此离线也能画；快照刻意**不留** `raw` 上游原始响应与 `state` 我态水印，后者会过期）、`likes`（加入顺序）、`playlists`（`keys` 指向索引）、`folders`（音乐文件夹绝对路径）。同步读 + 原子写（`LocalLibraryStore`）：菜单要在同一帧里知道「这首在不在本地喜欢里」，一个 await 就会让行操作菜单晚一帧才出来
+  - **曲目键只有两种**：本地文件 `local:<路径 sha1 前 16 位>`、云端曲目 `track:<id>`（`localKeyOf` / `local.keyOf`）。本地喜欢与本地歌单因此能混装两者
+  - **文件夹扫描** `local.scan(folder)` / `scanAll()`：递归收 20 种音频扩展名，跳过隐藏项、**不跟符号链接**（软链成环会卡死），上限 5000 文件 / 12 层目录、到上限标 `truncated`；**只认文件名**（`01 - 艺人 - 歌名.flac` 猜艺人/曲名，专辑名用目录名），不引第三方 tag 解析库 —— 时长交给播放器报回来（`local.rememberDuration` 回填快照）。目录读不到返回 `error` 而不是抛，一个坏目录不毁整次扫描
+  - **本地喜欢**：`like/unlike/toggleLike/isTrackLiked/likes()`，不联网；**本地歌单**：`createPlaylist/renamePlaylist/deletePlaylist/addToPlaylist/removeFromPlaylist/playlistTracks()`，全在本地库上做，不需要会话
+  - **本地文件播放**：`TrackData.localPath` 即播放源 —— `PlaySource.kind` 新增 `'local'`，`Player.startCurrent` 遇到 `localPath` 直接 `local.sourceFor()`（文件不在了就报「本地文件不在了」，不去撞上游分享页），不再走 `media.resolve`；`media.recordPlay` 与「上报最近播放」对本地曲目跳过；`lyricsFor()` 对本地曲目直接 `undefined`（磁盘文件没有上游歌词）
+  - **播放历史带上路径**：`PlayRecord` 新增 `path`（`source: 'local'` 时是绝对路径），本地历史据此能重播文件；`local.history(limit)` 是 journal 的曲目视图（纯本地拼装、不发一个请求），`local.clearHistory()` 只清本机 journal
+  - `parseTrack/parseTrackRef` 透传 `localPath`（上游没有这个字段），否则过一次 `core.track()` 就把「这是磁盘文件」丢了
+  - 离线单测 `test/local.test.ts` 15 条：文件名解析与键稳定性、递归扫描（隐藏项/非音频/上限/坏目录）、文件夹去重与「找不到」、本地喜欢落盘后重开可读、本地歌单增删改、本地文件播放（`source.kind='local'` + 历史记 `path`）、文件被删的报错口径、本地曲目无歌词、历史曲目视图 —— 全程零上游请求（`mock.count()` 断言）
 - **听歌模式收成一个值、一处取批**（TUI 把侧边栏第 3 项从「电台」重做成「听歌」单选台的后端口子）：
   - `FeedModeRef = {kind:'preference', mode} | {kind:'scene', radioId}` —— 「当前用哪个模式听」的唯一形态；配 `formatFeedMode()` / `parseFeedMode()`（文法 `preference:<mode>` | `scene:<radioId>`，**认不出或空串一律 `undefined`，不猜**——场景是短数字、首页 `discover_radio` 是雪花 id，「纯数字就当场景 id」这种隐式判定等于替上游下结论）。三个连同 `FEED_PREFERENCE_MODES` 都从包入口导出。
   - `config.feedMode: string`（默认 `''` = 没选过）：上游**没有**「保存听歌模式」的写接口，`feed_mode_bar` 也只回它自己当前的那一条，所以这一项声称的是「本机记住的偏好」，不是上游状态。它同时是全仓唯一带写回通道的配置项（`saveConfig()`），CLI `config set` 的白名单直接取 `CONFIG_DEFAULTS` 的键、字符串原样透传，**不用改 CLI**。
@@ -22,6 +50,10 @@
 
 ### Fixed
 
+- **缓存写盘失败会把整条调用带崩**（盘满 / `~/.qishui` 只读 / 权限不对时）：`EntityCache.set()` 原来 `await writeJsonAtomic()` 不接错，`EROFS`/`ENOSPC` 直接冒到 `fetch()` 外面——搜索、详情、歌单这些明明上游已经回数据了，却整条报错（实测：只读 home 下 `qishui artist <id> --albums` 直接 `EROFS` 退出）。缓存是**尽力而为**：内存里已经命中，落盘只影响下次冷启动，现在写盘失败只经 `logger` 提示一次、照常返回结果。离线单测 `test/store.test.ts` 一条（把数据根指到一个文件上，必然 `ENOTDIR`，断言 `fetch` 照常回值、只提示一次）
+- **场景模式选不中：选「日语」推中文歌**（听歌页/CLI 的场景档全错在这条路上）：`feedModeTracks({kind:'scene'})` 原来分派到 `FeedRadioTracks {radio_id: scene_mode_id}` —— 那条路的 `radio_id` 是**电台队列**的 id（首页 `discover_radio` 的 `inner_block_id`，雪花大数），喂场景的短数字**不报错、也不生效**，回的是通用推荐池（实测 `radio_id=30`「日语」/`8`「助眠」/`999999999999` 三档各回 6 首、内容同一类中文流行）。现在场景档改走 `FeedSongTab`，场景 id 落在扁平 `feed_preference: { scene_mode_id }` 上——实测 `30` 回 12 首里 9 首日文（中島美嘉/米津玄師/まふまふ…）、`10` 粤语、`32` 古典（Mozart/巴赫）、`22` K-pop（aespa/MOMOLAND），`count=12` 就回 12 首。套一层 `{scene_mode:{scene_mode_id}}` 的形状不生效（同样回通用池），已在 `FeedSongTabOptions.sceneModeId` 上写明
+- **`FeedModeRef` 的场景改成「只能是场景」**：`{kind:'scene', radioId: string}` → `{kind:'scene', sceneModeId: number}`。`config.feedMode` 的 `scene:` 后面现在只认纯数字（老版本可能把雪花 id 写进去过，那是电台队列不是场景 → 按「没选过」处理，宁可重选也不把电台当场景播）。`FeedModeOption.radioId` 同步改成 `sceneModeId?: number`，`radioTracks()` 的注释与 README 口径一并纠正（它是电台队列，不是场景）
+- **场景批次不再串味**：`feedSongTab` 的缓存键带上 `@scene<id>`（原来只有 `preference_mode`，两个场景会顶掉对方那一批；ttl 0 只是不落盘、内存里还在）
 - **搜索结果分组认不出「这一组是什么类型」**（TUI「查看全部」404 的根）：`SearchGroup.type` 是上游 `display_type`，实测 `Search`（`/luna/search/<type>`）每个分组都回**空串**，而分组真正的判别在 `group.id`（实测 `top_results` / `playlists` / `artists` / `tracks` / `albums`）。上层一旦拿 `display_type` 当 `search_type`，请求就打 `/luna/search/` → **HTTP 404**。现在解析时补两个派生字段：`searchType`（`id` 复数 → 单数 `track`/`album`/`artist`/`playlist`；聚合组 `top_results` 映射不到就 `undefined`，不硬凑一个类型）与 `viewAll`（上游 `display_view_all` 原样转布尔，实测「你可能想搜」`false`、其余四组 `true`）——「要不要给查看全部」「这组该用哪个 type」从此只在 core 一处判断。`display_type` 仍原样留在 `type`，注释写明它不是 `search_type`。离线单测：`support/mockUpstream.ts` 的 `/luna/search/<type>` 复刻实测形态（三个分组带真实 id 与 `display_view_all`，**非那 7 个 type 直接回 404**，这条回归一旦被写回就红），`test/search.test.ts` 4 → 6 条
 - **按 `l` 一直提示「已取消收藏」、歌也不从「我喜欢的音乐」里走**（TUI 列表页/曲目详情与 CLI `liked check` 共用这条读路径）：`like/unlike` 只失效了 `collectionCache()` 那五档，**漏了 `playlist-detail`**——我的喜欢就是「我喜欢的音乐」（`type=1` 那张自动歌单），`likedTracks()`/`isLiked()` 是从 `GetPlaylistDetail` 重算的，而那一档是 `entity`（6h）。结果写完清掉的只是派生结果、重算时读回的仍是旧页：取消喜欢 → 条目没走 → 下次仍判「已喜欢」，来回按都是同一句。现在写后失效补齐 `playlist-detail`（加歌/删歌原本各自显式带的那条并进同表，不再两处各写一遍），并按 id 清被动过的实体详情（`track`/`album-detail`/`artist-detail`，响应里嵌着「我是否收藏/关注」；只清动过的 id，不把整个 entity 档抹掉，免得白打上游）。新增 `test/library.test.ts` 5 条离线单测（`support/mockUpstream.ts` 补 `/luna/me/playlist` 与 `collection/track[/delete]` 的**有状态**路由：写接口改集合、歌单详情按集合回曲目），断言写完读回真值、取消后条目真的走掉、id 级失效不误伤邻居——把 `playlist-detail` 从失效表里摘掉，其中 2 条当场红
 - **扫码登录「显示成功却没入库」（TUI 登录态不刷新的根）**：`QishuiLogin.status()` 只透传上游探测，**入库+激活只挂在 `wait()` 里**——上层（TUI 登录弹层）先轮 `status()` 看到 confirmed、再补一次 `wait()` 想让它走完流程，而 `wait()` 会重新问一遍 `check_qrconnect`，二维码在登录完成后上游常改口 expired/unknown，于是 `persist()` 一次没跑：cookie 没进 `accounts/<uid>.json`、`activeUid` 还是 undefined、`account-changed` 没发。现在 confirmed 是**单向门**：任一入口（`status()` / `wait()`）观测到 confirmed 就当场做且只做一次入库，之后无论上游怎么改口都回 confirmed；`wait()` 改走同一条探测路径，不再另起一轮 `check`。离线单测补 4 条（`support/mockUpstream.ts` 新增 passport `get_qrcode`/`check_qrconnect` 路由，扫码状态可按脚本回放、confirmed 那次下发 `sessionid`）：status 路径入库、确认后上游改口 expired、纯 wait 路径（CLI）不回归、`GetMyInfo` 拿不到身份时 cookie 仍落 `_anon.json`

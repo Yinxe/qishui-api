@@ -6,6 +6,8 @@
 
 ### Added
 
+- **`qishui search --pages <n>`：搜索能翻页了**。上游口径（2026-10-18 实测）：按类型搜（`--type track/album/artist/playlist`）20 条/页、`has_more=true`、`next_cursor` 是偏移量字符串（`"20"`→`"40"`，第二页零重复）；`--type all` 的分组是**预览**（6/3/3/3 条，没有游标）→ 配 `--pages` 会直接报错并指路。默认仍 1 页；单页时末尾会提示「还有下一页：--pages N」+ 上游游标
+- **推荐请求的种子按 App 口径带上**：`qishui feed` 默认带 `played_media`（待播队列 + 云端 `GetRecentPlayedTracks` + 本地历史，去重后 ≤30 条，core 的 `buildPlayedMedia()`），`--played` 换成 `--no-played`（默认开、要关才传）；`qishui radio` 补 `--flow-type`（默认 2）/`--trigger-info`，与 App 的 `FeedRadioTracks` 请求字段一致
 - **`qishui play scene:<id>`**：场景也能直接当播放目标（`scene:30` = 日语场景的一批）；`radio:<id>` 仍是电台队列，两个前缀各走各的路（场景短数字喂 `radio:` 会被上游忽略、回通用池）
 - **`qishui scene [sceneModeId]`：场景档单独成命令**（听歌模式的 45 个场景：日语/粤语/古典/助眠…）。不带 id 列场景表（`scene_mode_id` 是短数字，配 `scene_mode_*` 队列名）；带 id 拉该场景一批，走 core 的 `feedModeTracks({kind:'scene'})` → `FeedSongTab` 的 `feed_preference.scene_mode_id`。修的是「选日语推中文歌」：原来场景和电台队列共用 `radio` 命令，而 `radio_id` 只认电台队列的雪花 id
 

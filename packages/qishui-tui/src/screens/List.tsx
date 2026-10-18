@@ -1,4 +1,4 @@
-/** 通用列表页：所有曲目/条目列表（榜单/歌单/专辑/艺人/搜索/最近/歌单广场…；听歌模式不在这——它走 `feedStream`） */
+/** 通用列表页：所有曲目/条目列表（榜单/歌单/专辑/艺人/搜索/最近/歌单广场…；听歌模式不在这——它走推荐队列） */
 import { Box, type DOMElement, Text } from 'ink'
 import { useMemo, useRef, useState } from 'react'
 import { useCore } from '../core/context.js'
@@ -6,6 +6,7 @@ import { useUi } from '../ui/context.js'
 import { padRight, truncate } from '../ui/format.js'
 import { contentWidth, listHeight } from '../ui/layout.js'
 import { Pressable, useRowClick, useWheelScroll } from '../ui/mouse.js'
+import { queueSpecOfSource } from '../ui/queues.js'
 import { buildRowActions } from '../ui/rowActions.js'
 import { COLOR, CURRENT_PREFIX, GUTTER } from '../ui/theme.js'
 import type { ListSource } from '../ui/types.js'
@@ -32,9 +33,20 @@ export function ListScreen({ source, active }: { source: ListSource; active: boo
 
   const { state, reload, loadMore, tracks } = useList(core, effective)
   const height = listHeight(ui.rows, 6, 4)
+  /**
+   * 这一页的曲目属于哪份播放队列：歌单页 = 这张歌单的队列（顺序、各自记位置），
+   * 「我喜欢的音乐」= 随机队列，其余浏览型结果（搜索/榜单/专辑/艺人/最近）= 临时队列。
+   */
+  const pageQueue = useMemo(
+    () => (core ? queueSpecOfSource(core, effective, state.title) : undefined),
+    [core, effective, state.title],
+  )
   /** 当前页就是一张歌单：菜单里才有改名 / 删歌单 / 把这首移出去 */
   const playlist =
     source.kind === 'playlist' ? { id: source.id, title: state.title.replace(/^歌单 · /, '') } : undefined
+  /** 当前页是一张本地歌单：菜单里才有「从本歌单移出」（本地库自己管，不需要登录） */
+  const localPlaylist =
+    source.kind === 'local-playlist' ? { id: source.id, title: state.title.replace(/^本地歌单 · /, '') } : undefined
   /** 歌单广场的分类环（键盘 `[`/`]` 与鼠标点 tab 共用同一个序列） */
   const categoryList = source.kind === 'square' ? [ALL_CATEGORY, ...(state.categories ?? [])] : []
 
@@ -72,8 +84,10 @@ export function ListScreen({ source, active }: { source: ListSource; active: boo
       row,
       list: tracks,
       playlist,
+      localPlaylist,
       afterWrite: reload,
-      play: (list, startTrackId) => playRef.current(list, startTrackId),
+      // 曲目行不带队列 → 落到本页这份；歌单/专辑行自己带（「播放整张」进它自己的队列）
+      play: (list, startTrackId, queue) => playRef.current(list, startTrackId, queue ?? pageQueue),
     })
     if (actions.entries.length > 0) ui.openOverlay({ kind: 'actions', title: actions.title, entries: actions.entries })
   }
@@ -123,6 +137,7 @@ export function ListScreen({ source, active }: { source: ListSource; active: boo
     '↑↓ 选行',
     'R 刷新',
     ...(playlist ? ['歌单操作也在菜单里'] : []),
+    ...(source.kind === 'local-folder' ? ['R 重新扫描'] : []),
     ...(source.kind === 'square' ? ['[ ] 切分类'] : []),
   ]
 
@@ -161,7 +176,7 @@ export function ListScreen({ source, active }: { source: ListSource; active: boo
           return (
             <Box key={`${row.kind}:${row.id}:${index}`} flexShrink={0} paddingX={GUTTER}>
               <Text
-                inverse={selected}
+                underline={selected}
                 color={selected ? COLOR.accent : current ? COLOR.success : undefined}
                 wrap="truncate-end"
               >

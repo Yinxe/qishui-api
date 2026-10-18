@@ -62,6 +62,11 @@ export interface TrackData {
   playableRange?: { startMs?: number; durationMs?: number }
   /** 这一首「我」收藏了没有（只在响应带了 `state` 时才有值） */
   state?: MyCollectState
+  /**
+   * 磁盘上的音频文件（本地库扫出来的曲目 / 本地库里的曲目快照）。
+   * 有它就**不再走上游解析播放源**：播放器直接把这个路径交给 mpv，歌词/评论这类上游接口也不去问。
+   */
+  localPath?: string
   raw?: unknown
 }
 

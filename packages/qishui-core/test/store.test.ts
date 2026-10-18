@@ -164,6 +164,26 @@ describe('EntityCache：TTL / fetch / 失效 / 清理', () => {
     uid = undefined
   })
 
+  it('落盘失败不算调用失败（只读盘/盘满/权限不对时缓存是尽力而为）', async () => {
+    // 把数据根指到「一个文件」上：ensureDir/写文件必然失败（ENOTDIR），但 fetch 该照常回 loader 的值
+    // （`paths.entityFile()` 是 resolvePaths 里的闭包，改 `entityDir` 字段没用，得换整份 paths）
+    const broken = path.join(home, 'not-a-dir')
+    fs.writeFileSync(broken, 'x')
+    const brokenPaths: CorePaths = resolvePaths(broken)
+    const warned: string[] = []
+    const cacheBroken = new EntityCache(brokenPaths, { ttlMs: 60_000, logger: (line) => warned.push(line) })
+    const first = await cacheBroken.fetch('me', 'k', async () => ({ who: 'A' }), { ttlMs: 60_000 })
+    expect(first.value).toEqual({ who: 'A' })
+    expect(first.cached).toBe(false)
+    // 内存里照样命中（这次不落盘也不影响复用）
+    const second = await cacheBroken.fetch('me', 'k', async () => ({ who: 'B' }), { ttlMs: 60_000 })
+    expect(second.value).toEqual({ who: 'A' })
+    expect(second.cached).toBe(true)
+    // 只在第一次提示一行，别每首歌刷屏
+    expect(warned).toHaveLength(1)
+    expect(warned[0]).toContain('缓存写盘失败')
+  })
+
   it('has 只读盘不发请求；clear 全清（含全部账号目录）', async () => {
     const c = freshCache()
     uid = '444'

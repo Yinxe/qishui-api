@@ -2,6 +2,7 @@
  * 通用列表的数据层：一个 ListSource → 头信息 + 行 + 分页。
  * 覆盖设计稿里「所有曲目/条目列表」的变体，屏里只负责画与按键。
  */
+import path from 'node:path'
 import type { Album, Artist, Playlist, QishuiCore, Track, User } from 'qishui-core'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { artistNames } from './format.js'
@@ -39,6 +40,18 @@ export const trackRow = (track: Track): ListRow => ({
   durationMs: track.data.durationMs,
   track,
 })
+
+/**
+ * 本地库的曲目行：顺手把「在不在本地喜欢里」盖成行上的水印。
+ * 这一列因此对本地来源也成立 —— 本地喜欢是 core.local 自己知道的，不用问上游。
+ */
+function localTrackRows(core: QishuiCore, tracks: Track[]): ListRow[] {
+  const liked = new Set(core.local.likeKeys())
+  return tracks.map((track) => {
+    track.data.state = { isCollected: liked.has(core.local.keyOf(track)) }
+    return trackRow(track)
+  })
+}
 
 export const playlistRow = (playlist: Playlist): ListRow => ({
   kind: 'playlist',
@@ -85,7 +98,8 @@ interface PageResult {
   nextCursor?: string | number
 }
 
-async function fetchPage(core: QishuiCore, source: ListSource, cursor: string | number): Promise<PageResult> {
+/** 导出给离线单测：翻页游标的口径（回传上游 `next_cursor`，不是页序 +1）要能被验证 */
+export async function fetchPage(core: QishuiCore, source: ListSource, cursor: string | number): Promise<PageResult> {
   const count = 50
   // 页序 +1 的那几个源只会传数字进来，这里换算一次是给类型检查看的，不是兜底
   const index = typeof cursor === 'number' ? cursor : Number(cursor) || 0
@@ -109,6 +123,9 @@ async function fetchPage(core: QishuiCore, source: ListSource, cursor: string | 
           .join(' · '),
         rows: page.items.map(trackRow),
         hasMore: page.hasMore,
+        // 歌单详情的 cursor 是**偏移量**（实测 cursor 0/5/10 三段零重复），翻页要回传 next_cursor，
+        // 不能自己页序 +1：count=50 时页序 1 会被当成偏移 1，第二页整页都是重复的
+        nextCursor: page.cursor,
       }
     }
     case 'album': {
@@ -133,10 +150,23 @@ async function fetchPage(core: QishuiCore, source: ListSource, cursor: string | 
       }
       if (source.tab === 'tracks') {
         const page = await core.catalog.artistTracks(source.id, { cursor: index, count })
-        return { ...base, subtitle: '全部歌曲', rows: page.items.map(trackRow), hasMore: page.hasMore }
+        // 艺人曲目的 cursor 也是偏移量（实测大艺人 50 条/页、cursor 50 → 第二页零重复）
+        return {
+          ...base,
+          subtitle: '全部歌曲',
+          rows: page.items.map(trackRow),
+          hasMore: page.hasMore,
+          nextCursor: page.cursor,
+        }
       }
       const page = await core.catalog.artistAlbums(source.id, { cursor: index, count })
-      return { ...base, subtitle: '专辑', rows: page.items.map(albumRow), hasMore: page.hasMore }
+      return {
+        ...base,
+        subtitle: '专辑',
+        rows: page.items.map(albumRow),
+        hasMore: page.hasMore,
+        nextCursor: page.cursor,
+      }
     }
     case 'liked': {
       if (index > 0) return { rows: [], hasMore: false }
@@ -225,6 +255,8 @@ async function fetchPage(core: QishuiCore, source: ListSource, cursor: string | 
         title: `歌单 · ${source.nickname ?? source.uid}`,
         rows: page.items.map(playlistRow),
         hasMore: page.hasMore,
+        // GetUserPlaylists 的 cursor 同口径（上游 next_cursor 原样回传，别页序 +1）
+        nextCursor: page.cursor,
       }
     }
     case 'user-following':
@@ -244,8 +276,11 @@ async function fetchPage(core: QishuiCore, source: ListSource, cursor: string | 
       }
     }
     case 'search': {
-      if (index > 0) return { rows: [], hasMore: false }
-      const result = await core.search.search(source.query, { type: source.type })
+      // 「查看全部」进来时 `type` 一定是单一类型（track/album/artist/playlist）：实测这类搜索 20 条/页、
+      // `has_more=true`、`next_cursor` 是偏移量字符串（"20"/"40"，第二页零重复）——能真翻页。
+      // 而 `all` 的分组是预览（6/3/3/3 条，has_more=false、cursor 空），翻不了，所以只在拿到游标时给 loadMore。
+      const cursorArg = typeof cursor === 'string' && cursor !== '' ? cursor : undefined
+      const result = await core.search.search(source.query, { type: source.type, cursor: cursorArg })
       const rows: ListRow[] = []
       for (const group of result.groups) {
         rows.push(...group.tracks.map(trackRow))
@@ -253,7 +288,60 @@ async function fetchPage(core: QishuiCore, source: ListSource, cursor: string | 
         rows.push(...group.albums.map(albumRow))
         rows.push(...group.artists.map(artistRow))
       }
-      return { title: `搜索「${source.query}」`, rows, hasMore: false }
+      const more = result.groups.find((group) => group.hasMore && group.cursor)
+      return {
+        title: `搜索「${source.query}」`,
+        subtitle: source.type === 'all' ? '综合预览' : undefined,
+        rows,
+        hasMore: Boolean(more),
+        nextCursor: more?.cursor,
+      }
+    }
+    /* ---------------------------------------------------------- 本地库（core.local，不出网） */
+    case 'local-likes': {
+      if (index > 0) return { rows: [], hasMore: false }
+      const tracks = core.local.likes()
+      return {
+        title: '本地喜欢',
+        subtitle: `${tracks.length} 首 · 只在这台机器上`,
+        rows: localTrackRows(core, tracks),
+        hasMore: false,
+      }
+    }
+    case 'local-history': {
+      if (index > 0) return { rows: [], hasMore: false }
+      const tracks = core.local.history(200)
+      return {
+        title: '本地历史',
+        subtitle: `${tracks.length} 条 · 这台机器放过什么（云端那张表另算）`,
+        rows: localTrackRows(core, tracks),
+        hasMore: false,
+      }
+    }
+    case 'local-playlist': {
+      if (index > 0) return { rows: [], hasMore: false }
+      const playlist = core.local.playlist(source.id)
+      const tracks = core.local.playlistTracks(source.id)
+      return {
+        title: `本地歌单 · ${playlist?.title ?? source.id}`,
+        subtitle: `${tracks.length} 首 · 只在这台机器上`,
+        rows: localTrackRows(core, tracks),
+        hasMore: false,
+      }
+    }
+    case 'local-folder': {
+      if (index > 0) return { rows: [], hasMore: false }
+      const result = await core.local.scan(source.path)
+      // 目录读不到就直接报错（ErrorState + `R` 重试），不画一张空列表糊过去
+      if (result.error) throw new Error(`扫不了这个目录：${result.error}`)
+      // 扫出来的是裸数据，包成实体再进列表（与其它来源同一形状）
+      const tracks = result.tracks.map((data) => core.track(data))
+      return {
+        title: `文件夹 · ${path.basename(result.folder) || result.folder}`,
+        subtitle: `${result.tracks.length} 首${result.truncated ? ' · 到扫描上限了，只列了一部分' : ''} · ${result.folder}`,
+        rows: localTrackRows(core, tracks),
+        hasMore: false,
+      }
     }
     case 'mix': {
       if (index > 0) return { rows: [], hasMore: false }

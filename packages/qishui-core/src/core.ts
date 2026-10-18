@@ -8,9 +8,11 @@ import { type CoreConfig, loadConfig, saveConfig } from './config.js'
 import { Album, Artist, Chart, Comment, Playlist, Track, User } from './entities.js'
 import { Emitter, type EventMap } from './events.js'
 import { PlayHistory, type PlayRecord, type PlayStats } from './history.js'
+import { LocalService } from './local/service.js'
 import { asAlbum, asArtist, asChart, asComment, asPlaylist, asTrack, asUser, coerceTrack } from './parse.js'
 import type { CorePaths } from './paths.js'
 import { Player } from './player/player.js'
+import { QueueBook } from './player/queues.js'
 import { AccountService } from './services/account.js'
 import { CatalogService } from './services/catalog.js'
 import { CommentsService } from './services/comments.js'
@@ -34,6 +36,10 @@ export interface CoreEvents extends EventMap {
   log: { line: string }
   /** 激活账号变了（登录/切号/登出都会发；undefined = 回到匿名） */
   'account-changed': { uid?: string }
+  /** 播放队列书架变了（打开 / 切换 / 推荐队列滚窗口 / 续批） */
+  'queues-changed': { activeId?: string }
+  /** 队列自己要说的一句话（续批失败、停止自动续播） */
+  'queue-note': { message: string; kind: 'info' | 'error' }
 }
 
 export interface QishuiOptions {
@@ -78,7 +84,9 @@ interface CoreDeps {
  * ```
  *
  * 子服务：`session` / `account` / `catalog` / `discover` / `search` / `library` /
- * `comments` / `social` / `feedback` / `link` / `media` / `cache` / `player`。
+ * `comments` / `social` / `feedback` / `link` / `media` / `cache` / `player` /
+ * `queues`（按来源分的多份播放队列：推荐 / 歌单 / 喜欢 / 临时，见 `player/queues.ts`）/
+ * `local`（本地喜欢 / 本地歌单 / 音乐文件夹，纯本地不出网）/ `history`（播放历史）。
  */
 export class QishuiCore {
   readonly config: CoreConfig
@@ -89,6 +97,10 @@ export class QishuiCore {
   readonly media: MediaCache
   readonly history: PlayHistory
   readonly player: Player
+  /** 播放队列书架：推荐 / 我喜欢 / 每张歌单 / 临时，各自记位置（在播的那份仍在 `player` 里） */
+  readonly queues: QueueBook
+  /** 本地库：本地喜欢 / 本地歌单 / 音乐文件夹（不出网，跨账号共享） */
+  readonly local: LocalService
 
   readonly account: AccountService
   readonly catalog: CatalogService
@@ -124,6 +136,8 @@ export class QishuiCore {
     this.history = new PlayHistory(this.paths)
     this.history.setScope(this.session.uid)
     this.player = new Player(this, options.player)
+    this.queues = new QueueBook(this)
+    this.local = new LocalService(this)
     this.account = new AccountService(this)
     this.catalog = new CatalogService(this)
     this.discover = new DiscoverService(this)
@@ -133,6 +147,9 @@ export class QishuiCore {
     this.social = new SocialService(this)
     this.feedback = new FeedbackService(this)
     this.link = new LinkService(this)
+    // 队列书架的自动行为挂在播放器事件上：滚窗口（踢上上个）与续批都在那儿发生
+    this.player.on('queue', () => this.queues.onPlayerQueue())
+    this.player.on('ended', ({ action }) => this.queues.onPlayerEnded(action))
   }
 
   static async create(options: QishuiOptions = {}): Promise<QishuiCore> {
@@ -204,6 +221,8 @@ export class QishuiCore {
    */
   async useAccount(uid: string): Promise<void> {
     this.player.clear()
+    // 换号 = 换一份「我的喜欢 / 我的歌单」：书架上的队列跟着作废
+    this.queues.reset()
     await this.session.useAccount(uid)
     this.cache.clearMemory()
     this.history.setScope(this.session.uid)

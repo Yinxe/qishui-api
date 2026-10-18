@@ -209,12 +209,19 @@ export function SearchScreen({ active }: { active: boolean }) {
         core,
         row,
         list,
-        play: (tracks, startTrackId) => playRef.current(tracks, startTrackId),
+        // 搜索结果 = 浏览型结果 → 临时队列（每次搜一批就整队替换上一批）
+        play: (tracks, startTrackId, queue) =>
+          playRef.current(
+            tracks,
+            startTrackId,
+            queue ?? { kind: 'temporary', title: `临时 · 搜索「${submitted || query}」` },
+          ),
       })
       if (actions.entries.length > 0)
         ui.openOverlay({ kind: 'actions', title: actions.title, entries: actions.entries })
     },
-    [core, ui],
+    // submitted / query 只用来给临时队列起名，但它们变了菜单标题也该跟着变，所以照实进依赖
+    [core, ui, submitted, query],
   )
 
   const sections = useMemo<Section[]>(() => {

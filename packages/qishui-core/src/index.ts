@@ -93,6 +93,28 @@ export { Album, Artist, Chart, Comment, Playlist, Track, User } from './entities
 export { CacheError, CoreError, MediaUnavailableError, NotLoggedInError } from './errors.js'
 export { Emitter, type EventMap } from './events.js'
 export { PlayHistory, type PlayRecord, type PlayStats } from './history.js'
+/* ------------------------------------------------------------ 本地库（本地喜欢 / 本地歌单 / 音乐文件夹）
+ * 纯本地、不出网；`core.local` 是入口，这里的类型给上层做形状约束。 */
+export {
+  AUDIO_EXTENSIONS,
+  isAudioFile,
+  localKeyOf,
+  parseFileName,
+  SCAN_MAX_DEPTH,
+  SCAN_MAX_FILES,
+  type ScanOptions,
+  type ScanResult,
+  scanFolder,
+  trackFromFile,
+} from './local/scan.js'
+export {
+  type LocalFolder,
+  type LocalScanSummary,
+  LocalService,
+  type LocalStats,
+  resolveFolderInput,
+} from './local/service.js'
+export { emptyLibrary, type LocalLibraryFile, LocalLibraryStore, type LocalPlaylist } from './local/store.js'
 /* ------------------------------------------------------------ 解析工具（自定义响应处理时用）
  * `unwrap` 剥包装、`collect*` 从任意响应里递归捞实体、`asX` 做形状识别。 */
 export {
@@ -131,6 +153,13 @@ export {
   unwrap,
 } from './parse.js'
 export { type CorePaths, defaultDataDir, resolvePaths, safeSegment } from './paths.js'
+/* ------------------------------------------------------------ 推荐请求的种子 */
+export {
+  buildPlayedMedia,
+  type MediaPlayedSeed,
+  PLAYED_MEDIA_MAX,
+  type PlayedMediaOptions,
+} from './playedMedia.js'
 export { type LyricLine, Lyrics, type LyricWord } from './player/lyrics.js'
 /* ------------------------------------------------------------ 播放器 */
 export {
@@ -143,6 +172,15 @@ export {
   type TrackInput,
 } from './player/player.js'
 export { PlayQueue, type PlayQueueOptions } from './player/queue.js'
+export {
+  type OpenQueueOptions,
+  QueueBook,
+  type QueueInfo,
+  type QueueKind,
+  RECOMMEND_MAX_FAILURES,
+  RECOMMEND_REFILL_AT,
+  RECOMMEND_WINDOW_MAX,
+} from './player/queues.js'
 /* ------------------------------------------------------------ 服务与它们的输入输出类型 */
 export { AccountService, type CommerceSummary } from './services/account.js'
 export { type CatalogCacheKind, CatalogService, type MediaRef, type PageOptions } from './services/catalog.js'
@@ -169,6 +207,7 @@ export {
   type HomeView,
   type LaunchInfo,
   parseFeedMode,
+  radioFlowParams,
 } from './services/discover.js'
 export { FeedbackService, type ReportInput, type ReportReason } from './services/feedback.js'
 export { type CollectTarget, LibraryService, type PlaylistPatch } from './services/library.js'

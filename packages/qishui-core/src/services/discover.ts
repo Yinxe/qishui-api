@@ -2,6 +2,7 @@ import { CacheTtl } from '../cache/policy.js'
 import type { QishuiCore } from '../core.js'
 import { Album, Artist, Playlist, Track, User } from '../entities.js'
 import { asAlbum, asArtist, asPlaylist, asTrack, asUser, collectPlaylists, collectTracks, imageUrl } from '../parse.js'
+import { buildPlayedMedia } from '../playedMedia.js'
 import type { TrackData } from '../types.js'
 import { str } from '../util.js'
 
@@ -112,8 +113,16 @@ export interface FeedModeView {
 
 /**
  * `FeedSongTab` 的完整请求口径（IDL 见 `contract/feed.ts` 的 `FeedSongTabRequest`）。
- * 没列出来的 `is_did_first_request`/`did_first_use_time`/`feed_preference`/`feed_extra`
- * 要么需要设备侧首次使用时间这类我们没采集的量，要么结构是 opaque any，不硬编。
+ *
+ * 字段集按**官方 App 的两次实现**对齐（反编译 `reaSodaMusic`）：
+ *  - `recovered/src/services/queue/items/feed.ts`（推荐流）：
+ *    `played_media` + `did_first_use_time` + `is_first_request` + `is_did_first_request` + `feed_counts.mix_session_count`；
+ *  - `recovered/src/services/queue/items/feedmode.ts`（听歌模式）：
+ *    同上再加 `feed_preference`（偏好档是 `{preference_mode}`、场景档是 `{scene_mode_id}`）。
+ *
+ * 我们额外保留 `feed_mode`/`preference_mode`/`count`/`total_request_count`/`preference_mode_request_count`
+ * ——这几项是本项目实测过被上游接受的口径（见 `feedSongTabBody`），App 的请求里没有但不冲突。
+ * 偏好档也按 App 塞进 `feed_preference: { preference_mode }`（顶层 `preference_mode` 只当兼容字段）。
  */
 export interface FeedSongTabOptions {
   preferenceMode?: FeedPreferenceMode
@@ -132,10 +141,13 @@ export interface FeedSongTabOptions {
   /** 一次要几首，上游默认 6 */
   count?: number
   /**
-   * 带本地播放历史当 `played_tracks`。**默认关**：我们只本地记历史、没向上游报播放时长，
-   * 主动上报反而暴露「只播不报」；等播放时长的上报口径补上再默认开。
+   * 带播放历史当 `played_media` 种子。**默认开**：与 App 口径一致（App 每次推荐都带，≤30 条）。
+   *
+   * 种子的来源见 `buildPlayedMedia()`：待播队列（逆序、`played_mills: -1`）→
+   * 云端 `GetRecentPlayedTracks`（账号级、跨设备，登录态才有）→ 本地 `journal/plays.jsonl` 补缺，
+   * 去重后截断到 30 条。不想带（比如离线/省一次云端请求）传 `false`。
    */
-  withPlayedTracks?: boolean
+  withPlayedMedia?: boolean
   /** 排除本激活号听过的（journal 最近 500 条）——纯客户端过滤，不赌上游是否真吃 `preference_mode` */
   excludePlayed?: boolean
   /** 排除「我喜欢」里的（要登录；拉不到就跳过） */
@@ -183,6 +195,28 @@ export function parseFeedMode(raw: string | undefined): FeedModeRef | undefined 
 }
 
 /**
+ * 从 `discover_radio` 资源的 `style.link` 里抠 `FeedRadioTracks` 的两个参数
+ * （App 的 `RadioQueueItem` 就是 `new URL(link).searchParams` 这么取的）。
+ *
+ * 拿不到 link / 解析失败就回缺省值（`flow_type: 2`、`trigger_info: ''`），与 App 一致。
+ * 用法：`core.discover.radioTracks(id, radioFlowParams(resource.raw))`。
+ */
+export function radioFlowParams(raw: unknown): { flowType: number; triggerInfo: string } {
+  const link = str((raw as { style?: { link?: unknown } } | undefined)?.style?.link) ?? ''
+  let params: URLSearchParams
+  try {
+    params = new URL(link).searchParams
+  } catch {
+    params = new URLSearchParams()
+  }
+  const flow = Number(params.get('flow_type') ?? 2)
+  return {
+    flowType: Number.isFinite(flow) ? flow : 2,
+    triggerInfo: params.get('trigger_info') ?? '',
+  }
+}
+
+/**
  * 发现 / 推荐：
  *  - `home()` = `DiscoverView` 推荐页版（空 body）：榜单块 + 歌单推荐 + 场景队列，一次 159 条资源；
  *  - `home({layout:'feed'})` = 听歌模式版：30 个 `discover_radio` 场景队列，**没有榜单块**；
@@ -195,7 +229,15 @@ export class DiscoverService {
   constructor(private core: QishuiCore) {}
 
   /** 本次进程里 FeedSongTab 的请求计数（App 用它区分冷启动首刷与后续翻页） */
-  private readonly feedTabSession = { total: 0, byMode: new Map<string, number>() }
+  private readonly feedTabSession = {
+    total: 0,
+    byMode: new Map<string, number>(),
+    /**
+     * `is_did_first_request`（App 存在本地 storage 里，只有「这台设备第一次用」那一次为 true）。
+     * 我们没把这个值落盘：进程内第一次请求、且本机还没有任何播放记录时算 true，之后一直 false。
+     */
+    didFirstRequest: undefined as boolean | undefined,
+  }
 
   private get parseOpts() {
     return { coverWidth: this.core.config.coverWidth }
@@ -255,9 +297,10 @@ export class DiscoverService {
 
   /**
    * 「随便听听」的单曲推荐 tab（一次默认 6 首，含完整 album/artists）。
-   * 请求按 App 口径补齐：`feed_mode`/`preference_mode`/`count` + 会话计数
-   * （`is_first_request`/`total_request_count`/`preference_mode_request_count`）；
-   * 本地播放历史 `played_tracks` 机制在，默认不带（见 `FeedSongTabOptions.withPlayedTracks`）。
+   * 请求按 App 口径补齐：`played_media` 种子 + `feed_mode`/`preference_mode`/`count` + 会话计数
+   * （`is_first_request`/`total_request_count`/`preference_mode_request_count`）+
+   * 设备首刷口径（`is_did_first_request`/`did_first_use_time`）+ `feed_counts.mix_session_count`
+   * ——字段集见 `FeedSongTabOptions` 与 `feedSongTabBody()`。
    */
   async feedSongTab(opts: FeedSongTabOptions = {}): Promise<Track[]> {
     const mode = opts.preferenceMode ?? 'default'
@@ -265,11 +308,15 @@ export class DiscoverService {
     // 缓存键必须带场景：不然「日语」与「粤语」会互相顶掉对方那一批（ttl 0 只是不落盘，内存里还在）
     const key = opts.sceneModeId === undefined ? mode : `${mode}@scene${opts.sceneModeId}`
     if (!opts.excludePlayed && !opts.excludeLiked) {
+      const body = await this.feedSongTabBody(mode, opts)
       const { value } = await this.core.cache.fetch<any>(
         'feed-song-tab',
         key,
-        () => this.core.request('FeedSongTab', this.feedSongTabBody(mode, opts)),
-        { force: opts.refresh, ttlMs: CacheTtl.none },
+        () => this.core.request('FeedSongTab', body),
+        {
+          force: opts.refresh,
+          ttlMs: CacheTtl.none,
+        },
       )
       return this.feedSongTabTracks(value)
     }
@@ -279,7 +326,8 @@ export class DiscoverService {
     const seen = new Set<string>()
     const pages = Math.max(1, opts.maxPages ?? 3)
     for (let page = 0; page < pages && out.length < want; page++) {
-      const value = await this.core.request('FeedSongTab', this.feedSongTabBody(mode, { ...opts, count: want }))
+      const body = await this.feedSongTabBody(mode, { ...opts, count: want })
+      const value = await this.core.request('FeedSongTab', body)
       for (const track of this.feedSongTabTracks(value)) {
         if (seen.has(track.id)) continue
         seen.add(track.id)
@@ -308,10 +356,25 @@ export class DiscoverService {
     return ids
   }
 
-  private feedSongTabBody(mode: FeedPreferenceMode, opts: FeedSongTabOptions): Record<string, unknown> {
+  /**
+   * `FeedSongTab` 请求体（字段集对齐 App，见 `FeedSongTabOptions` 的注释）。
+   *
+   * `played_media` 是**每次请求都带**的（App 口径）：待播队列 + 云端最近播放 + 本地历史，
+   * 去重后 ≤30 条（`buildPlayedMedia()`）。关掉用 `withPlayedMedia: false`。
+   */
+  private async feedSongTabBody(mode: FeedPreferenceMode, opts: FeedSongTabOptions): Promise<Record<string, unknown>> {
     this.feedTabSession.total += 1
     const modeCount = (this.feedTabSession.byMode.get(mode) ?? 0) + 1
     this.feedTabSession.byMode.set(mode, modeCount)
+
+    // App 的 did_first_use_time 是「这台设备第一次用」的时刻（它落在本地 storage）。
+    // 我们没有那个值，用本机最早一条播放记录的时间当代理；没有历史就取当前时刻。
+    const firstUseAt = this.core.history.firstAt()
+    if (this.feedTabSession.didFirstRequest === undefined) {
+      this.feedTabSession.didFirstRequest = firstUseAt === undefined
+    }
+    const didFirst = this.feedTabSession.didFirstRequest
+
     const body: Record<string, unknown> = {
       feed_mode: opts.feedMode ?? 'track',
       preference_mode: mode,
@@ -319,22 +382,21 @@ export class DiscoverService {
       is_first_request: this.feedTabSession.total === 1,
       total_request_count: this.feedTabSession.total,
       preference_mode_request_count: modeCount,
+      is_did_first_request: didFirst,
+      did_first_use_time: Math.floor((firstUseAt ?? Date.now()) / 1000),
+      feed_counts: { mix_session_count: this.feedTabSession.total },
     }
+    // App 的偏好档也是塞进 `feed_preference` 的（`feedmode.ts`: `{preference_mode: sub_queue_type}`），
+    // 顶层的 `preference_mode` 是我们自己额外发的兼容字段（实测上游照收，但没验过它是否真改变分布）。
     if (opts.sceneModeId !== undefined) {
       // 形状是扁平的 `{scene_mode_id}`（实测；套一层 `{scene_mode:{...}}` 不生效）
       body.feed_preference = { scene_mode_id: opts.sceneModeId }
+    } else {
+      body.feed_preference = { preference_mode: mode }
     }
-    if (opts.withPlayedTracks) {
-      const played = this.core.history.recent(20).reverse()
-      if (played.length) {
-        // IDL 里 TrackPlayed 是 opaque any，字段名按同构的 MediaPlayed（entity/media.ts）推的，效果未对上游验证
-        body.played_tracks = played.map((r) => ({
-          track_id: r.trackId,
-          played_mills: r.playedMs ?? r.durationMs ?? 0,
-          duration: r.durationMs ?? 0,
-          play_timestamp: Math.floor(r.at / 1000),
-        }))
-      }
+    if (opts.withPlayedMedia !== false) {
+      const played = await buildPlayedMedia(this.core)
+      if (played.length) body.played_media = played
     }
     return body
   }
@@ -362,17 +424,31 @@ export class DiscoverService {
    * 电台队列的曲目批次：`radioId` 是首页 `discover_radio` 块的 `inner_block_id`（雪花大数，
    * 与 `resources[].resource_id` / link 里的 `queue_id` 同一个值）。
    *
+   * 请求口径对齐 App（`recovered/src/services/queue/items/radio.ts`）：
+   * `radio_id` + `cursor` + `flow_type` + `trigger_info`。后两个 App 是从队列资源的
+   * `style.link` 查询串里抠的（`radioFlowParams()` 做同一件事），缺省 `flow_type=2`/`trigger_info=''`。
+   *
    * **别拿场景的 `scene_mode_id` 喂这里**：短数字不报错、但也不生效，回的是通用推荐池
    * （实测 `radio_id=30`/`8`/`999999999999` 三档各回 6 首、内容同一类）。场景走
    * `feedSongTab({sceneModeId})`——那是唯一能让场景真正生效的路。
    * **一次只随机给一小批（实测 6 首）**，是「连着播的批次来源」，不是一屏可浏览的列表。
    */
-  async radioTracks(radioId: string | number, opts: { refresh?: boolean } = {}): Promise<Track[]> {
-    const key = String(radioId)
+  async radioTracks(
+    radioId: string | number,
+    opts: { cursor?: string; flowType?: number; triggerInfo?: string; refresh?: boolean } = {},
+  ): Promise<Track[]> {
+    const cursor = opts.cursor ?? ''
+    const key = cursor ? `${radioId}@${cursor}` : String(radioId)
     const { value } = await this.core.cache.fetch<any>(
       'radio-tracks',
       key,
-      () => this.core.request('FeedRadioTracks', { radio_id: radioId }),
+      () =>
+        this.core.request('FeedRadioTracks', {
+          radio_id: radioId,
+          cursor,
+          flow_type: opts.flowType ?? 2,
+          trigger_info: opts.triggerInfo ?? '',
+        }),
       { force: opts.refresh, ttlMs: CacheTtl.none },
     )
     return collectTracks(value, this.parseOpts, 50).map((d) => new Track(this.core, d))

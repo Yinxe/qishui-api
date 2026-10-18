@@ -113,6 +113,47 @@ describe('player：队列与模式', () => {
     expect(core.player.queue.length).toBe(3)
   })
 
+  it('removeFromQueue 按播放顺序移除；移掉当前这首就接着播新的当前', async () => {
+    const t1 = await core.catalog.track(T1)
+    const t2 = await core.catalog.track(T2)
+    await core.player.play([t1, t2])
+    expect(core.player.current?.id).toBe(T1)
+    const queues: number[] = []
+    core.player.on('queue', (e) => queues.push(e.items.length))
+
+    // 移除当前这首（第 0 位）：队列只剩 T2，播放跟着切过去
+    const removed = core.player.removeFromQueue(0)
+    expect(removed?.id).toBe(T1)
+    expect(core.player.queue.length).toBe(1)
+    // 移完立刻发一次 queue 事件（界面才有得重画）；接上播下一首时 playIndex 会再发一次
+    expect(queues[0]).toBe(1)
+    await sleep(80)
+    expect(core.player.current?.id).toBe(T2)
+
+    // 移除不存在的位置：什么都不动、不发事件
+    const before = queues.length
+    expect(core.player.removeFromQueue(9)).toBeUndefined()
+    expect(queues.length).toBe(before)
+
+    // 把最后一首也移掉：队列空，播放停下（不留「在响 A、队列说空」）
+    core.player.removeFromQueue(0)
+    expect(core.player.queue.length).toBe(0)
+    await sleep(20)
+    expect(core.player.status).toBe('stopped')
+  })
+
+  it('removeFromQueue 在随机播放下仍按「界面看到的那一行」移除', async () => {
+    const t1 = await core.catalog.track(T1)
+    const t2 = await core.catalog.track(T2)
+    await core.player.play([t1, t2])
+    core.player.setShuffle(true)
+    // 播放顺序与加入顺序此时不一致：按 playOrder 第 0 位（= 当前这首）移除
+    const order = core.player.queue.playOrder.map((t) => t.id)
+    const removed = core.player.removeFromQueue(0)
+    expect(removed?.id).toBe(order[0])
+    expect(core.player.queue.playOrder.map((t) => t.id)).toEqual(order.slice(1))
+  })
+
   it('playList(startTrackId) 从指定曲目开播；clear 回 idle', async () => {
     await core.player.playList([T1, T2], T2)
     expect(core.player.current?.id).toBe(T2)

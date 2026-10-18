@@ -195,47 +195,58 @@ function addRadio(cmd: Command): void {
     .command('radio [radioId]')
     .description('电台队列：不带 id 列出首页的电台队列（DiscoverView 的 discover_radio 块）；带 id 拉该队列的一批')
     .option('--limit <n>', '最多几首', '20')
+    .option('--flow-type <n>', 'flow_type（默认 2；App 是从队列资源 style.link 的查询串里取的）', '2')
+    .option('--trigger-info <s>', 'trigger_info（默认空；同上，来自 style.link）', '')
     .option('--refresh', '该命令不缓存（参数无效，保留兼容）')
     .addHelpText(
       'after',
       '\n提示：<radioId> 是队列 id（雪花大数，`qishui radio` 表里那串）；播放整个队列用 `qishui play radio:<radioId>`。' +
         '\n想看「场景」（日语/粤语/古典…）用 `qishui scene` —— 场景是听歌模式的一档，不是电台队列。',
     )
-    .action(async (radioId: string | undefined, opts: { limit: string; refresh?: boolean }) => {
-      const instance = await core()
-      if (!radioId) {
-        const view = await instance.discover.home({ layout: 'feed', refresh: opts.refresh })
-        const queues = view.blocks
-          .filter((block) => block.type === 'discover_playlist_mix')
-          .flatMap((block) => block.inner)
-          .filter((inner) => inner.type === 'discover_radio')
-          .map((inner) => ({
-            id: inner.id ?? '',
-            title: inner.title ?? '',
-          }))
+    .action(
+      async (
+        radioId: string | undefined,
+        opts: { limit: string; flowType: string; triggerInfo: string; refresh?: boolean },
+      ) => {
+        const instance = await core()
+        if (!radioId) {
+          const view = await instance.discover.home({ layout: 'feed', refresh: opts.refresh })
+          const queues = view.blocks
+            .filter((block) => block.type === 'discover_playlist_mix')
+            .flatMap((block) => block.inner)
+            .filter((inner) => inner.type === 'discover_radio')
+            .map((inner) => ({
+              id: inner.id ?? '',
+              title: inner.title ?? '',
+            }))
+          emit(
+            () => {
+              heading('电台队列', `${queues.length} 个（discover_radio）`)
+              printTable(
+                ['队列', 'radio_id'],
+                queues.map((queue) => [queue.title, queue.id]),
+              )
+              print(dim('播放：qishui play radio:<radio_id>（qishui radio <radio_id> 只要裸 id）'))
+            },
+            { queues },
+          )
+          return
+        }
+        const tracks = await instance.discover.radioTracks(radioArg(radioId), {
+          flowType: Number(opts.flowType) || 2,
+          triggerInfo: opts.triggerInfo,
+          refresh: opts.refresh,
+        })
+        const limit = Math.max(1, Number(opts.limit) || 20)
         emit(
           () => {
-            heading('电台队列', `${queues.length} 个（discover_radio）`)
-            printTable(
-              ['队列', 'radio_id'],
-              queues.map((queue) => [queue.title, queue.id]),
-            )
-            print(dim('播放：qishui play radio:<radio_id>（qishui radio <radio_id> 只要裸 id）'))
+            heading(`电台 ${radioId}`)
+            printTrackList(tracks.slice(0, limit))
           },
-          { queues },
+          { radioId, tracks },
         )
-        return
-      }
-      const tracks = await instance.discover.radioTracks(radioArg(radioId), opts)
-      const limit = Math.max(1, Number(opts.limit) || 20)
-      emit(
-        () => {
-          heading(`电台 ${radioId}`)
-          printTrackList(tracks.slice(0, limit))
-        },
-        { radioId, tracks },
-      )
-    })
+      },
+    )
 }
 
 /**
@@ -290,7 +301,7 @@ function addFeed(cmd: Command): void {
     .description('「随便听听」单曲推荐（一次 6 首，含完整专辑/歌手）')
     .option('--mode <mode>', '偏好模式：default（推荐）| familiar（熟悉）| fresh（新鲜）', 'default')
     .option('--count <n>', '一次几首（上游默认 6）')
-    .option('--played', '带本地播放历史当 played_tracks（默认不带：只本地记历史、未向上游报播放时长）')
+    .option('--no-played', '不带播放历史种子（played_media；默认带，与 App 口径一致：待播队列 + 云端/本地历史 ≤30 条）')
     .option('--exclude <what>', '客户端过滤：played（已播）| liked（已喜欢）| both；默认 none 直接透传上游', 'none')
     .option('--refresh', '该命令不缓存（参数无效，保留兼容）')
     .action(async (opts: { mode: string; count?: string; played?: boolean; exclude?: string; refresh?: boolean }) => {
@@ -310,7 +321,7 @@ function addFeed(cmd: Command): void {
       const tracks = await instance.discover.feedSongTab({
         preferenceMode,
         count: opts.count ? Number(opts.count) : undefined,
-        withPlayedTracks: opts.played,
+        withPlayedMedia: opts.played,
         excludePlayed: what === 'played' || what === 'both',
         excludeLiked: what === 'liked' || what === 'both',
         refresh: opts.refresh,

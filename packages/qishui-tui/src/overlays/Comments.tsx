@@ -1,7 +1,7 @@
 /** 评论（覆盖层）：列表 + 分页 + 发评论 */
 import { Box, type DOMElement, Text, useInput } from 'ink'
 import type { Comment } from 'qishui-core'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useCore } from '../core/context.js'
 import { useUi } from '../ui/context.js'
 import { truncate } from '../ui/format.js'
@@ -26,17 +26,37 @@ export function CommentsOverlay({ trackId, title }: { trackId: string; title: st
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
+  /** 上游 `cursor` 是偏移量（实测 0 → '10' 两页零重复），翻页照它回传 */
+  const [next, setNext] = useState<{ cursor?: string; hasMore: boolean }>({ hasMore: false })
+  const [loadingMore, setLoadingMore] = useState(false)
 
   const load = (): void => {
     if (!core) return
     core.comments
       .list(trackId, { count: 20 })
-      .then((page) => setComments(page.items))
+      .then((page) => {
+        setComments(page.items)
+        setNext({ cursor: page.cursor, hasMore: page.hasMore })
+      })
       .catch((err: unknown) => {
         setError(err instanceof Error ? err.message : String(err))
         setComments([])
       })
   }
+
+  /** 接着拉下一页：光标走到已加载的最后一条时自动触发（键盘/滚轮/点击都走这里） */
+  const loadMore = useCallback((): void => {
+    if (!core || loadingMore || !next.hasMore || !next.cursor) return
+    setLoadingMore(true)
+    core.comments
+      .list(trackId, { count: 20, cursor: Number(next.cursor) })
+      .then((page) => {
+        setComments((current) => [...(current ?? []), ...page.items])
+        setNext({ cursor: page.cursor, hasMore: page.hasMore })
+      })
+      .catch((err: unknown) => ui.toast(err instanceof Error ? err.message : String(err), 'error'))
+      .finally(() => setLoadingMore(false))
+  }, [core, trackId, loadingMore, next.hasMore, next.cursor, ui])
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: load 每次渲染重建，只按 core/trackId 重取
   useEffect(() => {
@@ -109,6 +129,11 @@ export function CommentsOverlay({ trackId, title }: { trackId: string; title: st
     },
   })
 
+  // 光标停在最后一条（且上游说还有）就把下一页接上：不用额外按键，和列表页的 loadMore 一个体感
+  useEffect(() => {
+    if (comments && comments.length > 0 && cursor >= comments.length - 1 && next.hasMore && !loadingMore) loadMore()
+  }, [cursor, comments, next.hasMore, loadingMore, loadMore])
+
   const windowSize = 12
   const start = Math.max(0, Math.min(cursor - 5, Math.max(0, (comments?.length ?? 0) - windowSize)))
   const visible = (comments ?? []).slice(start, start + windowSize)
@@ -164,9 +189,13 @@ export function CommentsOverlay({ trackId, title }: { trackId: string; title: st
         })}
       </Box>
       {!editing && comments?.length ? (
-        <Pressable onPress={startWriting}>
-          <Text dimColor>[+ 写评论]</Text>
-        </Pressable>
+        <Box flexDirection="column">
+          <Pressable onPress={startWriting}>
+            <Text dimColor>[+ 写评论]</Text>
+          </Pressable>
+          {loadingMore ? <Text dimColor> 接着拉评论…</Text> : null}
+          {!loadingMore && !next.hasMore ? <Text dimColor> 到底了</Text> : null}
+        </Box>
       ) : null}
       {editing ? (
         <Box marginTop={1}>

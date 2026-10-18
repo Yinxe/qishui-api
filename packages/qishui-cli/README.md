@@ -97,9 +97,9 @@ qishui --help
 | `home [--layout grid\|feed] [--tracks] [--playlists]` | 首页大盘；表格直接给「播放目标」（`playlist:…` / `chart:…`） |
 | `chart [chartId] [--limit 50]` | 不带 id 列榜单块；带 id 打出整榜名次 |
 | `charts` | 只列榜单块（`chart` 的别名） |
-| `radio [radioId] [--limit 20]` | **电台队列**：不带 id 列首页的 30 条 `discover_radio` 队列（带雪花 id）；带 id 拉该队列一批。**不吃场景 id** |
+| `radio [radioId] [--limit 20] [--flow-type 2] [--trigger-info ""]` | **电台队列**：不带 id 列首页的 30 条 `discover_radio` 队列（带雪花 id）；带 id 拉该队列一批。请求按 App 口径带 `radio_id`/`cursor`/`flow_type`/`trigger_info`（后两个 App 从队列资源 `style.link` 里取，这里可手传）。**不吃场景 id** |
 | `scene [sceneModeId] [--limit 20] [--count 6]` | **场景档**（日语/粤语/古典/助眠…）：不带 id 列 45 个场景（`scene_mode_id` 是短数字）；带 id 拉该场景一批（走 `FeedSongTab` 的 `feed_preference.scene_mode_id`） |
-| `feed [--mode default\|familiar\|fresh] [--count 6] [--played] [--exclude none\|played\|liked\|both]` | 「随便听听」单曲推荐；`--mode` 也可写中文 `推荐/熟悉/新鲜`；`--played` 才带本地播放历史当 `played_tracks`（默认不带，见 core `feedSongTab`）；`--exclude` 是**客户端过滤**：本地按已播/已喜欢筛掉再翻页补齐，默认 `none` 直接透传上游 |
+| `feed [--mode default\|familiar\|fresh] [--count 6] [--no-played] [--exclude none\|played\|liked\|both]` | 「随便听听」单曲推荐；`--mode` 也可写中文 `推荐/熟悉/新鲜`；**默认带**播放历史种子 `played_media`（待播队列 + 云端/本地历史 ≤30 条，与 App 口径一致，见 core `feedSongTab`），`--no-played` 关掉；`--exclude` 是**客户端过滤**：本地按已播/已喜欢筛掉再翻页补齐，默认 `none` 直接透传上游 |
 | `square [--category <id>] [--limit 20]` | 歌单广场（含分类） |
 | `modes` | 偏好模式（推荐/熟悉/新鲜）+ **45 个场景音乐**（每个带 `scene_mode_id`，用 `qishui scene <id>` 取） |
 | `mix <blockType> [subChannelId] [--limit 20]` | 单个内容块下钻（首页块点进去看全部） |
@@ -113,7 +113,7 @@ qishui --help
 
 | 命令 | 说明 |
 |---|---|
-| `search <query> [--type all\|track\|video\|artist\|album\|playlist\|user] [--limit 20]` | 官方搜索（默认全类型；匿名走 `/luna/search`，旧的 `--h5` 已移除） |
+| `search <query> [--type …] [--limit 20] [--pages 1]` | 官方搜索（默认全类型；匿名走 `/luna/search`，旧的 `--h5` 已移除）。`--type all` 是每类预览（翻不了页）；要全量/翻页用 `--type track\|album\|artist\|playlist --pages <n>`（20 条/页，按上游 `next_cursor` 走） |
 | `suggest <query>` | 搜索框联想 |
 | `words` | 推荐搜索词 |
 | `categories` | 7 个 `search_type` tab |

@@ -99,6 +99,22 @@ export class PlayQueue {
     return removed
   }
 
+  /**
+   * 按**播放顺序**下标移除（界面上的队列行就是这个空间，`remove()` 收的是加入顺序下标）。
+   * 随机播放时两者不是一回事，同一首也可能在队列里出现两次，所以只能按 order 里的位置取，
+   * 不能拿 id 反查 `items`。移除位在当前曲目之前时游标跟着左移，保持「还是在听这一首」。
+   */
+  removeAt(position: number): TrackData | undefined {
+    const itemIndex = this.order[position]
+    if (itemIndex === undefined) return undefined
+    const [removed] = this.items.splice(itemIndex, 1)
+    this.order.splice(position, 1)
+    this.order = this.order.map((i) => (i > itemIndex ? i - 1 : i))
+    if (position < this.cursor) this.cursor--
+    if (this.cursor >= this.order.length) this.cursor = this.order.length - 1
+    return removed
+  }
+
   clear(): void {
     this.items = []
     this.order = []

@@ -26,7 +26,15 @@ export function PlayerBar() {
   const ui = useUi()
   const track = player.track
   const statusText = statusLabel(player.status)
-  const sourceTag = player.sourceKind === 'cache' ? '本地' : player.sourceKind === 'remote' ? '在线' : ''
+  // `本地` = 媒体缓存里的文件；`文件` = 用户自己磁盘上的（本地库）；`在线` = 只是签名地址
+  const sourceTag =
+    player.sourceKind === 'cache'
+      ? '本地'
+      : player.sourceKind === 'local'
+        ? '文件'
+        : player.sourceKind === 'remote'
+          ? '在线'
+          : ''
   const previewing =
     player.clipStartMs > 0 ||
     (!!track?.durationMs && player.durationMs > 0 && player.durationMs < track.durationMs - 1500)
@@ -42,7 +50,11 @@ export function PlayerBar() {
     )
   }
 
-  const openNowPlaying = (): void => ui.openOverlay({ kind: 'now-playing' })
+  /** 点曲名 / 队列计数 = 进播放页（左栏曲目信息 + 歌词，右栏队列）；已在播放页就退回原页 */
+  const openPlayer = (): void => {
+    if (ui.route.kind === 'player') ui.pop()
+    else ui.push({ kind: 'player' })
+  }
   const name = `${track.name}${track.artists?.length ? ` — ${artistNames(track.artists)}` : ''}`
   const volume = Math.round(player.volume * 100)
   const timeText = `${formatDuration(player.positionMs)}/${formatDuration(player.durationMs)}`
@@ -61,7 +73,7 @@ export function PlayerBar() {
     {
       id: 'queue',
       text: `${queue.index + 1}/${queue.items.length}${sourceTag ? ` ${sourceTag}` : ''}`,
-      onPress: openNowPlaying,
+      onPress: openPlayer,
     },
   ]
   const widthOf = (segment: Segment): number =>
@@ -84,7 +96,7 @@ export function PlayerBar() {
       <Pressable flexShrink={0} onPress={() => void toggle()}>
         <Text color={player.status === 'playing' ? COLOR.success : 'gray'}>{statusText}</Text>
       </Pressable>
-      <Pressable flexShrink={1} onPress={openNowPlaying}>
+      <Pressable flexShrink={1} onPress={openPlayer}>
         <Text wrap="truncate-end">{truncate(name, nameWidth)}</Text>
       </Pressable>
       {/* 进度条单独占一个盒子：`barRatio` 反过来算比例时，这一格必须只有进度条本身 */}

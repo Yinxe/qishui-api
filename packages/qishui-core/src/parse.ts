@@ -258,6 +258,9 @@ export function parseTrack(raw: any, opts: ParseOptions = {}): TrackData {
     vip: parseVip(raw.label_info),
     playableRange: range,
     state: collectState(raw),
+    // 本地库的曲目快照（`localPath` 是 core 自己的字段，上游不会有）：透传，否则过一次
+    // `core.track()` 就把「这是磁盘文件」这件事丢了，播放又会跑去问上游要地址
+    localPath: str(raw.localPath),
     raw,
   }
 }
@@ -280,6 +283,7 @@ export function parseTrackRef(raw: any, opts: ParseOptions = {}): TrackData {
       ? raw.artists.map((a: any) => ({ id: str(a.artist_id ?? a.id) ?? '', name: str(a.name) ?? '' }))
       : [],
     coverUrl: str(raw.cover_url) ?? imageUrl(raw.album?.url_cover, opts),
+    localPath: str(raw.localPath),
     raw,
   }
 }

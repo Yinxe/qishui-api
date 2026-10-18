@@ -20,6 +20,7 @@ import path from 'node:path'
  * │       └── cover.jpg             封面
  * ├── journal/plays.jsonl         未登录/迁移前的播放历史（append-only，一行一次）
  * ├── journal/<uid>/plays.jsonl   各账号的播放历史
+ * ├── local/library.json          本地库：本地喜欢 + 本地歌单 + 音乐文件夹（跨账号共享，不出网）
  * └── logs/                       预留（core 默认只往 stdout/logger 打）
  * ```
  *
@@ -39,6 +40,10 @@ export interface CorePaths {
   journalDir: string
   playsFile: string
   logsDir: string
+  /** 本地库目录（`local/`） */
+  localDir: string
+  /** 本地库文件：本地喜欢 / 本地歌单 / 音乐文件夹 */
+  localLibraryFile: string
   /** 单曲媒体目录 */
   trackDir(trackId: string): string
   /** 元数据缓存文件；scope=uid 时落 `_acct/<uid>/` 子层 */
@@ -65,6 +70,7 @@ export function resolvePaths(dataDir?: string): CorePaths {
   const mediaDir = path.join(cacheDir, 'tracks')
   const journalDir = path.join(root, 'journal')
   const accountsDir = path.join(root, 'accounts')
+  const localDir = path.join(root, 'local')
   return {
     root,
     configFile: path.join(root, 'config.json'),
@@ -78,6 +84,8 @@ export function resolvePaths(dataDir?: string): CorePaths {
     journalDir,
     playsFile: path.join(journalDir, 'plays.jsonl'),
     logsDir: path.join(root, 'logs'),
+    localDir,
+    localLibraryFile: path.join(localDir, 'library.json'),
     trackDir: (trackId: string) => path.join(mediaDir, safeSegment(trackId)),
     entityFile: (kind: string, id: string, scope?: string) =>
       scope

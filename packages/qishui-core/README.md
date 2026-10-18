@@ -63,8 +63,9 @@ await qr.wait()                                   // confirmed 出来即「已�
 core.ts            QishuiCore 门面 + createQishui()
   entities.ts      Track / Album / Artist / Playlist / User / Comment / Chart —— 「拿到就能用」的 OOP 壳
   services/*       account catalog discover search library comments social feedback link —— 按能力分类
-  player/*         Player 状态机 + PlayQueue + Lyrics（只做状态，不出声）
+  player/*         Player 状态机 + PlayQueue + Lyrics + QueueBook（多份队列，只做状态，不出声）
   cache/*          EntityCache（元数据 TTL）+ MediaCache（音频/歌词/封面，断点续传）
+  local/*          本地库：本地喜欢 / 本地歌单 / 音乐文件夹扫描（纯本地、不出网）
   session.ts       设备身份 + 扫码登录 + 多账号会话（device.json + accounts/<uid>.json，0600）
   parse.ts         上游各种包装/漂移的归一化（unwrap / asX / collectX）
 ```
@@ -95,7 +96,7 @@ core.ts            QishuiCore 门面 + createQishui()
 | `trackMeta(id)` | 分享页元数据（标题/歌手/封面/可播性标签/相关曲目） |
 | `check(media)` / `checkTracks(ids)` | 播放前查权益、上下架（`MCheckMedia` / `MCheckTrack`） |
 | `stats(id)` | 收藏/评论/分享计数 |
-| `related(id, count)` | 相似歌曲 |
+| `related(track, count, {sceneName})` | 相似歌曲。`track` 收 `Track` 实体 / `{id, data}`（`TrackData`）/ 裸 id：传实体时 `artist_ids` 直接取它的 artists（零额外请求），只给 id 时先看缓存、缺了才补一次 `MGetMedia`。请求口径对齐 App（1 个种子 + `artist_ids` + `scene_name` + `played_media`，见 §3.3 下方「推荐请求的种子」） |
 | `album(id)` / `albumTracks(id)` | 专辑 + 整张曲目（一次全给） |
 | `artist(id)` / `artistHotTracks` / `artistTracks` / `artistAlbums` | 艺人页三个 tab（热门/歌曲分页/专辑分页） |
 | `playlist(id)` / `playlistTracks(id)` | 歌单详情 + 曲目分页（曲目在响应的 `media_resources[]` 里） |
@@ -109,9 +110,9 @@ core.ts            QishuiCore 门面 + createQishui()
 | `home({layout})` | 首页大盘。`grid`（默认）= 榜单块 + 推荐歌单 + 场景队列；`feed` = 听歌模式（30 个场景电台，榜单块不在里面） |
 | `mix({blockType, subChannelId})` | 单个内容块下钻（首页块点进去看全部） |
 | `feedModeTracks(ref, opts)` | **按一个听歌模式取一批**的收门：`ref: FeedModeRef` = `{kind:'preference', mode}` 走 `feedSongTab({preferenceMode})`、`{kind:'scene', sceneModeId}` 走 `feedSongTab({sceneModeId})`（场景进 `feed_preference.scene_mode_id`，**这是场景唯一生效的路**）。两边都是**一次约 6 首、每次随机**——用来连着播，不是摊开看。调用方不用自己分流，`FeedModeRef` 也是 `config.feedMode` 解析出来的形态 |
-| `feedSongTab(opts)` | 推荐流**一批**（默认 `count: 6`，一次约 6 首，是随机播放的批次来源，不是一屏可浏览的列表）。`preferenceMode`: `default`（推荐）/ `familiar`（熟悉）/ `fresh`（新鲜）；自动维护 `is_first_request`/`total_request_count`/`preference_mode_request_count` 会话计数。`withPlayedTracks` 默认 **false**：机制在（本地播放历史最近 20 条按时间升序当 `played_tracks`，字段名按同构 `MediaPlayed` 推、实测上游照收），但播放时长还没向上游上报，主动带反而暴露「只播不报」，上报口径补上前不带。`excludePlayed`/`excludeLiked`（`maxPages` 默认 3）是**客户端过滤**：本地把已播/已喜欢的剔掉、翻页补齐到 `count`——「只要没听过的」走这条确定性路径，别赌上游 `preference_mode` 是否真改变分布（仍未验证） |
+| `feedSongTab(opts)` | 推荐流**一批**（默认 `count: 6`，一次约 6 首，是随机播放的批次来源，不是一屏可浏览的列表）。请求口径对齐 App：`played_media` 种子（默认**带**，见 §3.3 下方「推荐请求的种子」）+ `feed_mode`/`preference_mode`/`count` + 会话计数（`is_first_request`/`total_request_count`/`preference_mode_request_count`）+ 设备首刷口径（`is_did_first_request`/`did_first_use_time`）+ `feed_counts.mix_session_count`；偏好档也按 App 塞进 `feed_preference: {preference_mode}`、场景档是 `{scene_mode_id}`（顶层 `preference_mode` 只当兼容字段）。`preferenceMode`: `default`（推荐）/ `familiar`（熟悉）/ `fresh`（新鲜）。`withPlayedMedia: false` 可关种子；`excludePlayed`/`excludeLiked`（`maxPages` 默认 3）是**客户端过滤**：本地把已播/已喜欢的剔掉、翻页补齐到 `count`——「只要没听过的」走这条确定性路径，别赌上游 `preference_mode` 是否真改变分布（仍未验证） |
 | `playlistSquare({categoryId})` | 歌单广场（含分类） |
-| `radioTracks(radioId)` | 按**电台队列**取一批（同样一次约 6 首、每次随机，用于连着播）。`radioId` 只认首页 `discover_radio` 块的 `inner_block_id`（雪花大数）；**别拿场景的 `scene_mode_id` 喂它**——短数字不报错也不生效，回的是通用推荐池（实测选「日语」推中文歌）。场景走 `feedSongTab({sceneModeId})` |
+| `radioTracks(radioId, {cursor, flowType, triggerInfo})` | 按**电台队列**取一批（同样一次约 6 首、每次随机，用于连着播）。`radioId` 只认首页 `discover_radio` 块的 `inner_block_id`（雪花大数）；**别拿场景的 `scene_mode_id` 喂它**——短数字不报错也不生效，回的是通用推荐池（实测选「日语」推中文歌）。场景走 `feedSongTab({sceneModeId})`。请求口径对齐 App：`radio_id` + `cursor` + `flow_type`（默认 2）+ `trigger_info`（默认 `''`），后两个 App 是从队列资源 `style.link` 的查询串里取的，`radioFlowParams(resource.raw)` 做同一件事 |
 | `feedMode()` | FeedMode 原始响应 |
 | `feedModes()` | 解析成 `{preferences, bar, scenes}`：偏好栏（推荐/熟悉/新鲜，`current` 标上游选中的那**一**条）+ 45 个场景（`sceneModeId` 即 `scene_mode_id`，短数字）。选出来的那一个喂 `feedModeTracks()` |
 | `launch()` | 冷启动配置：曲风/语种 + `boost_setting.need_set`（判断是否弹首启引导） |
@@ -122,6 +123,13 @@ core.ts            QishuiCore 门面 + createQishui()
 >
 > 「当前用哪个模式听」在 core 里只有一个形态：`FeedModeRef`（`{kind:'preference', mode}` | `{kind:'scene', sceneModeId}`），
 > 配套的 `parseFeedMode()` / `formatFeedMode()` / `FEED_PREFERENCE_MODES` 都从包入口导出，`config.feedMode` 就是它格式化出来的串。
+
+**推荐请求的种子（`played_media`）** —— `feedSongTab()` 与 `catalog.related()` 都带，口径对齐官方 App
+（反编译 `reaSodaMusic` 的 `getMediaPlayed()`）：待播队列（当前曲目之后、逆序，`played_mills: -1`）→
+云端最近播放（`GetRecentPlayedTracks`，账号级、跨设备，登录态才有）→ 本地 `journal/plays.jsonl` 里云端没有的按时间补上，
+按 `media_id` 去重后**截断到 30 条**。`buildPlayedMedia(core, opts)` 可直接用（`includeQueue`/`includeCloud`/`includeLocal`/`limit`）；
+`PLAYED_MEDIA_MAX` = 30 与 App 的 `MAX_COUNT` 同一个值。未登录/云端失败时只剩本地那半，不抛错、不阻断推荐。
+注意它会在推荐请求之外**多打一次** `GetRecentPlayedTracks`（登录态），不想付这一次就传 `withPlayedMedia: false`。
 
 ### 3.4 `search` —— 搜索
 
@@ -194,6 +202,24 @@ core.ts            QishuiCore 门面 + createQishui()
 | `media(input, {coverWidth})` | **可播地址**（`play_url` + `expires_at`）+ KRC 歌词 + 封面（走 web 分享页 SSR） |
 | `track(input)` / `kind(input)` | 直接拿 `Track` 实体 / 条目类型 |
 
+### 3.10 `local` —— 本地库（不出网的那一半音乐）
+
+| 方法 | 能力 |
+|---|---|
+| `likes()` / `like(track)` / `unlike(key)` / `toggleLike(track)` / `isTrackLiked(track)` | **本地喜欢**：条目可以是磁盘文件，也可以是云端曲目的快照（离线时照样看得见自己收过什么）；不联网、不需要会话 |
+| `playlists()` / `playlist(id)` / `playlistTracks(id)` | **本地歌单**（`~/.qishui/local/library.json` 里的 `playlists`），条目按歌单顺序 |
+| `createPlaylist(title)` / `renamePlaylist(id,title)` / `deletePlaylist(id)` | 建 / 改名 / 删（只删这张表，磁盘文件不动） |
+| `addToPlaylist(id, tracks)` / `removeFromPlaylist(id, key)` | 加曲目（去重，返回新加几首）/ 移出一条 |
+| `folders()` / `addFolder(path)` / `removeFolder(path)` | **音乐文件夹**登记（绝对路径、去重；目录不存在直接报错，`~` 会展开）；`exists` 照实报「找不到」 |
+| `scan(folder)` / `scanAll()` | 递归扫音频文件 → `TrackData`（`localPath` = 绝对路径）；跳过隐藏项、**不跟符号链接**、上限 5000 文件 / 12 层目录（到上限标 `truncated`）；坏目录返回 `error` 不抛 |
+| `history(limit)` / `clearHistory()` | **本地历史**的曲目视图（journal 的曲目化，纯本地拼装、不发请求）/ 只清本机 journal |
+| `sourceFor(track)` | 本地曲目的播放源（`PlaySource.kind = 'local'`，文件不在了就报错） |
+| `keyOf(track)` / `stats()` / `file` | 曲目键（`local:<sha1>` / `track:<id>`）/ 计数 / 本地库文件路径 |
+
+- **扫描只认文件名**：core 零运行时依赖，不引第三方 tag 解析库 —— `01 - 艺人 - 歌名.flac` 猜艺人/曲名、专辑名用目录名；**时长等播放器报回来**（`rememberDuration()` 回填快照）。
+- **播放不下载**：`TrackData.localPath` 就是播放源，`Player` 直接把它交给上层播放器；`media.recordPlay` 与「上报最近播放」对本地曲目跳过，`lyricsFor()` 直接回 `undefined`（磁盘文件没有上游歌词）。
+- 与账号侧的关系：云端「我喜欢的音乐 / 我的歌单」要登录要联网，本地库不出网、跨账号共享，两边**各自是真相源**，不互相冒充。
+
 ## 4. OOP 实体
 
 服务返回的不是裸 JSON，而是薄壳（`.data` 里是归一化后的 `TrackData` / `PlaylistData` …，`.raw` 是上游原始响应）：
@@ -235,7 +261,7 @@ await playlist.add([track]) // 加到歌单
 
 ## 5. 播放器（只做状态机）
 
-**它不出声**。`Player` 负责：解析播放源（远程签名地址或本地缓存文件）→ 维护 `idle/loading/playing/paused/stopped/error` 状态 → 走 250ms 时钟推进 `positionMs` → 发事件。真正的音频播放由上层 shell 拿 `player.source.path` / `.url` 自己播。
+**它不出声**。`Player` 负责：解析播放源（远程签名地址 / 本地缓存文件 / **本地库的磁盘文件** `kind:'local'`，后者直接取 `track.localPath` 不走上游）→ 维护 `idle/loading/playing/paused/stopped/error` 状态 → 走 250ms 时钟推进 `positionMs` → 发事件。真正的音频播放由上层 shell 拿 `player.source.path` / `.url` 自己播。
 
 ```ts
 qishui.player.on('status', (e) => console.log(e.status))
@@ -261,8 +287,41 @@ qishui.player.dispose()
 口径（有意为之）：
 
 - **播放源不落持久化**：签名地址约 25h 过期，绝不能存 JSON 里当长期地址；`source.path` 是本地缓存文件才有意义。
-- **历史只在「开始播」时记一条**（登录后 `journal/<uid>/plays.jsonl`、未登录 legacy 原位，带 `source: 'cache'|'remote'`）；`playedMs` / `completed` 留给上层用 `qishui.history.append()` 补记。
+- **历史只在「开始播」时记一条**（登录后 `journal/<uid>/plays.jsonl`、未登录 legacy 原位，带 `source: 'cache'|'remote'|'local'`，本地文件另带 `path`）；`playedMs` / `completed` 留给上层用 `qishui.history.append()` 补记。
 - **`skipOnError`** 打开时，某首解析/下载失败自动跳下一首（不打断整张专辑）。
+
+### 5.1 播放队列书架（`qishui.queues`，`player/queues.ts`）
+
+`Player` 只有一条「在播队列」，而一个音乐 App 需要**多份队列并存**：听推荐听到一半去点一张歌单，
+推荐那条流不该没。`QueueBook` 就是这一层——同一时刻只有一份在播，其余各记各的曲目与位置，
+切回来接着上次那一首（不重新取数）。
+
+```ts
+qishui.queues.list()        // QueueInfo[]：{ id, kind, title, count, index, active, refilling }
+qishui.queues.active        // 在播那一份（没有就是 undefined）
+
+// 打开并起播（有 id 的按 id 复用，没有就新建）
+await qishui.queues.open({ kind: 'recommend', feed: { kind: 'preference', mode: 'default' }, title: '推荐 · 推荐' })
+await qishui.queues.open({ kind: 'playlist', id: 'playlist:7627…', title: '歌单 · 晴天合集', load: () => playlist.allTracks() })
+await qishui.queues.open({ kind: 'temporary', items: tracks, startTrackId })   // 整队替换上一批
+await qishui.queues.activate('liked')        // 切到另一份（接着它上次那一首）
+qishui.queues.stopRefill()                   // 停掉推荐队列的自动续批
+qishui.queues.reset()                        // 换号时清空（useAccount 内部已调）
+
+qishui.events.on('queues-changed', () => render(qishui.queues.list()))
+qishui.events.on('queue-note', ({ message, kind }) => toast(message, kind))    // 续批失败等
+```
+
+| kind | 谁用 | 曲目 | 策略 |
+|---|---|---|---|
+| `recommend` | 听歌模式（场景 / 推荐 / 熟悉 / 新鲜） | 上游每批约 6 首 | **滑动窗口**：每前进一首踢掉「上上个」；剩 ≤ `RECOMMEND_REFILL_AT`(2) 首补一批，长度钳在 `RECOMMEND_WINDOW_MAX`(8)；顺序播；队列播完自动重启续批，连续 `RECOMMEND_MAX_FAILURES`(2) 批失败停 |
+| `playlist` | 每张歌单（含本地歌单） | 整张 | 顺序播，切走再切回接着上次那一首 |
+| `liked` | 我喜欢的音乐 / 本地喜欢 | 全部 | 随机 |
+| `temporary` | 搜索 / 榜单 / 专辑 / 艺人 / 首页块 | 这一次点播的那一批 | 顺序播，**每次 `open` 整队替换** |
+
+实现要点：切走时 `park()` 把当前队列停放到书架里，切回 `activate()` 时用 `player.playList(items, start)` 恢复；
+书架自己改播放器队列的那几步走 `applying` 守卫，不会被误当成用户操作再触发滚窗/续批；
+`refillGen` 序号作废在途取数（切队列 / 停续批之后慢回来的那批直接丢）。
 
 `Lyrics`（KRC，行级 + 逐字）也只做时间轴查询：`lines` / `lineAt(ms)` / `wordAt(ms)` / `view(ms)`，滚动动画与卡拉OK 高亮是上层的事。
 
@@ -284,6 +343,7 @@ qishui.player.dispose()
 │       └── cover.jpg               封面
 ├── journal/plays.jsonl         未登录/迁移前的播放历史（append-only）
 ├── journal/<uid>/plays.jsonl   各账号的播放历史
+├── local/library.json          本地库：本地喜欢 + 本地歌单 + 曲目快照 + 音乐文件夹（跨账号共享，不出网）
 └── logs/                       预留（core 默认只往 logger 打）
 ```
 
@@ -431,6 +491,7 @@ await qishui.media.prune()       // 按 maxMediaBytes / maxAgeMs 清理
 await qishui.cache.prune()       // 清过期元数据
 await qishui.clearCache({ media: true, all: true })   // 全清（慎用，媒体是几 MB 一个）
 qishui.plays(50) / qishui.playStats()                  // 本地播放历史 / 统计
+qishui.local.likes() / qishui.local.scan('/music')     // 本地库：本地喜欢 / 扫文件夹（不出网）
 qishui.saveConfig()              // 把内存里的 config 写回 config.json
 qishui.dispose()                 // 停播放器时钟、关掉句柄
 ```

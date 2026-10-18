@@ -9,12 +9,14 @@ import { CommentsOverlay } from './overlays/Comments.js'
 import { HelpOverlay } from './overlays/Help.js'
 import { LoginOverlay } from './overlays/Login.js'
 import { AddToPlaylistOverlay, ConfirmOverlay, InputOverlay, NewPlaylistOverlay } from './overlays/Modals.js'
-import { NowPlayingOverlay } from './overlays/NowPlaying.js'
+import { QueuesOverlay } from './overlays/Queues.js'
 import { ReportOverlay } from './overlays/Report.js'
 import { DiscoverScreen } from './screens/Discover.js'
 import { LibraryScreen } from './screens/Library.js'
 import { ListScreen } from './screens/List.js'
 import { ListenScreen } from './screens/Listen.js'
+import { LocalScreen } from './screens/Local.js'
+import { PlayerScreen } from './screens/Player.js'
 import { SearchScreen } from './screens/Search.js'
 import { SettingsScreen } from './screens/Settings.js'
 import { TrackDetailScreen } from './screens/TrackDetail.js'
@@ -32,6 +34,7 @@ const ROOT_LABEL: Record<RootKind, string> = {
   discover: '发现',
   listen: '听歌',
   library: '我的',
+  local: '本地',
   settings: '设置',
 }
 
@@ -52,7 +55,9 @@ function breadcrumbsOf(stack: Route[]): Crumb[] {
             ? '设置'
             : route.kind === 'user'
               ? '用户'
-              : '曲目',
+              : route.kind === 'player'
+                ? '正在播放'
+                : '曲目',
     depth,
   }))
 }
@@ -73,13 +78,17 @@ function listLabel(kind: string): string {
     'user-followers': 'TA 的粉丝',
     search: '搜索结果',
     mix: '内容块',
+    'local-likes': '本地喜欢',
+    'local-history': '本地历史',
+    'local-playlist': '本地歌单',
+    'local-folder': '文件夹音乐',
   }
   return map[kind] ?? '列表'
 }
 
 function Shell() {
   const ui = useUi()
-  const { player, toggle, playNext, playPrevious, nudgeSeek, nudgeVolume, cycleRepeat, toggleShuffle } = useCore()
+  const { toggle, playNext, playPrevious, nudgeSeek, nudgeVolume, cycleRepeat, toggleShuffle } = useCore()
   const { isRawModeSupported } = useStdin()
   const rootRef = useRef<DOMElement>(null)
   const rows = useFullscreenRows(rootRef)
@@ -92,7 +101,7 @@ function Shell() {
       // 鼠标报文（滚轮/点击）不走按键：ink 会把原始报文一并交给 handler，别当成人敲的字
       if (isMouseInput(input)) return
 
-      // 弹层打开时：Esc 关闭，播放键只在「正在播放」里生效
+      // 弹层打开时：Esc 关闭
       if (ui.overlay) {
         if (key.escape) {
           ui.closeOverlay()
@@ -104,7 +113,8 @@ function Shell() {
         }
       }
 
-      const playbackAllowed = !ui.overlay || ui.overlay.kind === 'now-playing'
+      // 弹层开着时播放键让位（菜单里按 n 不该顺手切歌）；播放页本身没有弹层，键照常生效
+      const playbackAllowed = !ui.overlay
       if (playbackAllowed) {
         if (input === ' ') {
           void toggle()
@@ -165,9 +175,15 @@ function Shell() {
         ui.go('search')
         return
       }
+      // `f` 在播放页上是「退回原页」，别处是「压栈进播放页」——一个键进出同一个地方
       if (input === 'f') {
-        if (player.track) ui.openOverlay({ kind: 'now-playing' })
-        else ui.toast('还没有在播的曲目', 'info')
+        if (ui.route.kind === 'player') ui.pop()
+        else ui.push({ kind: 'player' })
+        return
+      }
+      // `Q`（大写）= 播放队列书架：推荐 / 我喜欢 / 每张歌单 / 临时各自一份，切过去就接着上次那一首
+      if (input === 'Q') {
+        ui.openOverlay({ kind: 'queues' })
         return
       }
       if (input === '?') {
@@ -269,8 +285,8 @@ function OverlayLayer() {
   switch (overlay.kind) {
     case 'help':
       return <HelpOverlay />
-    case 'now-playing':
-      return <NowPlayingOverlay />
+    case 'queues':
+      return <QueuesOverlay />
     case 'comments':
       return <CommentsOverlay trackId={overlay.trackId} title={overlay.title} />
     case 'add':
@@ -319,6 +335,7 @@ function Screen({ route, active }: { route: Route; active: boolean }) {
   if (route.kind === 'track') return <TrackDetailScreen id={route.id} active={active} />
   if (route.kind === 'user') return <UserScreen id={route.id} nickname={route.nickname} active={active} />
   if (route.kind === 'settings') return <SettingsScreen active={active} />
+  if (route.kind === 'player') return <PlayerScreen active={active} />
   switch (route.root) {
     case 'discover':
       return <DiscoverScreen active={active} />
@@ -328,6 +345,8 @@ function Screen({ route, active }: { route: Route; active: boolean }) {
       return <SearchScreen active={active} />
     case 'library':
       return <LibraryScreen active={active} />
+    case 'local':
+      return <LocalScreen active={active} />
     case 'settings':
       return <SettingsScreen active={active} />
     default:
@@ -348,7 +367,7 @@ function HintBar() {
       ['↑↓', '选项'],
       ['Enter', '进入'],
       ['Tab', '到内容'],
-      ['1–5', '切页'],
+      ['1–6', '切页'],
       ['0', '我的'],
       ['?', '帮助'],
       ['q', '退出'],
@@ -357,6 +376,7 @@ function HintBar() {
     items = [
       ['↑↓', '选行'],
       ['Enter', '操作菜单'],
+      ['Q', '播放队列'],
       ['R', '刷新'],
       ['L', '更多'],
       ['Esc', '返回'],
@@ -367,6 +387,15 @@ function HintBar() {
       ['Enter', '切换 / 执行'],
       ['R', '刷新'],
       ['Esc', '返回'],
+    ]
+  } else if (ui.route.kind === 'player') {
+    items = [
+      ['t', '歌词/队列'],
+      ['↑↓', '翻词 / 选队列'],
+      ['Enter', '操作菜单'],
+      ['Q', '换播放队列'],
+      ['Space n p', '播放 / 上下首'],
+      ['f', '返回'],
     ]
   } else if (ui.route.kind === 'root' && ui.route.root === 'listen') {
     items = [
@@ -380,6 +409,7 @@ function HintBar() {
       ['↑↓', '移动'],
       ['Enter', '进入'],
       ['f', '正在播放'],
+      ['Q', '播放队列'],
       ['?', '帮助'],
       ['Esc', '返回'],
     ]

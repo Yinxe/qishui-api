@@ -12,7 +12,8 @@ import os from 'node:os'
 import path from 'node:path'
 
 export interface AudioSource {
-  kind: 'cache' | 'remote'
+  /** cache = 媒体缓存里的文件；remote = 签名地址；local = 用户磁盘上的文件（本地库） */
+  kind: 'cache' | 'remote' | 'local'
   path?: string
   url?: string
 }
@@ -161,7 +162,8 @@ export class AudioSink {
       this.onError?.(`找不到播放器：${this.command}（装 mpv，或用 QISHUI_PLAYER 指定）`)
       return generation
     }
-    const target = source.kind === 'cache' ? source.path : source.url
+    // 只有 remote 走签名地址，cache / local 都是磁盘上的文件
+    const target = source.kind === 'remote' ? source.url : source.path
     if (!target) {
       this.onError?.('这个播放源既没有本地文件也没有远程地址')
       return generation
