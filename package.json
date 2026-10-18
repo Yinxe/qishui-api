@@ -12,7 +12,9 @@
     "check": "biome check .",
     "check:catalog": "pnpm --filter qishui-api run check:catalog",
     "check:fix": "biome check --write .",
-    "format": "biome format --write ."
+    "format": "biome format --write .",
+    "tui:build": "pnpm --filter qishui-tui run build",
+    "tui": "node packages/qishui-tui/dist/cli.js"
   },
   "engines": {
     "node": ">=20"

@@ -1,3 +1,4 @@
+import { hostname } from 'node:os'
 import type { CookieJar } from '../cookies.js'
 import { AuthRequiredError, QishuiError } from '../errors.js'
 import { API_BASE, APP_ID, APP_VERSION, CHANNEL, type DeviceIdentity, userAgent } from '../params.js'
@@ -15,6 +16,23 @@ export interface LoginContext {
   cookies: CookieJar
   baseUrl?: string
   fetchImpl?: typeof fetch
+  /**
+   * App 扫码确认页上显示「在 <电脑名> 上登录」的那行字（深链的 `computer_name`）。
+   * 省略则用本机计算机名（`os.hostname()`，与官方 PC 客户端同口径）；
+   * 可用 `QISHUI_COMPUTER_NAME` 覆盖。**绝不能写项目名**——扫码的人（和官方）都会看到。
+   */
+  computerName?: string
+}
+
+/**
+ * 扫码深链 `computer_name` 的默认值：本机计算机名。
+ * 官方 PC 客户端这里传的就是它，App 确认页会显示「在 <电脑名> 上登录」。
+ * 可用 `QISHUI_COMPUTER_NAME` 覆盖；**绝不能写项目名**。
+ */
+export function defaultComputerName(): string {
+  const override = process.env.QISHUI_COMPUTER_NAME?.trim()
+  if (override) return override
+  return hostname().trim() || 'DESKTOP-PC'
 }
 
 export type QrStatus = 'waiting' | 'scanned' | 'confirmed' | 'expired' | 'timeout' | 'unknown'
@@ -38,6 +56,11 @@ export interface QrLogin {
   token: string
   /** 让**汽水音乐** App 扫的内容（bff-pc.qishui.com 深链）；自行用 qrcode 之类渲染 */
   scanUrl: string
+  /**
+   * 上游自带的二维码图片（`data:image/png;base64,…`），编码的是它自己的 `qrcode_index_url`。
+   * 官方 PC 客户端显示的正是这张图；终端 ASCII 画不出来时的备用出路（存成文件给人点开）。
+   */
+  qrPng?: string
   expiresAt: number
   /** 单次探测扫码状态；confirmed 时登录 cookie 已写入 ctx.cookies */
   check(): Promise<QrStatus>
@@ -113,7 +136,7 @@ export async function startQrLogin(ctx: LoginContext): Promise<QrLogin> {
   const scanUrl = new URL('https://bff-pc.qishui.com/light/invoke/scan_login')
   scanUrl.searchParams.set('token', indexToken ?? d.token)
   scanUrl.searchParams.set('os', 'Windows')
-  scanUrl.searchParams.set('computer_name', 'qishui-api')
+  scanUrl.searchParams.set('computer_name', ctx.computerName?.trim() || defaultComputerName())
   const content = scanUrl.toString().replaceAll('+', '%20')
 
   const expiresAt = Math.min((d.expire_time ?? Math.floor(Date.now() / 1000) + 60) * 1000, Date.now() + 300_000)
@@ -141,7 +164,14 @@ export async function startQrLogin(ctx: LoginContext): Promise<QrLogin> {
     return 'timeout'
   }
 
-  return { token: d.token, scanUrl: content, expiresAt, check, wait }
+  return {
+    token: d.token,
+    scanUrl: content,
+    qrPng: typeof d.qrcode === 'string' ? d.qrcode : undefined,
+    expiresAt,
+    check,
+    wait,
+  }
 }
 
 /** 登录后自检：确认会话 cookie 已落地 */

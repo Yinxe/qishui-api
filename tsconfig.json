@@ -1,16 +1,17 @@
 {
-  "//": "全仓类型检查用（pnpm run typecheck）：三个包的 src + test 一起过 tsc，只查类型不产出。各包自己的 tsconfig.json 负责 build（rootDir=src、输出 dist）。",
+  "//": "全仓类型检查用（pnpm run typecheck）：各包的 src + test 一起过 tsc，只查类型不产出。各包自己的 tsconfig.json 负责 build（rootDir=src、输出 dist）；jsx 这里也要开一份，因为 typecheck 直接读 .tsx（tui）。",
   "compilerOptions": {
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "lib": ["ES2023"],
     "types": ["node"],
+    "jsx": "react-jsx",
     "strict": true,
     "noUnusedLocals": true,
     "skipLibCheck": true,
     "noEmit": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts"]
+  "include": ["packages/*/src/**/*.ts", "packages/*/src/**/*.tsx", "packages/*/test/**/*.ts"]
 }

@@ -6,6 +6,7 @@ import type {
   ChartData,
   ChartRank,
   CommentData,
+  MyCollectState,
   PlaylistData,
   TrackData,
   TrackStats,
@@ -224,6 +225,14 @@ function parseVip(raw: any): TrackVipFlags | undefined {
   }
 }
 
+/**
+ * 实体上嵌的「我是否收藏」水印。整个 `state` 缺失 = 这一路没带（返回 undefined，不假装有结论）；
+ * `state` 在但没 `is_collected` = 上游省略了 false（实测未收藏的曲目回 `state:{}`，已收藏的回 `{"is_collected":true}`）。
+ */
+function collectState(raw: any): MyCollectState | undefined {
+  if (!isObj(raw.state)) return undefined
+  return { isCollected: bool(raw.state.is_collected) ?? false }
+}
 export function parseTrack(raw: any, opts: ParseOptions = {}): TrackData {
   const album = isObj(raw.album)
     ? {
@@ -248,6 +257,7 @@ export function parseTrack(raw: any, opts: ParseOptions = {}): TrackData {
     stats: parseStats(raw.stats),
     vip: parseVip(raw.label_info),
     playableRange: range,
+    state: collectState(raw),
     raw,
   }
 }
@@ -284,6 +294,7 @@ export function parseAlbum(raw: any, opts: ParseOptions = {}): AlbumData {
     countTracks: num(raw.count_tracks),
     description: str(raw.intro ?? raw.desc),
     stats: parseStats(raw.stats),
+    state: collectState(raw),
     raw,
   }
 }
@@ -320,6 +331,7 @@ export function parsePlaylist(raw: any, opts: ParseOptions = {}): PlaylistData {
     fromFeed: bool(raw.from_feed),
     ownerId: str(raw.owner?.id ?? raw.owner),
     stats: parsePlaylistStats(raw.stats),
+    state: collectState(raw),
     raw,
   }
 }

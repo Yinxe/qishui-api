@@ -277,7 +277,9 @@ async function play(instance: QishuiCore, list: TrackData[], opts: PlaySessionOp
         mpvDuration ??= await sink.durationMs()
       }
       if (showLyrics && lyrics) {
-        const view = lyrics.view(mpvPosition ?? player.positionMs)
+        // 歌词时间轴是整曲的；试听片段要加上片段起点（core 已把起点放在 PlaySource 上）
+        const raw = mpvPosition ?? player.positionMs
+        const view = lyrics.view(raw + player.clipStartMs)
         if (view.index !== lyricIndex) {
           lyricIndex = view.index
           const line = view.line?.text

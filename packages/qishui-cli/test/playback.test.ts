@@ -14,6 +14,25 @@ const B = '7100000000000000002'
 
 let home: string
 
+/**
+ * 本机此刻还活着的「CLI 播放器」pid。
+ * 只认 cmdline 里带 CLI 专属 socket 名（`qishui-mpv-*`）的 mpv——TUI 的是 `qishui-tui-mpv-*`，
+ * 用户自己开着 TUI 听歌时不会误伤（早先直接 `pgrep -c mpv` 数全系统的 mpv，必然误报）。
+ */
+function livePlayers(): Set<string> {
+  const probe = spawnSync('sh', ['-c', 'pgrep mpv || true'], { encoding: 'utf8' })
+  const pids = (probe.stdout ?? '')
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean)
+  const found = new Set<string>()
+  for (const pid of pids) {
+    const args = spawnSync('sh', ['-c', `ps -o args= -p ${pid} || true`], { encoding: 'utf8' })
+    if ((args.stdout ?? '').includes('qishui-mpv-')) found.add(pid)
+  }
+  return found
+}
+
 beforeAll(() => {
   home = makeCliHome()
   seedTrack(home, A, '曲目A', 3)
@@ -64,6 +83,7 @@ describe('播放队列 / 落盘 / 导出（缓存命中即零网络）', () => {
 
 describe.skipIf(!which('mpv'))('mpv 播放会话（真进程）', () => {
   it('播完两首：played=2、reason=finished、无残留进程', () => {
+    const before = livePlayers()
     const played = runCli(home, ['play', `track:${A}`, `track:${B}`, '--json'], {
       env: { QISHUI_MPV_ARGS: '--ao=null' },
       timeoutMs: 120_000,
@@ -72,8 +92,9 @@ describe.skipIf(!which('mpv'))('mpv 播放会话（真进程）', () => {
     const result = played.json()
     expect(result.played).toBe(2)
     expect(result.reason).toBe('finished')
-    const probe = spawnSync('sh', ['-c', 'pgrep -c mpv || true'], { encoding: 'utf8' })
-    expect((probe.stdout ?? '').trim()).toBe('0')
+    // 只验「这一跑没留下新的播放器」，系统里既有的 mpv（比如用户正开着的 TUI）不算
+    const leaked = [...livePlayers()].filter((pid) => !before.has(pid))
+    expect(leaked).toEqual([])
   }, 180_000)
 
   it('本地历史与统计记下这次会话', () => {

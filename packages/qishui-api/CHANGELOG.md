@@ -3,6 +3,17 @@
 格式参考 Keep a Changelog；版本号是本库自身语义化版本，**上游快照版本用 git tag `snapshot-v<客户端版本>-<序号>` 表达**。
 详见 `docs/MAINTENANCE.md`。
 
+## Unreleased
+
+### Added
+
+- **扫码登录交出上游官方二维码图片**：`QrLogin` 增加 `qrPng`（`get_qrcode` 的 `data.qrcode`，`data:image/png;base64,…`）。上游这张图编的是它自己的 `qrcode_index_url`、自带静区（4 模块白边），是官方 PC 客户端显示的那张；终端 ASCII 识别慢时，上层可以把它落成文件给人扫。上游没给就是 `undefined`，不硬编
+- **分享页试听片段信息**：`ShareMedia` 增加 `offset_start_ms` / `offset_duration_ms`（来自 SSR 的 `offsetStart` / `offsetDuration`，秒→ms）。整曲可播时缺省；`duration_ms` 仍是**整曲**时长。实测（`演员`）：整曲 261.3s，分享页给的音频其实是 208.9s 起、长 52.3s 的片段。消费方据此算播放进度、按起点偏歌词
+
+### Fixed
+
+- **扫码深链把项目名当电脑名发了出去**：`scan_login` 深链的 `computer_name` 原来硬编码成 `qishui-api`，手机 App 扫码确认页会直接显示「在 qishui-api 上登录」——等于自报家门。现改为取本机计算机名（`os.hostname()`，与官方 PC 客户端同口径），可用 `QISHUI_COMPUTER_NAME` 或 `createClient({ computerName })` 覆盖；新增导出 `defaultComputerName()`
+
 ## 0.1.1 — 2026-10-17
 
 ### Added
@@ -13,6 +24,7 @@
 ### Corrected（实测推翻了先前的判断）
 
 - **搜索结果实体的壳**：在 `result_groups[].items[].entity.<kind>`（`entity.track`/`entity.artist`/`entity.album`/`entity.playlist`），**不是**详情接口那套 `*_wrapper`；只认 wrapper 会把歌手/专辑/歌单全解析成空
+- **`display_type` 不是 `search_type`**：`all` 搜「周杰伦」的五个分组（`top_results`/`playlists`/`artists`/`tracks`/`albums`）`display_type` **全回空串**，拿它拼 `/luna/search/<type>` 就是 **HTTP 404**（未知 type 一律 404）。分组判别看 `group.id`，「要不要给『查看全部』」看 `display_view_all`（实测 `top_results`=`false`、其余四组=`true`），预览组 `has_more` 都是 `false`
 - `FeedMode` 的 `feed_mode_bar` **只回当前选中的那一个**（实测只回 `default`=推荐），不是枚举 3 项；`familiar`/`fresh` 两个取值来自 IDL 常量（`PreferenceModeFamiliar`/`PreferenceModeFresh`）。`FeedSongTab` 的 `preference_mode` 对**任意值**都回 6 首（随机流，不能拿「能回曲」当验证）
 - `FeedRadioTracks` 的 `radio_id` 实测**两种都吃**：场景的 `scene_mode_id`（短数字，如 `2/3/5/48`）或首页场景块的 `inner_block_id`（雪花大数），各回 6 首
 - **`search_type=user` 与 `video` 上游不返回**：`/luna/search/<type>` 回 `200` 但 body 里没有 `result_groups`（只有 `status_info`/`extra`），换 `search_method`/`search_scene`/`scene_name`/带会话都一样，`all` 的分组里也没有 `users`。属**未验证 / 上游不返回**（只有 `track`/`artist`/`album`/`playlist` 能出）

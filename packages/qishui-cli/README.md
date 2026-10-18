@@ -85,6 +85,11 @@ qishui --help
 | `whoami [--refresh]` | 登录态 + 资料 + 会员态 + 数据目录（`--as` 临时态会标注） |
 | `stats` | 本地播放统计（次数/听得最多）+ 缓存占用 |
 
+`login` 出码这两处是为「App 识别慢」准备的：
+
+- 终端 ASCII 码**带 4 模块静区**（`qrcode-terminal` 自己贴着边画、一格白边都不给，扫码端要对焦很久才认出；官方 PNG 是带白边的，这里补上同样余量）；
+- core 顺手把上游那张**官方 PNG** 落到 `${TMPDIR}/qishui-login-qr-<token 前 8 位>.png`（0600），命令行在下面一行打出「识别慢就扫官方二维码图片：<路径>」，`--json` 里是 `qrImage` 字段。上游没给图就没有这行。
+
 ### 发现 / 推荐（全部匿名可用）
 
 | 命令 | 说明 |
@@ -243,7 +248,7 @@ pnpm --filter qishui-cli run test     # vitest：3 个文件（cli/format/playba
 
 1. `cli.test.ts`：`--help`/未知命令/未知选项退出码、`--json` 形状、`NO_COLOR` 无转义、`config get/set` 落盘、`cache policy` 分档、多账号离线机制（`accounts`/`use` 未知号报错/`--as` 指错号**直接报错不回落**/`feed --exclude` 与 `discover feed --mode` 非法值）；
 2. `format.test.ts`：时长/体积格式化与实体一行式描述（纯函数，直接 import `../dist/format.js`）；
-3. `playback.test.ts`：`seedTrack` 预置实体缓存 + 媒体缓存（自造 3 秒 WAV，不依赖 ffmpeg），验 `--list`（● 已缓存）、`--print-path --json`（kind=cache 零网络）、`download --out` 导出、`cache stats/list`；再起真 mpv（`QISHUI_MPV_ARGS=--ao=null` 不出声）→ EOF → 自动切下一首 → 收尾，核对 JSON 结果、`reason=finished`、**无残留 mpv 进程**、本地历史与统计；有 `script(1)` 时再用 PTY 按 `q` 验快捷键。
+3. `playback.test.ts`：`seedTrack` 预置实体缓存 + 媒体缓存（自造 3 秒 WAV，不依赖 ffmpeg），验 `--list`（● 已缓存）、`--print-path --json`（kind=cache 零网络）、`download --out` 导出、`cache stats/list`；再起真 mpv（`QISHUI_MPV_ARGS=--ao=null` 不出声）→ EOF → 自动切下一首 → 收尾，核对 JSON 结果、`reason=finished`、**无新增残留 mpv 进程**（按 `qishui-mpv-<pid>-*.sock` 认自己人，跑前跑后比 pid 差集，用户另开 TUI 听歌也不会误报）、本地历史与统计；有 `script(1)` 时再用 PTY 按 `q` 验快捷键。
 
 mpv / script(1) 不在本机只跳过对应分节（`describe.skipIf`）。上游可达性结论由 `qishui-api` 实测台负责，不进单测。
 

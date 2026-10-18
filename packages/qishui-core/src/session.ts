@@ -1,3 +1,6 @@
+import fsp from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   type Client,
   CookieJar,
@@ -12,6 +15,23 @@ import type { CorePaths } from './paths.js'
 import { readJsonSync, removeQuiet, writeJsonAtomic } from './util.js'
 
 const ANON_UID = '_anon'
+
+/**
+ * 把上游自带的二维码 PNG（`data:image/png;base64,…`）存成临时文件备用：终端画 ASCII 时识别慢，
+ * 这张是官方同款图（自带留白、模块是真实像素），手机上扫它更容易。
+ * 文件名带 token 前缀——每次扫码 token 不同，既认得出是哪一次登录，也别人预置同名文件的余地小。
+ * 上游没给 data URL 或写不进去就当没有图：出图只是便利，不能拦登录。
+ */
+async function saveQrPng(qrPng: string | undefined, token: string): Promise<string | undefined> {
+  if (!qrPng?.startsWith('data:image/')) return undefined
+  const file = join(tmpdir(), `qishui-login-qr-${token.slice(0, 8) || 'latest'}.png`)
+  try {
+    await fsp.writeFile(file, Buffer.from(qrPng.slice(qrPng.indexOf(',') + 1), 'base64'), { mode: 0o600 })
+    return file
+  } catch {
+    return undefined
+  }
+}
 
 /** 账号会话文件 `accounts/<uid>.json` 的形状（旧 session.json 去掉 device 的那份状态） */
 export interface SessionFile {
@@ -44,15 +64,27 @@ interface DeviceFileShape {
 export interface QishuiLogin {
   /** 二维码内容（bff-pc.qishui.com 深链）—— 用**汽水音乐 App** 扫，别用抖音 */
   scanUrl: string
+  /**
+   * 上游自带的二维码 PNG（`data:image/png;base64,…`），已顺手落盘成 `qrImage`。
+   * 没有（上游没给或不是 data URL）就 undefined —— 上层照常只画 `scanUrl`。
+   */
+  qrPng?: string
+  /** 二维码图片的本地临时文件路径（`qrPng` 存不下时 undefined）；终端识别慢时可以打开这张图扫 */
+  qrImage?: string
   expiresAt: number
+  /**
+   * 单次探测扫码状态。**confirmed 只在「会话已入库并激活」之后报出**（写进 `accounts/<uid>.json`），
+   * 入库失败就抛错、下次轮询重试；上游在登录完成后常把同一个 token 判成 expired，
+   * 不能让「后来又问一次没确认」倒过来否定已经成立的登录。
+   */
   status(): Promise<QrStatus>
-  /** 轮询到 confirmed / expired / timeout；confirmed 时会话已写进 accounts/<uid>.json */
+  /** 轮询直到 confirmed / expired / timeout；与 `status()` 走同一条探测路径 */
   wait(intervalMs?: number, timeoutMs?: number): Promise<QrStatus>
 }
 
 export interface LoginOptions {
   /** 拿到二维码立刻回调（渲染它是上层的事，core 不引二维码依赖） */
-  onQr?: (qr: { scanUrl: string; expiresAt: number }) => void
+  onQr?: (qr: { scanUrl: string; expiresAt: number; qrImage?: string }) => void
   intervalMs?: number
   timeoutMs?: number
   /** 登录成功后是否顺手拉一次 GetMyInfo 记下 uid/昵称（默认拉） */
@@ -320,7 +352,8 @@ export class SessionManager {
     await this.init()
     const client = await this.ready()
     const qr = await client.qrLogin()
-    options.onQr?.({ scanUrl: qr.scanUrl, expiresAt: qr.expiresAt })
+    const qrImage = await saveQrPng(qr.qrPng, qr.token)
+    options.onQr?.({ scanUrl: qr.scanUrl, expiresAt: qr.expiresAt, qrImage })
 
     const persist = async (): Promise<void> => {
       const previous = { ...this.current }
@@ -338,8 +371,12 @@ export class SessionManager {
           this.options.logger?.(`[session] 登录成功但 GetMyInfo 失败：${String(err)}`)
         }
       }
-      this.current = { v: 1, cookies, uid, nickname, savedAt: Date.now() }
-      await this.saveCurrent()
+      const next: SessionFile = { v: 1, cookies, uid, nickname, savedAt: Date.now() }
+      // 先落盘、再认这条登录：写不进去（目录被占、只读盘…）就保持原状态，
+      // 避免出现「界面显示已登录、账号文件一个没有」这种重启就蒸发且不自愈的形态
+      await this.writeAccount(next)
+      this.current = next
+      await this.renameAnonIfNeeded()
       if (uid) {
         this.upsertIndex({ uid, nickname, savedAt: Date.now(), lastUsedAt: Date.now() })
         await this.saveIndex()
@@ -356,17 +393,45 @@ export class SessionManager {
       options.onPersisted?.(this.current.uid)
     }
 
+    // 「见过 confirmed」是单向门：之后无论上游改口（token 被作废很常见）都认定已登录。
+    // 但 confirmed 只有在**入库真的成了**才算数：persist 失败时把这次入库作废、下次轮询重试，
+    // 否则就是「扫码显示成功、盘上一个凭据都没有」的那个坑（而且永远不会自愈）。
+    let confirmed = false
+    let persisted: Promise<void> | undefined
+    const status = async (): Promise<QrStatus> => {
+      if (!confirmed) {
+        const observed = await qr.check()
+        if (observed !== 'confirmed') return observed
+        confirmed = true
+      }
+      persisted ??= persist()
+      try {
+        await persisted
+      } catch (err) {
+        persisted = undefined
+        this.options.logger?.(`[session] 上游已确认登录，但入库失败（下次轮询重试）：${String(err)}`)
+        throw err
+      }
+      return 'confirmed'
+    }
+
     return {
       scanUrl: qr.scanUrl,
+      qrPng: qr.qrPng,
+      qrImage,
       expiresAt: qr.expiresAt,
-      status: () => qr.check(),
+      status,
       wait: async (
         intervalMs = options.intervalMs ?? 2000,
         timeoutMs = options.timeoutMs ?? Math.max(0, qr.expiresAt - Date.now()),
       ) => {
-        const status = await qr.wait(intervalMs, timeoutMs)
-        if (status === 'confirmed') await persist()
-        return status
+        const deadline = Date.now() + timeoutMs
+        while (Date.now() < deadline) {
+          const s = await status()
+          if (s === 'confirmed' || s === 'expired') return s
+          await new Promise((r) => setTimeout(r, intervalMs))
+        }
+        return persisted ? 'confirmed' : 'timeout'
       },
     }
   }

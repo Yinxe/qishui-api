@@ -34,6 +34,8 @@ export interface PlayerState {
   error?: string
   /** 当前播放源：cache = 本地文件已就绪；remote = 只是签名地址 */
   source: { kind: 'cache' | 'remote'; path?: string; url?: string; fromCache: boolean } | null
+  /** 试听片段在整首歌里的起点（ms）；整曲可播时为 0 */
+  clipStartMs: number
 }
 
 export interface PlayOptions {
@@ -76,12 +78,16 @@ export class Player {
   private sourceValue: PlaySource | null = null
   private lyricsValue: Lyrics | undefined
   private positionValue = 0
+  /** 真实可播时长覆盖（外部播放器报的时长优先于元数据）；换曲时清空 */
+  private durationOverride: number | undefined
   private volumeValue = 1
   private rateValue = 1
   private errorValue: string | undefined
   private timer?: NodeJS.Timeout
   private lastTickAt = 0
   private consecutiveErrors = 0
+  /** 每次起播递增；慢的解析回来时若 token 已过期（用户又切歌了）就整段丢弃 */
+  private loadToken = 0
   private readonly tickMs: number
   private readonly skipOnError: boolean
 
@@ -106,8 +112,22 @@ export class Player {
     return this.positionValue
   }
 
+  /**
+   * 可播时长（ms），优先级：外部播放器报的真实时长（`setDuration`）> 解析出的播放源时长
+   * （试听片段是片段长度）> 曲目元数据时长。**试听片段下元数据时长会明显偏长**，别拿它当进度终点。
+   */
   get durationMs(): number {
-    return this.current?.durationMs ?? 0
+    return this.durationOverride ?? this.sourceValue?.durationMs ?? this.current?.durationMs ?? 0
+  }
+
+  /** 试听片段在整首歌里的起点（ms）；整曲可播时为 0 */
+  get clipStartMs(): number {
+    return this.sourceValue?.clipStartMs ?? 0
+  }
+
+  /** 播放位置换算到「整首歌时间轴」（试听片段要加上片段起点），歌词对齐用它 */
+  get songPositionMs(): number {
+    return this.positionValue + this.clipStartMs
   }
 
   get volume(): number {
@@ -146,6 +166,7 @@ export class Player {
             fromCache: this.sourceValue.fromCache,
           }
         : null,
+      clipStartMs: this.clipStartMs,
     }
   }
 
@@ -218,9 +239,11 @@ export class Player {
 
   stop(): void {
     this.stopClock()
+    this.loadToken++
     this.positionValue = 0
     this.sourceValue = null
     this.lyricsValue = undefined
+    this.durationOverride = undefined
     this.setStatus('stopped')
   }
 
@@ -253,6 +276,18 @@ export class Player {
     this.events.emit('progress', { positionMs: clamped, durationMs: this.durationMs })
   }
 
+  /**
+   * 外部播放器报来的**真实可播时长**（试听片段/CDN 转码常与元数据不符，以实际为准）。
+   * 传 `undefined` 清掉覆盖，回到播放源/元数据时长；比当前进度短时把进度钳到末尾。
+   */
+  setDuration(durationMs: number | undefined): void {
+    this.durationOverride =
+      typeof durationMs === 'number' && Number.isFinite(durationMs) && durationMs > 0 ? durationMs : undefined
+    const duration = this.durationMs
+    if (duration > 0 && this.positionValue > duration) this.positionValue = duration
+    this.events.emit('progress', { positionMs: this.positionValue, durationMs: duration })
+  }
+
   setRepeat(mode: RepeatMode): void {
     this.queue.setRepeat(mode)
     this.emitQueue()
@@ -275,9 +310,11 @@ export class Player {
   /** 清空队列并回到 idle */
   clear(): void {
     this.stopClock()
+    this.loadToken++
     this.queue.clear()
     this.sourceValue = null
     this.lyricsValue = undefined
+    this.durationOverride = undefined
     this.positionValue = 0
     this.setStatus('idle')
     this.emitQueue()
@@ -293,12 +330,15 @@ export class Player {
     return this.lyricsValue
   }
 
-  /** 播放位置对应的歌词行（含下一行，滚动界面直接用） */
+  /**
+   * 播放位置对应的歌词行（含下一行，滚动界面直接用）。
+   * 试听片段会自动加上片段起点：歌词时间轴是整首歌的，播放位置是片段内的。
+   */
   lyricState(
     offsetMs = 0,
   ): { line?: ReturnType<Lyrics['lineAt']>; index: number; next?: ReturnType<Lyrics['lineAt']> } | undefined {
     if (!this.lyricsValue) return undefined
-    return this.lyricsValue.view(this.positionValue, offsetMs)
+    return this.lyricsValue.view(this.songPositionMs, offsetMs)
   }
 
   /** 当前曲目对应的本地缓media（下载/清理时用） */
@@ -330,6 +370,7 @@ export class Player {
   /* ------------------------------------------------------------ 内部 */
 
   private async startCurrent(opts: PlayOptions = {}): Promise<void> {
+    const token = ++this.loadToken
     const track = this.queue.current
     if (!track) {
       this.setStatus('idle')
@@ -347,12 +388,17 @@ export class Player {
         onProgress: opts.onProgress,
       })
     } catch (err) {
+      // 解析期间用户已经切到别的歌：这次失败属于上一首，别改当前状态
+      if (token !== this.loadToken) return
       await this.handleFailure(err instanceof Error ? err : new Error(String(err)), track)
       return
     }
+    // 慢请求后返回：当前曲目早就换了，丢弃这份旧 source（否则会串台/异曲同播）
+    if (token !== this.loadToken) return
 
     this.consecutiveErrors = 0
     this.sourceValue = source
+    this.durationOverride = undefined
     this.lyricsValue = source.lyrics
     this.events.emit('source', { source })
     this.events.emit('track', { track: source.track, index: this.queue.index })

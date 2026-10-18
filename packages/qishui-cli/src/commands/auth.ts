@@ -8,7 +8,7 @@
 import type { Command } from 'commander'
 import { CliError, core, describeError, globals } from '../context.js'
 import { ago, count, membershipLine, until, userLine } from '../format.js'
-import { qrHint, renderQr } from '../loginQr.js'
+import { qrHint, qrImageHint, renderQr } from '../loginQr.js'
 import { dim, emit, green, heading, isJsonMode, print, printKeyValues, printTable, warn, yellow } from '../output.js'
 
 export function registerAuthCommands(program: Command): void {
@@ -37,6 +37,8 @@ export function registerAuthCommands(program: Command): void {
           print(dim('用「汽水音乐」App 扫描下面的二维码（不要用抖音）：'))
           renderQr(login.scanUrl)
           print(qrHint(login.scanUrl, login.expiresAt))
+          const imageHint = qrImageHint(login.qrImage)
+          if (imageHint) print(imageHint)
         }
 
         const status = await login.wait(intervalMs, timeoutMs)
@@ -57,7 +59,7 @@ export function registerAuthCommands(program: Command): void {
               ['账号数', snapshot.accountCount ? `${snapshot.accountCount} 个已入库` : undefined],
             ])
           },
-          { status, loggedIn: ok, session: snapshot, scanUrl: login.scanUrl },
+          { status, loggedIn: ok, session: snapshot, scanUrl: login.scanUrl, qrImage: login.qrImage },
         )
         if (!ok) process.exitCode = 1
       },

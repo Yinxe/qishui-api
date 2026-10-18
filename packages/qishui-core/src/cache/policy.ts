@@ -22,7 +22,7 @@ const TIERS = [
     key: 'entity',
     label: '元数据 6h',
     ttlMs: 6 * 60 * 60_000,
-    note: '同 id 基本不变：专辑/艺人/歌单详情、曲目元数据（MGetMedia）',
+    note: '同 id 基本不变：专辑/艺人/歌单详情、曲目元数据（MGetMedia）；歌单与实体详情嵌了「我是否收藏」，收藏类写操作会按档/按 id 主动清掉',
   },
   {
     key: 'chart',
@@ -105,21 +105,25 @@ export const KIND_SCOPE: Record<string, CacheScope> = {
   'media-stats': 'viewer',
   user: 'viewer',
   chart: 'viewer',
-  // public：与观看者无关
-  search: 'public',
+  // 判据是「这一路回不回实体」：只要回 track/album/artist/playlist，就可能嵌 `state.is_collected`
+  // （实测 2026-10-18 带会话：Search / FeedSongTab / GetChartDetail / MGetMedia / GetArtistDetail 全都嵌，
+  // 见 packages/qishui-api/test/probe-state.ts 与 probe-state2.ts）——「我收藏过没有」是观看者的属性，
+  // A 号看到的「已喜欢」不能给 B 号看，所以凡是回实体的都按 uid 隔离，只回关键词/枚举/tab 的才共享。
+  search: 'viewer',
+  'discover-home': 'viewer',
+  'discover-mix': 'viewer',
+  'feed-song-tab': 'viewer',
+  'playlist-square': 'viewer',
+  'radio-tracks': 'viewer',
+  'artist-tracks': 'viewer',
+  'artist-albums': 'viewer',
+  featured: 'viewer',
+  // public：与观看者无关（只回关键词/枚举/配置，不回实体）
   sug: 'public',
   'suggest-words': 'public',
   categories: 'public',
-  'discover-home': 'public',
-  'discover-mix': 'public',
-  'feed-song-tab': 'public',
-  'playlist-square': 'public',
-  'radio-tracks': 'public',
   'feed-mode': 'public',
-  featured: 'public',
   launch: 'public',
-  'artist-tracks': 'public',
-  'artist-albums': 'public',
   'report-reasons': 'public',
 }
 

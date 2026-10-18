@@ -1,5 +1,12 @@
 export { type RegisterDeviceOptions, registerDevice } from './auth/device.js'
-export { assertLoggedIn, type LoginContext, type QrLogin, type QrStatus, startQrLogin } from './auth/qr.js'
+export {
+  assertLoggedIn,
+  defaultComputerName,
+  type LoginContext,
+  type QrLogin,
+  type QrStatus,
+  startQrLogin,
+} from './auth/qr.js'
 export {
   type Client,
   type ClientOptions,

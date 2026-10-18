@@ -159,13 +159,16 @@ export {
   DiscoverService,
   FEED_PREFERENCE_MODES,
   type FeedModeOption,
+  type FeedModeRef,
   type FeedModeView,
   type FeedPreferenceMode,
   type FeedPreferenceOption,
   type FeedSongTabOptions,
+  formatFeedMode,
   type HomeLayout,
   type HomeView,
   type LaunchInfo,
+  parseFeedMode,
 } from './services/discover.js'
 export { FeedbackService, type ReportInput, type ReportReason } from './services/feedback.js'
 export { type CollectTarget, LibraryService, type PlaylistPatch } from './services/library.js'

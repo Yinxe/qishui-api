@@ -9,6 +9,11 @@
  *  - `/luna/media*`（MGetMedia）→ 按请求里的 id 造完整曲目实体（GET 回空 body，逼出 POST 回退）
  *  - `/luna/me`、`/luna/media-stats`、`/luna/media/related`、`/luna/search/*`、`/luna/playlist/detail`、
  *    `/luna/charts/*`、`/luna/albums/*`、`/luna/artists/*(/tracks|/albums)`
+ *  - `/luna/me/playlist`（「我喜欢的音乐」`type=1`）+ `/luna/me/collection/track[/delete]`：
+ *    我的喜欢是**有状态**的（`liked` 集合被写接口改，`GetPlaylistDetail` 按集合回曲目），
+ *    这样才能测「写完读回真值」这条缓存失效底线
+ *  - `/passport/web/get_qrcode|check_qrconnect`（扫码登录；状态按 `qrStatuses` 脚本回放，
+ *    回 confirmed 时顺带下发 `sessionid` cookie）
  */
 import type { DeviceIdentity } from 'qishui-api'
 
@@ -25,6 +30,22 @@ export interface MockUpstreamOptions {
   audioSize?: number
   /** GetMyInfo 回的 my_info（默认给一个测试号；null = 未登录形态） */
   myInfo?: Record<string, unknown> | null
+  /** 分享页标记为试听片段（秒）；给了就写 offsetStart/offsetDuration */
+  clip?: { startSec?: number; durationSec: number }
+  /**
+   * 扫码状态脚本（`check_qrconnect` 每次调用 consume 一格，走完停在最后一格）。
+   * 默认 `['waiting', 'confirmed']`；要复刻「确认后上游把 token 判成 expired」就写
+   * `['waiting', 'confirmed', 'expired']`。
+   */
+  qrStatuses?: string[]
+  /** `get_qrcode` 里的 `data.qrcode`（上游官方二维码 PNG，`data:image/png;base64,…`）；默认不给 */
+  qrPng?: string
+  /** 「我喜欢的音乐」初始曲目（写接口会改这份状态） */
+  liked?: string[]
+  /** 上游「最近播放」表的初始曲目（最近的在前）；`AppendRecentPlayedTracks` 会往头部加 */
+  recent?: string[]
+  /** 初始关注的艺人 id（`CollectArtists`/`MDeleteCollectedArtists` 改这份） */
+  followedArtists?: string[]
 }
 
 export interface MockUpstream {
@@ -34,8 +55,17 @@ export interface MockUpstream {
   count(): number
   /** 清空调用记录（用于「第二次零请求」断言） */
   resetCalls(): void
+  /** 当前「我喜欢的音乐」里的曲目 id（写接口改的就是这份状态） */
+  liked(): string[]
+  /** 上游「最近播放」那张表，最近的在前（`AppendRecentPlayedTracks`/`Delete...` 改的就是它） */
+  recent(): string[]
+  /** 上游「关注的艺人」（`CollectArtists`/`MDeleteCollectedArtists` 改的就是它） */
+  followed(): string[]
   audioBytes: Buffer
 }
+
+/** 「我喜欢的音乐」那张自动歌单（`type=1`）的 mock id */
+export const MOCK_LIKED_PLAYLIST_ID = '7000000000000000001'
 
 export const MOCK_DEVICE: DeviceIdentity = {
   deviceId: '9000000000000000001',
@@ -76,7 +106,7 @@ function mockPlayUrl(): string {
   return `https://audio.mock/tok1/${hex}/audio.m4a?mime_type=audio_mp4`
 }
 
-function sharePageHtml(playable: boolean): string {
+function sharePageHtml(playable: boolean, clip?: MockUpstreamOptions['clip']): string {
   const audio: Record<string, unknown> = {
     vid: 'mock-vid',
     trackInfo: {
@@ -102,6 +132,10 @@ function sharePageHtml(playable: boolean): string {
       ],
     },
   }
+  if (clip) {
+    audio.offsetStart = clip.startSec ?? 0
+    audio.offsetDuration = clip.durationSec
+  }
   if (playable) audio.url = mockPlayUrl()
   const data = { loaderData: { track_page: { status_code: 0, audioWithLyricsOption: audio } } }
   return `<!doctype html><html><body><script>window._ROUTER_DATA = ${JSON.stringify(data)}</script></body></html>`
@@ -123,12 +157,35 @@ function requestedIds(url: URL, body?: string): string[] {
   return [...new Set(url.pathname.includes('media') ? (raw.match(/\d{10,20}/g) ?? []) : [])]
 }
 
+/** 写接口 body 里的 id 数组（transport 原样 JSON.stringify 过来）——字段名各端点不同，统一从这里取 */
+function idsFromBody(body: string | undefined, field: string): string[] {
+  try {
+    const parsed = JSON.parse(body ?? '') as Record<string, unknown>
+    return Array.isArray(parsed[field]) ? (parsed[field] as unknown[]).map(String) : []
+  } catch {
+    return []
+  }
+}
+
+/** 收藏类写接口的 `track_ids` */
+function trackIdsFromBody(body?: string): string[] {
+  return idsFromBody(body, 'track_ids')
+}
+
 export function createMockUpstream(options: MockUpstreamOptions = {}): MockUpstream {
   const playable = options.playable !== false
   const size = options.audioSize ?? 2048
   const audioBytes = Buffer.alloc(size, 0x42)
   const coverBytes = Buffer.alloc(512, 0x11)
   const myInfo = options.myInfo === undefined ? { id: '3617835472921684', nickname: '测试小号' } : options.myInfo
+  const qrStatuses = options.qrStatuses ?? ['waiting', 'confirmed']
+  /** 「我喜欢的音乐」里的曲目：写接口改这份，`GetPlaylistDetail` 按它回曲目 */
+  const liked = new Set(options.liked ?? [])
+  /** 上游「最近播放」那张表，最近的在前；`Append...` 插到头部、`Delete...` 摘掉（同首重复播只留最新一条） */
+  const recent: string[] = [...(options.recent ?? [])]
+  /** 上游「关注的艺人」：两条写路径增删，`collection/artist` 按它回 */
+  const followed = new Set(options.followedArtists ?? [])
+  let qrStep = 0
   const calls: MockCall[] = []
 
   const fetchImpl: typeof fetch = async (input, init) => {
@@ -137,6 +194,24 @@ export function createMockUpstream(options: MockUpstreamOptions = {}): MockUpstr
     const body = typeof init?.body === 'string' ? init.body : undefined
     calls.push({ method, url: url.toString(), body })
 
+    if (url.pathname === '/passport/web/get_qrcode/') {
+      return jsonResponse({
+        data: {
+          token: 'mock-qr-token',
+          qrcode_index_url: 'https://bff-pc.qishui.com/light/invoke/scan_login?token=mock-qr-token',
+          ...(options.qrPng ? { qrcode: options.qrPng } : {}),
+          expire_time: Math.floor(Date.now() / 1000) + 300,
+        },
+      })
+    }
+    if (url.pathname === '/passport/web/check_qrconnect/') {
+      const status = qrStatuses[Math.min(qrStep, qrStatuses.length - 1)]
+      qrStep += 1
+      // 只有 confirmed 那一次上游才下发登录 cookie（跟真实扫码一致：确认后 Set-Cookie）
+      const headers: Record<string, string> = { 'content-type': 'application/json' }
+      if (status === 'confirmed') headers['set-cookie'] = 'sessionid=MOCK_SESSIONID; Path=/; HttpOnly'
+      return new Response(JSON.stringify({ data: { status } }), { status: 200, headers })
+    }
     if (url.pathname.endsWith('/device_register/')) {
       return jsonResponse({
         device_id_str: MOCK_DEVICE.deviceId,
@@ -146,7 +221,10 @@ export function createMockUpstream(options: MockUpstreamOptions = {}): MockUpstr
       })
     }
     if (url.hostname === 'www.qishui.com') {
-      return new Response(sharePageHtml(playable), { status: 200, headers: { 'content-type': 'text/html' } })
+      return new Response(sharePageHtml(playable, options.clip), {
+        status: 200,
+        headers: { 'content-type': 'text/html' },
+      })
     }
     if (url.hostname === 'cover.mock') {
       return new Response(coverBytes, { status: 200, headers: { 'content-type': 'image/jpeg' } })
@@ -189,13 +267,29 @@ export function createMockUpstream(options: MockUpstreamOptions = {}): MockUpstr
       // 复刻实测口径：Search 的 pc 变体恒空 body，transport 自动回退到 /luna/search/<type>
       case url.pathname.startsWith('/luna/pc/search/'):
         return new Response('', { status: 200 })
-      case url.pathname.startsWith('/luna/search/'):
+      case url.pathname.startsWith('/luna/search/'): {
+        // 上游按 `<type>` 分路由：不是那 7 个 search_type 就是 404（实测 `/luna/search/`（空 type）也 404）
+        const searchType = url.pathname.split('/').pop() ?? ''
+        if (!['all', 'track', 'video', 'artist', 'album', 'playlist', 'user'].includes(searchType)) {
+          return new Response('not found', { status: 404 })
+        }
         return jsonResponse({
           status_code: 0,
           result_groups: [
+            // 聚合组：上游 display_view_all=false，id 也映射不到单一 search_type
             {
-              id: 'g-track',
+              id: 'top_results',
+              display_title: '你可能想搜',
+              display_type: '',
+              display_view_all: false,
+              has_more: false,
+              items: [],
+            },
+            {
+              id: 'tracks',
               display_title: '单曲',
+              display_type: '',
+              display_view_all: true,
               has_more: false,
               next_cursor: '20',
               items: [
@@ -212,8 +306,10 @@ export function createMockUpstream(options: MockUpstreamOptions = {}): MockUpstr
               ],
             },
             {
-              id: 'g-artist',
+              id: 'artists',
               display_title: '歌手',
+              display_type: '',
+              display_view_all: true,
               has_more: false,
               items: [
                 {
@@ -233,7 +329,38 @@ export function createMockUpstream(options: MockUpstreamOptions = {}): MockUpstr
             },
           ],
         })
-      case url.pathname === '/luna/playlist/detail' || url.pathname === '/luna/pc/playlist/detail':
+      }
+      // 「我喜欢的音乐」（type=1）：曲目就是 liked 集合，收藏/取消写接口直接改它
+      case url.pathname === '/luna/me/playlist' || url.pathname === '/luna/pc/me/playlist':
+        return jsonResponse({
+          status_code: 0,
+          playlists: [
+            {
+              id: MOCK_LIKED_PLAYLIST_ID,
+              title: '我喜欢的音乐',
+              type: 1,
+              count_tracks: liked.size,
+              url_cover: null,
+            },
+          ],
+        })
+      case url.pathname === '/luna/me/collection/track':
+        for (const id of trackIdsFromBody(body)) liked.add(id)
+        return jsonResponse({ status_code: 0 })
+      case url.pathname === '/luna/me/collection/track/delete':
+        for (const id of trackIdsFromBody(body)) liked.delete(id)
+        return jsonResponse({ status_code: 0 })
+      case url.pathname === '/luna/playlist/detail' || url.pathname === '/luna/pc/playlist/detail': {
+        const playlistId = url.searchParams.get('playlist_id') ?? ''
+        if (playlistId === MOCK_LIKED_PLAYLIST_ID) {
+          return jsonResponse({
+            status_code: 0,
+            playlist: { id: playlistId, title: '我喜欢的音乐', count_tracks: liked.size, type: 1, url_cover: null },
+            media_resources: [...liked].map((id) => ({ entity: { track_wrapper: { track: trackEntity(id) } } })),
+            has_more: false,
+            next_cursor: '',
+          })
+        }
         return jsonResponse({
           status_code: 0,
           playlist: { id: '7031081053599238175', title: 'mock 歌单', count_tracks: 2, type: 3, url_cover: null },
@@ -244,6 +371,7 @@ export function createMockUpstream(options: MockUpstreamOptions = {}): MockUpstr
           has_more: false,
           next_cursor: '',
         })
+      }
       case /^\/luna(\/pc)?\/albums\//.test(url.pathname):
         return jsonResponse({
           status_code: 0,
@@ -297,6 +425,21 @@ export function createMockUpstream(options: MockUpstreamOptions = {}): MockUpstr
           },
           hot_tracks: [{ entity: { track_wrapper: { track: trackEntity('7001') } } }],
         })
+      // 听歌模式的两条取批路径：上游实测每次只回 6 首（随机批次，不是浏览列表）
+      case url.pathname === '/luna/pc/feed/song-tab':
+        return jsonResponse({
+          status_code: 0,
+          items: ['7101', '7102', '7103', '7104', '7105', '7106'].map((id) => ({
+            entity: { track_wrapper: { track: trackEntity(id) } },
+          })),
+        })
+      case url.pathname === '/luna/pc/feed/radio/tracks':
+        return jsonResponse({
+          status_code: 0,
+          items: ['7201', '7202', '7203', '7204', '7205', '7206'].map((id) => ({
+            entity: { track_wrapper: { track: trackEntity(id) } },
+          })),
+        })
       case /^\/luna(\/pc)?\/charts\//.test(url.pathname):
         return jsonResponse({
           status_code: 0,
@@ -316,6 +459,70 @@ export function createMockUpstream(options: MockUpstreamOptions = {}): MockUpstr
             ],
           },
         })
+      // 最近播放：真数据在 `/luna/me/recently-played`（曲目表，游标是偏移量的字符串）
+      case url.pathname === '/luna/me/recently-played' && method === 'GET': {
+        const from = Number(url.searchParams.get('cursor') ?? 0) || 0
+        const size = Number(url.searchParams.get('count') ?? 20) || 20
+        const slice = recent.slice(from, from + size)
+        return jsonResponse({
+          status_info: {},
+          tracks: slice.map((id) => trackEntity(id)),
+          has_more: from + size < recent.length,
+          next_cursor: String(from + size),
+          total_num: recent.length,
+        })
+      }
+      // 同一首歌重复播只留最新一条，所以插到表头
+      case url.pathname === '/luna/me/recently-played' && method === 'POST': {
+        for (const id of idsFromBody(body, 'track_ids')) {
+          const at = recent.indexOf(id)
+          if (at >= 0) recent.splice(at, 1)
+          recent.unshift(id)
+        }
+        return jsonResponse({ status_info: {} })
+      }
+      case url.pathname === '/luna/me/recently-played/delete': {
+        const ids = idsFromBody(body, 'track_ids')
+        for (const id of ids) {
+          const at = recent.indexOf(id)
+          if (at >= 0) recent.splice(at, 1)
+        }
+        return jsonResponse({ status_info: {}, deleted_track_ids: ids })
+      }
+      // 实测：这张 media 表同一账号在登录态下只回 `{}`，`{}` 就是它的真实形态
+      case url.pathname === '/luna/pc/me/recently-played-media':
+        return jsonResponse({})
+      // 关注/取关：IDL 标了 `pcVariant`，客户端发的其实是 `/luna/pc/...` 那条，两条都认
+      case /^\/luna\/(pc\/)?me\/collection\/artist$/.test(url.pathname) && method === 'POST': {
+        for (const id of idsFromBody(body, 'artist_ids')) followed.add(id)
+        return jsonResponse({ status_info: {}, artist_ids: [...followed] })
+      }
+      case /^\/luna\/(pc\/)?me\/collection\/artist\/delete$/.test(url.pathname): {
+        const ids = idsFromBody(body, 'artist_ids')
+        for (const id of ids) followed.delete(id)
+        return jsonResponse({
+          status_info: {},
+          deleted_artists: ids,
+          deleted_artist_status: Object.fromEntries(ids.map((id) => [id, 0])),
+        })
+      }
+      // 关注艺人的读：`me` 与 `user` 两条路由实测回同一个形状；空表时上游连 `artists`/`total_num` 都不给
+      case /^\/luna\/(pc\/)?(me|user)\/collection\/artist$/.test(url.pathname) && method === 'GET': {
+        const items = [...followed].map((id) => ({
+          id,
+          name: `艺人 ${id.slice(-4)}`,
+          simple_display_name: `艺人 ${id.slice(-4)}`,
+          count_albums: 3,
+          count_tracks: 40,
+          state: { is_collected: true, follow_status: 1, blocked_by_me: false },
+        }))
+        return jsonResponse({
+          status_info: {},
+          artists: items.length ? items : undefined,
+          total_num: items.length || undefined,
+          next_cursor: items.length ? '1774117995_0' : undefined,
+        })
+      }
       default:
         return jsonResponse({ status_code: 0, status_info: { log_id: 'mock' } })
     }
@@ -328,6 +535,9 @@ export function createMockUpstream(options: MockUpstreamOptions = {}): MockUpstr
     resetCalls: () => {
       calls.length = 0
     },
+    liked: () => [...liked],
+    recent: () => [...recent],
+    followed: () => [...followed],
     audioBytes,
   }
 }

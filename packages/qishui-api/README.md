@@ -179,8 +179,12 @@ const media = await getShareMedia('https://qishui.douyin.com/s/iXpmR4xD/')
 //   title: '万籁停吹奏(知颐听秋水问蜉蝣版)', artist: '雨过天晴',
 //   cover_url: 'https://p3-luna.douyinpic.com/img/…', vid: 'v02ad6g10000db3ive7og65og8oj6lug',
 //   expires_at: 1792367511,
+//   offset_start_ms: 208896, offset_duration_ms: 52341,   // 试听片段：整曲 261.3s，实际只给 208.9s 起 52.3s
 //   lyrics: { lyric_type: 'krc', sentences: [ { text: '作曲：雨过天晴', start_ms: 0, … }, … ] } }
 ```
+
+> `duration_ms` 是**整曲**时长（`trackInfo.duration`）；拿到试听片段时实际音频只有 `offset_duration_ms` 那么长，
+> 从 `offset_start_ms` 处开始。播放进度按片段时长算，歌词时间轴是整曲的、查询时要加片段起点。
 
 入口和元数据共用 `resolveShareLink`，所以短链、完整链接、裸 ID、`{ kind, id }` 对象都能直接传。
 它**不发 goapi 请求**：只 GET 一次 `www.qishui.com/share/<kind>?<kind>_id=…&auto_play_bgm=1`，
@@ -247,6 +251,8 @@ await shareLinkToMeta({ kind: 'ugc_video', id: '7452683763189878070' }, client) 
 ```ts
 const qr = await client.qrLogin()
 // qr.scanUrl 就是要用「汽水音乐」App 扫的那段内容；渲染（二维码图片）由调用方自己来
+// qr.qrPng 是上游自己给的官方二维码（`data:image/png;base64,…`，编的是它的 `qrcode_index_url`，
+// 带静区、比终端 ASCII 好认）；没有就 undefined
 const status = await qr.wait()            // 'confirmed' | 'expired'
 if (status === 'confirmed') {
   const my = await client.request('GetMyInfo', {})
@@ -256,7 +262,12 @@ if (status === 'confirmed') {
 ```
 
 `qr.wait()` 会轮询 `check_qrconnect`，登录成功后的 cookie 建议存到 `qishui-session.json` 这类本地文件
+（实测：`get_qrcode` 给的 `expire_time` 只有 **299 秒**左右，认码慢就会过期 —— 那不是接口坏了，重新 `qrLogin()` 取一张）
 （`.gitignore` 已排除），下次用 `createClient({ cookies })` 直接带回来。
+
+二维码深链里带一个 `computer_name`，就是你手机 App 扫码确认页上看到的「在 **<电脑名>** 上登录」那行字。
+默认取本机计算机名（`os.hostname()`，与官方 PC 客户端同口径），要换成别的名字用 `QISHUI_COMPUTER_NAME`，
+也可以构造时传 `createClient({ computerName })`。**别往里写项目/库的名字**——扫码的人看得见。
 
 设备身份和会话都可以持久化后回传，避免每次都注册新设备：
 

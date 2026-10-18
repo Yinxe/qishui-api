@@ -21,8 +21,8 @@ export interface CoreConfig {
   /** 媒体缓存上限字节，超了按最久未访问剔除；0 = 不限制 */
   maxMediaBytes: number
   /**
-   * 把自己播放过的曲目上报给上游（AppendRecentlyPlayedMedia）。
-   * 默认关：写接口一律要显式开，且实测「写通道通、回读不落地」（见 qishui-api 文档）。
+   * 把自己播放过的曲目上报给上游（`AppendRecentPlayedTracks`，实测写完回读得到）。
+   * 默认关：这是写接口，一律要显式开；而且它会把这台机器的收听混进账号的云端历史。
    * 本地播放历史（journal/plays.jsonl）不受这个开关影响，永远记。
    */
   reportPlayback: boolean
@@ -30,6 +30,19 @@ export interface CoreConfig {
   defaultRepeat: RepeatMode
   /** 播放器默认随机 */
   defaultShuffle: boolean
+  /**
+   * TUI 是否接管鼠标（`?1000`+`?1006` 上报）。关掉后终端原生拖选复制恢复；
+   * 环境变量 `QISHUI_TUI_MOUSE=0` 是更硬的关（连追踪都不开）。
+   */
+  tuiMouse: boolean
+  /**
+   * 本机记住的**听歌模式**，一个值。文法：`preference:<mode>`（`default`/`familiar`/`fresh`）
+   * 或 `scene:<radioId>`（`feedModes()` 场景的 `scene_mode_id`，也可以是首页 `discover_radio` 的块 id）。
+   * 空串 = 没选过。
+   * **只是本地记住的偏好**：上游没有「保存听歌模式」的写接口，`FeedMode` 的 `feed_mode_bar`
+   * 也只回它自己当前的那一条，所以这个值不声称是上游状态。
+   */
+  feedMode: string
   /**
    * 激活账号的 uid（多账号开关的真相源）：空 = 匿名。
    * `SessionManager.useAccount()`/登录会写回它；也可手改 config.json 换默认号。
@@ -46,6 +59,8 @@ export const CONFIG_DEFAULTS: Omit<CoreConfig, 'dataDir'> = {
   reportPlayback: false,
   defaultRepeat: 'off',
   defaultShuffle: false,
+  tuiMouse: true,
+  feedMode: '',
 }
 
 export interface LoadConfigInput {

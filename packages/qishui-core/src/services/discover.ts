@@ -128,6 +128,32 @@ export interface FeedSongTabOptions {
 }
 
 /**
+ * 一个**听歌模式**的选择，只能是一个值：要么三档偏好之一，要么某个场景。
+ * 场景可以是 `feedModes()` 的 `scene_mode_id`（短数字），也可以是首页 `discover_radio` 块的
+ * `inner_block_id`（雪花 id）——`radioTracks()` 实测两种都吃。
+ */
+export type FeedModeRef = { kind: 'preference'; mode: FeedPreferenceMode } | { kind: 'scene'; radioId: string }
+
+/** `config.feedMode` 的写法：带前缀的扁平串，不用「纯数字就是场景」这种隐式判定 */
+export function formatFeedMode(ref: FeedModeRef): string {
+  return ref.kind === 'preference' ? `preference:${ref.mode}` : `scene:${ref.radioId}`
+}
+
+/** 解析 `config.feedMode`；空串或认不出就是「没选过」，不猜 */
+export function parseFeedMode(raw: string | undefined): FeedModeRef | undefined {
+  const text = raw?.trim()
+  if (!text) return undefined
+  const sep = text.indexOf(':')
+  if (sep < 0) return undefined
+  const head = text.slice(0, sep)
+  const tail = text.slice(sep + 1)
+  if (!tail) return undefined
+  if (head === 'preference') return { kind: 'preference', mode: tail }
+  if (head === 'scene') return { kind: 'scene', radioId: tail }
+  return undefined
+}
+
+/**
  * 发现 / 推荐：
  *  - `home()` = `DiscoverView` 推荐页版（空 body）：榜单块 + 歌单推荐 + 场景队列，一次 159 条资源；
  *  - `home({layout:'feed'})` = 听歌模式版：30 个 `discover_radio` 场景队列，**没有榜单块**；
@@ -298,9 +324,10 @@ export class DiscoverService {
   }
 
   /**
-   * 电台/场景队列的曲目流（无限电台的续播来源）。
+   * 场景模式的曲目批次（听歌模式的场景档）。
    * `radioId` 实测两种都吃：FeedMode 场景的 `scene_mode_id`（如 `48`），
    * 或首页 `discover_radio` 块的 `inner_block_id`（雪花 id）。
+   * **一次只随机给一小批（实测 6 首）**，是「随机播放的批次来源」，不是一屏可浏览的列表。
    */
   async radioTracks(radioId: string | number, opts: { refresh?: boolean } = {}): Promise<Track[]> {
     const key = String(radioId)
@@ -311,6 +338,15 @@ export class DiscoverService {
       { force: opts.refresh, ttlMs: CacheTtl.none },
     )
     return collectTracks(value, this.parseOpts, 50).map((d) => new Track(this.core, d))
+  }
+
+  /**
+   * 按一个听歌模式取一批曲目：偏好档走 `feedSongTab`，场景档走 `radioTracks`。
+   * 两边都是「一次约 6 首、每次随机」，用来连着播而不是摊开看。
+   */
+  async feedModeTracks(ref: FeedModeRef, opts: FeedSongTabOptions & { refresh?: boolean } = {}): Promise<Track[]> {
+    if (ref.kind === 'scene') return this.radioTracks(ref.radioId, { refresh: opts.refresh })
+    return this.feedSongTab({ ...opts, preferenceMode: ref.mode })
   }
 
   /** Feed 模式配置（推荐流的路由表：preference_mode / scene_mode 的枚举与文案） */
@@ -325,7 +361,7 @@ export class DiscoverService {
 
   /**
    * Feed 模式配置（推荐流的路由表），解析成「偏好栏 + 场景列表」。
-   * 偏好栏喂 `feedSongTab({preferenceMode})`；场景的 `radioId` 喂 `radioTracks()`。
+   * 选出来的那一个喂 `feedModeTracks()`（= `FeedModeRef`，只有一个当前值）。
    */
   async feedModes(opts: { refresh?: boolean } = {}): Promise<FeedModeView> {
     const raw = await this.feedMode(opts)

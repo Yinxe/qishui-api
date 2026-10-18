@@ -120,6 +120,65 @@ describe('media.resolve：播放源', () => {
   })
 })
 
+describe('media：试听片段', () => {
+  it('offsetStart/offsetDuration → 片段时长与起点，playableRange 落 meta，缓存命中一致', async () => {
+    const clipHome = makeTempDir('qishui-media-clip-')
+    try {
+      const clip = createMockUpstream({ clip: { startSec: 3, durationSec: 5 } })
+      const core2 = await createQishui({ dataDir: clipHome, device: MOCK_DEVICE, fetchImpl: clip.fetchImpl })
+      const source = await core2.media.resolve(TRACK)
+      expect(source.durationMs).toBe(5000)
+      expect(source.clipStartMs).toBe(3000)
+      expect(source.track.playableRange).toEqual({ startMs: 3000, durationMs: 5000 })
+      const cached = await core2.media.resolve(TRACK)
+      expect(cached.durationMs).toBe(5000)
+      expect(cached.clipStartMs).toBe(3000)
+      core2.dispose()
+    } finally {
+      rmDir(clipHome)
+    }
+  })
+
+  it('v1 命中只重拉分享页补片段信息，不重下音频；meta 升到 v2', async () => {
+    const v1Home = makeTempDir('qishui-media-v1-')
+    try {
+      const clip = createMockUpstream({ clip: { startSec: 3, durationSec: 5 } })
+      const core2 = await createQishui({ dataDir: v1Home, device: MOCK_DEVICE, fetchImpl: clip.fetchImpl })
+      await core2.media.ensure(TRACK)
+      const file = path.join(core2.media.dirOf(TRACK), 'meta.json')
+      const stale = JSON.parse(fs.readFileSync(file, 'utf8'))
+      // 模拟旧版本缓存：v1 + 没记片段信息
+      delete stale.track.playableRange
+      stale.v = 1
+      fs.writeFileSync(file, JSON.stringify(stale))
+      clip.resetCalls()
+      const upgraded = await core2.media.ensure(TRACK)
+      expect(clip.count()).toBe(1) // 只有分享页
+      expect(clip.calls[0]?.url).toContain('/share/track')
+      expect(upgraded.v).toBe(2)
+      expect(upgraded.track.playableRange).toEqual({ startMs: 3000, durationMs: 5000 })
+      core2.dispose()
+    } finally {
+      rmDir(v1Home)
+    }
+  })
+
+  it('offset 与整曲等长时不算片段（durationMs 仍为整曲、无 playableRange）', async () => {
+    const fullHome = makeTempDir('qishui-media-full-')
+    try {
+      const full = createMockUpstream({ clip: { startSec: 0, durationSec: 12.345 } })
+      const core2 = await createQishui({ dataDir: fullHome, device: MOCK_DEVICE, fetchImpl: full.fetchImpl })
+      const source = await core2.media.resolve(TRACK, { download: false })
+      expect(source.durationMs).toBe(12_345)
+      expect(source.clipStartMs).toBeUndefined()
+      expect(source.track.playableRange).toBeUndefined()
+      core2.dispose()
+    } finally {
+      rmDir(fullHome)
+    }
+  })
+})
+
 describe('media：计数 / 校验 / 清理', () => {
   it('recordPlay 计次，stats 汇总字节与播放数', async () => {
     await core.media.ensure(TRACK)

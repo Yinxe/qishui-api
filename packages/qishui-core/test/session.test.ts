@@ -116,9 +116,13 @@ describe('session：多账号并存 + 隔离 + 切号编排', () => {
     try {
       await core!.cache.set('me', 'k', { who: 'B' })
       await core!.cache.set('search', 'q', { who: 'B' })
+      await core!.cache.set('sug', 'w', { who: 'B' })
       expect(fs.existsSync(core!.paths.entityFile('me', 'k', '222'))).toBe(true)
-      expect(fs.existsSync(core!.paths.entityFile('search', 'q'))).toBe(true)
-      expect(fs.existsSync(path.join(home, 'cache', 'entities', '_acct', '222', 'search'))).toBe(false)
+      // search 的响应里嵌了 `state.is_collected`，按观看者隔离（见 cache/policy.ts 的判据）
+      expect(fs.existsSync(core!.paths.entityFile('search', 'q', '222'))).toBe(true)
+      expect(fs.existsSync(path.join(home, 'cache', 'entities', 'search'))).toBe(false)
+      // 只回关键词的 sug 照旧共享
+      expect(fs.existsSync(core!.paths.entityFile('sug', 'w'))).toBe(true)
     } finally {
       teardown()
     }
@@ -127,13 +131,17 @@ describe('session：多账号并存 + 隔离 + 切号编排', () => {
   it('useAccount(A)：内存态作废 + 私有缓存跨号不可见 + 共享位照常可见', async () => {
     await boot()
     try {
-      // B 激活时先埋两层缓存
+      // B 激活时先埋三层缓存：账号私有 / 带我态 / 纯公共
       await core!.cache.set('me', 'k', { who: 'B' })
       await core!.cache.set('search', 'q', { who: 'B' })
+      await core!.cache.set('sug', 'w', { who: 'B' })
       await core!.useAccount('111')
       expect(core!.cache.get('me', 'k')).toBeUndefined()
       expect(await core!.cache.load('me', 'k')).toBeUndefined()
-      expect((await core!.cache.load<{ who: string }>('search', 'q'))?.who).toBe('B')
+      // 带我态（search）同样跨号不可见
+      expect(await core!.cache.load('search', 'q')).toBeUndefined()
+      // 纯公共（sug）照常可见
+      expect((await core!.cache.load<{ who: string }>('sug', 'w'))?.who).toBe('B')
     } finally {
       teardown()
     }
@@ -267,6 +275,172 @@ describe('session：--as 式临时实例', () => {
       expect(() => core.session.assertLoggedIn()).toThrow(NotLoggedInError)
       core.dispose()
     } finally {
+      rmDir(home)
+    }
+  })
+})
+
+describe('session：扫码登录 confirmed 必须入库（登录态刷新的根）', () => {
+  async function boot(
+    script: string[],
+    qrPng?: string,
+  ): Promise<{ home: string; core: QishuiCore; checkCalls: () => number }> {
+    const home = makeTempDir('qishui-login-')
+    const mock = createMockUpstream({ qrStatuses: script, qrPng })
+    const core = await createQishui({ dataDir: home, device: MOCK_DEVICE, fetchImpl: mock.fetchImpl })
+    return {
+      home,
+      core,
+      checkCalls: () => mock.calls.filter((c) => c.url.includes('check_qrconnect')).length,
+    }
+  }
+
+  it('status() 观测到 confirmed 就完成入库+激活（上层只轮询 status 的那条路）', async () => {
+    const { home, core } = await boot(['waiting', 'scanned', 'confirmed'])
+    const uids: (string | undefined)[] = []
+    core.events.on('account-changed', ({ uid }) => uids.push(uid))
+    try {
+      const login = await core.login({ intervalMs: 10, timeoutMs: 5_000 })
+      expect(await login.status()).toBe('waiting')
+      expect(await login.status()).toBe('scanned')
+      expect(core.loggedIn).toBe(false)
+
+      expect(await login.status()).toBe('confirmed')
+      const snap = core.snapshot()
+      expect(snap.loggedIn).toBe(true)
+      expect(snap.nickname).toBe('测试小号')
+      expect(snap.activeUid).toBe('3617835472921684')
+      expect(fs.existsSync(path.join(home, 'accounts', '3617835472921684.json'))).toBe(true)
+      expect(core.accounts().map((a) => a.active)).toEqual([true])
+      expect(uids).toEqual(['3617835472921684'])
+    } finally {
+      core.dispose()
+      rmDir(home)
+    }
+  })
+
+  it('确认后上游改口 expired：仍然认定已登录，且入库只发生一次', async () => {
+    const { home, core, checkCalls } = await boot(['waiting', 'confirmed', 'expired'])
+    const uids: (string | undefined)[] = []
+    core.events.on('account-changed', ({ uid }) => uids.push(uid))
+    try {
+      const login = await core.login({ intervalMs: 10, timeoutMs: 5_000 })
+      expect(await login.status()).toBe('waiting')
+      expect(await login.status()).toBe('confirmed')
+      const probed = checkCalls()
+
+      // 已经 confirmed 过：不再问上游（token 后来被判 expired 也否定不了成立的登录）
+      expect(await login.status()).toBe('confirmed')
+      expect(checkCalls()).toBe(probed)
+      expect(await login.wait(10, 500)).toBe('confirmed')
+      expect(core.snapshot().loggedIn).toBe(true)
+      expect(core.accounts()).toHaveLength(1)
+      expect(uids).toEqual(['3617835472921684'])
+    } finally {
+      core.dispose()
+      rmDir(home)
+    }
+  })
+
+  it('没人看过 status 时，wait() 自己轮询到 confirmed 也照常入库（CLI 路径）', async () => {
+    const { home, core } = await boot(['waiting', 'confirmed'])
+    try {
+      const login = await core.login({ intervalMs: 10, timeoutMs: 5_000 })
+      expect(await login.wait(10, 5_000)).toBe('confirmed')
+      expect(core.loggedIn).toBe(true)
+      expect(core.snapshot().nickname).toBe('测试小号')
+    } finally {
+      core.dispose()
+      rmDir(home)
+    }
+  })
+
+  it('GetMyInfo 拿不到身份：cookie 仍入库（loggedIn=true），登录态不至于显示成未登录', async () => {
+    const home = makeTempDir('qishui-login-noid-')
+    const mock = createMockUpstream({ qrStatuses: ['confirmed'], myInfo: null })
+    const core = await createQishui({ dataDir: home, device: MOCK_DEVICE, fetchImpl: mock.fetchImpl })
+    try {
+      const login = await core.login({ intervalMs: 10, timeoutMs: 5_000 })
+      expect(await login.status()).toBe('confirmed')
+      expect(core.loggedIn).toBe(true)
+      expect(core.snapshot().uid).toBeUndefined()
+      // 身份后来由 me()/rememberIdentity 补全，不再依赖登录那一次
+      const me = await core.account.me()
+      expect(core.session.rememberIdentity).toBeTypeOf('function')
+      expect(me.user.id).toBe('')
+      expect(fs.readFileSync(path.join(home, 'accounts', '_anon.json'), 'utf8')).toContain('MOCK_SESSIONID')
+    } finally {
+      core.dispose()
+      rmDir(home)
+    }
+  })
+
+  it('已确认但入库失败：不谎报成已登录，挡路的东西清掉后下一次轮询自己补上', async () => {
+    const { home, core, checkCalls } = await boot(['waiting', 'confirmed'])
+    const accounts = path.join(home, 'accounts')
+    fs.writeFileSync(accounts, '') // accounts 被一个普通文件占了 → 写账号文件必炸（只读盘/权限出错的替身）
+    try {
+      const login = await core.login({ intervalMs: 10, timeoutMs: 5_000 })
+      expect(await login.status()).toBe('waiting')
+      await expect(login.status()).rejects.toThrow()
+      // 盘上没落地就不算登录：不留「界面显示已登录、账号文件一个没有」这种重启就蒸发又不自愈的形态
+      expect(core.loggedIn).toBe(false)
+      expect(core.snapshot().activeUid).toBeUndefined()
+      const probed = checkCalls()
+
+      fs.rmSync(accounts)
+      expect(await login.status()).toBe('confirmed') // 重试把入库补上，且不回头再问上游
+      expect(checkCalls()).toBe(probed)
+      expect(core.loggedIn).toBe(true)
+      expect(fs.existsSync(path.join(accounts, '3617835472921684.json'))).toBe(true)
+      expect(core.accounts().map((a) => a.uid)).toEqual(['3617835472921684'])
+    } finally {
+      if (fs.existsSync(accounts) && fs.statSync(accounts).isFile()) fs.rmSync(accounts)
+      core.dispose()
+      rmDir(home)
+    }
+  })
+
+  it('上游给了官方二维码 PNG：落一份临时文件并把路径交回上层（终端识别慢时的备用）', async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]).toString('base64')
+    const { home, core } = await boot(['confirmed'], `data:image/png;base64,${png}`)
+    let image: string | undefined
+    try {
+      const login = await core.login({
+        intervalMs: 10,
+        timeoutMs: 5_000,
+        onQr: (qr) => {
+          image = qr.qrImage
+        },
+      })
+      // onQr 与 login 返回值给的是同一个路径：上层不管是哪条出路都能显示
+      expect(login.qrImage).toBeTypeOf('string')
+      expect(image).toBe(login.qrImage)
+      expect(
+        fs
+          .readFileSync(login.qrImage as string)
+          .subarray(0, 8)
+          .toString('hex'),
+      ).toBe('89504e470d0a1a0a')
+      // 码里编着登录 token，临时目录又是共享的 —— 只给自己读
+      expect(fs.statSync(login.qrImage as string).mode & 0o777).toBe(0o600)
+    } finally {
+      if (image) fs.rmSync(image, { force: true })
+      core.dispose()
+      rmDir(home)
+    }
+  })
+
+  it('上游没给二维码图片：qrImage 就是 undefined（不硬编一张、也不报错）', async () => {
+    const { home, core } = await boot(['confirmed'])
+    try {
+      const login = await core.login({ intervalMs: 10, timeoutMs: 5_000 })
+      expect(login.qrPng).toBeUndefined()
+      expect(login.qrImage).toBeUndefined()
+      expect(await login.status()).toBe('confirmed')
+      expect(core.loggedIn).toBe(true)
+    } finally {
+      core.dispose()
       rmDir(home)
     }
   })

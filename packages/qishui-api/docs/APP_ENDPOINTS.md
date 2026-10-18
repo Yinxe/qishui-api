@@ -37,7 +37,7 @@
 | 结果 | 条数 | 是哪几条 |
 |---|---|---|
 | `ok_json` | 6 | `GetMyInfo`、`GetMyPlaylists`、`GetBlockUserList`、`GetUploaderInfo`、`GetMyPrivacySetting`、`Search2023` |
-| `ok_thin` | 3 | `GetMyMixedCollections`、`GetRecentPlayedMedia`、`GetDigitalAlbums` —— 回了 `status_code=0` 但**这个账号里没数据**（没收藏/没播放记录/没买数字专辑） |
+| `ok_thin` | 3 | `GetMyMixedCollections`、`GetRecentPlayedMedia`、`GetDigitalAlbums` —— 回了 `status_code=0` 但**这个账号里没数据**（没收藏/没数字专辑；~~没播放记录~~ **播放记录那条已翻案**：这个账号有 200+ 条，只是不在这张表里，见 `GetRecentPlayedTracks`） |
 | `risk_control` | 1 | `GetUserInfo`（**匿名时能拿到**，带会话反而被打标 —— 风控看请求频率，不看登录态） |
 | `biz_error` | 2 | `GetReportReason`（**写接口轮翻案**：`report_type` 要给字符串 `"track"`）、`GetOffersTokensStatusForPC`（**写接口轮翻案**：给真 `token` 就回 `token_status`）|
 | `error` | 2 | `QueryTokenStatus` HTTP 500（上游 v1 GET 路由，不是我们的问题）、`FlowSearch` 404 |
@@ -167,7 +167,9 @@ blocks[1] type=discover_top_song_list
 
 > `Search` 是首选；`Sug` / `SuggestWords` 做下拉与「猜你想搜」。三者字段名都以真实响应为准。
 >
-> **用户搜索（`search_type=user`）匿名与带会话都拿不到**：`/luna/search/user` 回 `200` 但 **body 里没有 `result_groups`**（175 字节，只有 `status_info`/`extra`），试过改 `search_method`（track/user/search/空）、`search_scene=user`、`scene_name=search_page` 都一样；`all` 的结果分组里也没有 `users` 分组。属**未验证 / 上游不返回**（PC 客户端那个「用户」tab 走哪条路尚未找到，不拿旧 h5 接口凑）。`artist`/`album`/`playlist` 匿名正常，实体在 `items[].entity.<kind>`。
+> **`search_type=user` 与 `display_type` 是两回事**（都实测过，别混）：
+>  - 用户搜索匿名与带会话都拿不到：`/luna/search/user` 回 `200` 但 **body 里没有 `result_groups`**（175 字节，只有 `status_info`/`extra`），试过改 `search_method`（track/user/search/空）、`search_scene=user`、`scene_name=search_page` 都一样；`all` 的结果分组里也没有 `users` 分组。属**未验证 / 上游不返回**（PC 客户端那个「用户」tab 走哪条路尚未找到，不拿旧 h5 接口凑）。`artist`/`album`/`playlist` 匿名正常，实体在 `items[].entity.<kind>`。
+>  - **`result_groups[].display_type` 不能当 `search_type` 用**：`all` 搜「周杰伦」四个分组（歌单/音乐人/歌曲/专辑）+ 聚合组的 `display_type` **全回空串**，拿它拼路径就是 `/luna/search/` → **HTTP 404**；`<未知 type>` 一律 404。分组的判别看 **`group.id`**（实测 `top_results` / `playlists` / `artists` / `tracks` / `albums`），「这一组要不要给『查看全部』」看 **`display_view_all`**（实测 `top_results` = `false`，其余四组 = `true`）；`has_more` 在这些预览组上都是 `false`，分页另有 `next_cursor`。core 的 `SearchGroup` 已把这两项派生成 `searchType` / `viewAll`。
 
 ### 3.4 曲目 / 专辑 / 艺人
 
@@ -201,6 +203,11 @@ blocks[1] type=discover_top_song_list
 > （`https://www.qishui.com/share/track?track_id=…`）→ `getShareMedia()` 读 SSR 里的
 > `audioWithLyricsOption.url`（`audio_mp4`），同时能拿到 **KRC 结构化歌词**（行级 + 逐字时间戳）。
 > 地址带签名，`expires_at` 约 24h，过期要重新解析，**不要缓存**。
+>
+> **拿到的常是试听片段，不是整曲**：SSR 的 `audioWithLyricsOption.duration` 是**整曲**时长，
+> 但实际音频只有 `offsetDuration` 那么长、从 `offsetStart` 处开始（实测 `演员`：整曲 261.3s，
+> 音频 = 208.9s 起长 52.3s）。所以 `getShareMedia()` 另外给出 `offset_start_ms` / `offset_duration_ms`：
+> 播放进度按片段时长算，歌词时间轴是整曲的、要加上片段起点才对得上。
 
 ### 3.6 歌单 / 收藏
 
@@ -211,11 +218,13 @@ blocks[1] type=discover_top_song_list
 | `GetUserMixedCollections` | ✅ | `ok_thin`（该用户没收藏歌单/专辑） | 只装「收藏的歌单/专辑」，**不含收藏的曲目** |
 | `GetMyPlaylists` | 登录 | ✅ `playlists[2]` + `total_num` | 我的歌单（已验）。含「我喜欢的音乐」`type=1`、「抖音收藏的音乐」`type=4` —— 取收藏曲目的**唯一入口**；`playlists[]` 带 `title`/`count_tracks`/`url_cover`/`stats`/`type`/`from_feed`/`owner`/`all_sort_types` |
 | `GetMyMixedCollections` | 登录 | `ok_thin`（空） | 我的收藏混排（同样不含曲目）。**这条账号里没数据**，所以只验到「不再被拦、结构正常」 |
-| `GetRecentPlayedMedia` | 登录 | `ok_thin`（空） | 最近播放（响应键是 `media`，不是 `items`）。**刚登录的账号没播放记录**，所以是空的；上报用 `AppendRecentlyPlayedMedia` |
+| `GetRecentPlayedMedia` | 登录 | ~~`ok_thin`（空）「刚登录的账号没播放记录」~~ **已翻案**：回 `{}`（连 `media` 键都没有） | 走 pc 路由 `/luna/pc/me/recently-played-media`。这张表**同一个已登录、真放过歌的账号**（`GetRecentPlayedTracks` 读到 200+ 条）在登录态下也回 `{}`：`media_type` 0/1/2/3、`scene` 空或 `home` 全都一样 —— 所以「空」是这张路由的形态，不是「账号没播放记录」。非 pc 路由 `/luna/me/recently-played-media` 未测。真正的历史在 `GetRecentPlayedTracks` |
+| `GetRecentPlayedTracks` | 登录 | ✅ `tracks[200+]` + `has_more`/`next_cursor`/`total_num` | **最近播放的真相**：`/luna/me/recently-played`，游标是**偏移量的字符串**（首页传 `0`，往后把 `next_cursor` 原样回传，不能自己页号 +1）。同一首歌重复播只留最新一条（插表头）|
 | `GetDigitalAlbums` | 登录 | `ok_thin`（空） | 已购数字专辑。**这个账号没买过**，所以是空的 |
 | `CreatePlaylist` / `UpdatePlaylistInfo` / `MAppendPlaylistMedia` / `DeletePlaylistMedia` / `MDeletePlaylists` | 登录 | ✅ 全部实测通过 | 写链路。`CreatePlaylist{name,is_private}` 回 `playlist{id}`；加歌 `MAppendPlaylistMedia{playlist_id,media[]}` 后 `count_tracks` +1；`MDeletePlaylists` 响应**没有 `status_code`**，成功看 `deleted_playlists` 里有没有那个 id。**`UpdatePlaylistInfo` 紧跟建单后改名可能回 `1000014`，重试即通**（实测 3 次里头一次） |
 | `CollectTracks` / `CollectAlbums` / `CollectArtists` / `CollectPlaylists` / `CollectMediaList` / `MDeleteCollected*` | 登录 | ✅ 全部实测通过 | 收藏/关注与取消，成对验证：收藏后 `GetMyPlaylists`(type=1)/`GetMyMixedCollections`/`GetUserArtistCollection` 能读到，取消后读不到。注意 **`CollectMediaList` 的字段是 `media[]`**（不是 `media_list`，那是 `MCheckMedia` 的）|
-| `AppendRecentlyPlayedMedia` / `DeleteRecentlyPlayedMedia` | 登录 | ✅ 写通道通（回读不落地） | 参数就是 `media[]`。写回 `status_code=0`，但 `GetRecentPlayedMedia` 读回来仍是空 —— **写通道通、读回不落地**（带 `attr.duration` 也一样），上游应该还有别的校验/去重，别指望靠它喂历史 |
+| `AppendRecentPlayedTracks` / `DeleteRecentPlayedTracks` | 登录 | ✅ 写通道通，**回读也落地** | 上报用 `AppendRecentPlayedTracks{track_ids:[id]}`（`/luna/me/recently-played`），删一条用 `DeleteRecentPlayedTracks{track_ids}`（`/luna/me/recently-played/delete`）。实测一轮：201 → 上报后 202（新记录在表头，同一首重复上报只留最新一条）→ 删除后回到 201。**上报是「记账」不是「播放」**：写完就算播过，别随手动。 |
+| `AppendRecentlyPlayedMedia` / `DeleteRecentlyPlayedMedia` | 登录 | ⚠️ 写通道通（回读**无从验证**） | 参数就是 `media[]`，写回 `status_code=0`。但它的读端 `GetRecentPlayedMedia` 本身只回 `{}`（见上），**「读回来仍是空」当年被当成「写回不落地」是错的** —— 那张表本来就读不出东西。要用播放历史请走 `*RecentPlayedTracks` 这对；`*RecentlyPlayedMedia` 是否真落库未验证。 |
 
 ### 3.7 用户 / 社交
 
@@ -294,13 +303,15 @@ blocks[1] type=discover_top_song_list
 | `MDeleteCollectedTracks` | `{track_ids:[id]}` | 消失 |
 | `CollectAlbums` | `{album_ids:[id]}` | `GetMyMixedCollections` 里出现 |
 | `MDeleteCollectedAlbums` | `{album_ids:[id]}` | 消失 |
-| `CollectArtists` | `{artist_ids:[id]}` | ⚠️ 写回 `0`，但 `GetUserArtistCollection{user_id:自己}` 回读**没看到**该艺人（取消后同样看不到）——「写入被接受」可信，读回存疑 |
-| `MDeleteCollectedArtists` | `{artist_ids:[id]}` | 同上 |
+| `CollectArtists` | `{artist_ids:[id]}` | ✅ 落地（**已翻案**）：`GetUserArtistCollection{user_id:自己}`/`GetArtistCollection` 读得到，条目带 `state.is_collected=1`、`follow_status=1` |
+| `MDeleteCollectedArtists` | `{artist_ids:[id]}` | ✅ 落地（**已翻案**）：回读消失（空表时上游连 `artists`/`total_num` 都不给）。当年那句「读回存疑」现在复现不出来，别再当结论用 |
 | `CollectPlaylists` | `{playlist_ids:[id]}` | `GetMyMixedCollections` 里出现 |
 | `MDeleteCollectedPlaylists` | `{playlist_ids:[id]}` | 消失 |
 | `CollectMediaList` | `{scene:"track", collect_action:1, media:[{id,type:"track"}]}` | 「我喜欢的音乐」里出现（字段是 **`media`**，不是 `media_list`）|
 | `DeleteCollectedMediaList` | `{media:[{id,type:"track"}]}` | 消失 |
-| `AppendRecentlyPlayedMedia` | `{media:[{id,type:"track"}]}` | ⚠️ 写回 `0`，`GetRecentPlayedMedia` 仍是空 —— **写通道通、读回不落地** |
+| `AppendRecentlyPlayedMedia` | `{media:[{id,type:"track"}]}` | ⚠️ 写回 `0`，但它的读端 `GetRecentPlayedMedia` 本身只回 `{}`，**「仍是空」证明不了没落地**（当年那句「读回不落地」错在把空表当证据）。要喂播放历史走下面的 `AppendRecentPlayedTracks` |
+| `AppendRecentPlayedTracks` | `{track_ids:[id]}` | ✅ 落地：`GetRecentPlayedTracks` 总数 +1，新记录在表头，同一首重复上报只留最新一条 |
+| `DeleteRecentPlayedTracks` | `{track_ids:[id]}` | ✅ 落地：回读总数回到原值（可回滚，实测 201→202→201 一整轮）|
 | `DeleteRecentlyPlayedMedia` | `{media:[{id,type:"track"}]}` | 响应回 `deleted_media` |
 | `FollowUser` | `{user_id}` | `my_stats.count_following` +1 |
 | `UnfollowUser` | `{user_id}` | 回到原值 |
@@ -374,7 +385,12 @@ blocks[1] type=discover_top_song_list
 
 - **匿名轮**：82 条里 32 条直接拿到数据（发现页/搜索/榜单/详情/评论/歌单广场/分享链接）。
 - **登录轮**：6 条翻盘（`GetMyInfo`/`GetMyPlaylists`/`GetBlockUserList`/`GetUploaderInfo`/`GetMyPrivacySetting`/`Search2023`；**`Search2023` 其后已弃用**，见 §3.3），
-  3 条回空但结构正常（账号里没数据：`GetMyMixedCollections`/`GetRecentPlayedMedia`/`GetDigitalAlbums`）。
+  3 条回空但结构正常（账号里没数据：`GetMyMixedCollections`/`GetRecentPlayedMedia`/`GetDigitalAlbums`；**其中 `GetRecentPlayedMedia` 已于 2026-10-18 翻案** —— 账号有 200+ 条播放记录，只是在 `GetRecentPlayedTracks` 那张表）。
+- **2026-10-18 复查轮（最近播放 / 关注艺人）**：为了查「TUI 最近播放是空的」重新实发，翻案三条旧结论 ——
+  ① 播放历史在 `GetRecentPlayedTracks`（`/luna/me/recently-played`，200+ 条真数据），`GetRecentPlayedMedia` 那张表在这个账号就是 `{}`；
+  ② `AppendRecentPlayedTracks`/`DeleteRecentPlayedTracks` 写完回读对得上（201→202→201），是可回滚的写接口；
+  ③ `CollectArtists`/`MDeleteCollectedArtists` 双向都落地（旧结论「读回存疑」复现不出来）。
+  教训：**「读回来是空」不能当「写没落地」的证据** —— 得先确认读的那张表本来有没有数据。
 - **写接口轮**：29 条实测**全部 `status_code=0`**（含 4 条换参数/换 path 翻案）；唯一不通的是**非写接口**的 `QueryTokenStatus`（上游 v1 GET 路由 500）。
   账号数据全程可回滚，收尾 11 项复查全过（详见 §3.12）。
 - **补测轮**：`MGetMedia` / `MCheckTrack` 匿名可用（曲目批量详情的底座）；`MGetMediaV2`/`GetTrack`/`GetH5Track`/`GetH5TrackV2`/`GetTrackPlayerInfo` 归入「客户端完整性校验拒答」那一类。

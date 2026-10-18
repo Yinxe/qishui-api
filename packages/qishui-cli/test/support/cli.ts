@@ -87,7 +87,8 @@ export function seedTrack(home: string, id: string, name: string, seconds: numbe
   fs.mkdirSync(mediaDir, { recursive: true })
   const bytes = writeWav(path.join(mediaDir, 'audio.wav'), seconds, 440 + (id.charCodeAt(id.length - 1) % 100))
   const meta = {
-    v: 1,
+    // 必须跟 core 的 `META_VERSION`（media.ts）一致：低于它的命中会被当成「旧版」重拉分享页
+    v: 2,
     trackId: id,
     track: data,
     audio: { file: 'audio.wav', mime: 'audio_wav', bytes, fetchedAt: Date.now() },

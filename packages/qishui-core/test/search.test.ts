@@ -26,7 +26,7 @@ describe('search', () => {
   it('曲目结果按组解析（track_wrapper 壳与 entity.track 直壳都在）', async () => {
     const result = await core.search.search('晴天', { type: 'track' })
     expect(result.query).toBe('晴天')
-    const trackGroup = result.groups.find((g) => g.id === 'g-track')
+    const trackGroup = result.groups.find((g) => g.id === 'tracks')
     expect(trackGroup?.title).toBe('单曲')
     expect(trackGroup?.tracks.map((t) => t.id)).toEqual(['7001', '7002'])
     expect(trackGroup?.tracks[0].data.name).toBe('晴天（mock）')
@@ -56,5 +56,22 @@ describe('search', () => {
     const urls = mock.calls.map((c) => c.url)
     expect(urls.some((u) => u.includes('/luna/pc/search/'))).toBe(true)
     expect(urls.some((u) => u.includes('/luna/search/'))).toBe(true)
+  })
+
+  it('分组给出 search_type 与「查看全部」：只认 id，不认 display_type（实测恒空串）', async () => {
+    const result = await core.search.search('晴天', { type: 'all' })
+    const trackGroup = result.groups.find((g) => g.id === 'tracks')
+    expect(trackGroup?.searchType).toBe('track')
+    expect(trackGroup?.viewAll).toBe(true)
+    // display_type 是展示字段，实测每组都回空串 —— 拿它当 search_type 就是 /luna/search/ 的 404
+    expect(trackGroup?.type).toBe('')
+    // 聚合组没有单一类型，上游也不给「查看全部」
+    const top = result.groups.find((g) => g.id === 'top_results')
+    expect(top?.searchType).toBeUndefined()
+    expect(top?.viewAll).toBe(false)
+  })
+
+  it('非法 search_type 上游就是 404（映射只从已知分组 id 里取）', async () => {
+    await expect(core.search.search('晴天', { type: '' as never })).rejects.toThrow(/404/)
   })
 })

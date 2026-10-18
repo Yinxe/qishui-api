@@ -152,6 +152,83 @@ describe('player：队列与模式', () => {
   })
 })
 
+describe('player：试听片段与真实时长', () => {
+  it('片段：durationMs 用片段长度、clipStartMs 给出起点，歌词按整曲时间轴对齐', async () => {
+    const home2 = makeTempDir('qishui-player-clip-')
+    try {
+      const clipMock = createMockUpstream({ clip: { startSec: 2, durationSec: 4 } })
+      const core2 = await createQishui({
+        dataDir: home2,
+        device: MOCK_DEVICE,
+        fetchImpl: clipMock.fetchImpl,
+        player: { tickMs: 10 },
+      })
+      await core2.player.play(T1)
+      expect(core2.player.durationMs).toBe(4000)
+      expect(core2.player.clipStartMs).toBe(2000)
+      expect(core2.player.songPositionMs).toBe(core2.player.positionMs + 2000)
+      // 播放位置 0 = 歌曲第 2s，落在「第一行歌词」（整曲 1s 起）
+      expect(core2.player.lyricState()?.line?.text).toBe('第一行歌词')
+      core2.player.seek(0)
+      expect(core2.player.lyricState()?.line?.text).toBe('第一行歌词')
+      core2.player.dispose()
+      core2.dispose()
+    } finally {
+      rmDir(home2)
+    }
+  })
+
+  it('setDuration：外部播放器报的真实时长优先，钳位进度；清空后回落元数据', async () => {
+    await core.player.play(T1)
+    expect(core.player.durationMs).toBe(12_345)
+    core.player.setDuration(3000)
+    expect(core.player.durationMs).toBe(3000)
+    core.player.seek(999_999)
+    expect(core.player.positionMs).toBe(3000)
+    core.player.setDuration(undefined)
+    expect(core.player.durationMs).toBe(12_345)
+  })
+})
+
+describe('player：频繁切歌的竞态', () => {
+  it('慢的上一首解析回来时不能覆盖新曲目（不串台、不重复起播）', async () => {
+    const home2 = makeTempDir('qishui-player-race-')
+    try {
+      const mock2 = createMockUpstream()
+      // 只让 T1 的分享页慢 200ms；T2 立即返回
+      const slowFetch: typeof fetch = async (input, init) => {
+        const url = String(input)
+        if (url.includes('www.qishui.com') && url.includes(T1)) await sleep(200)
+        return mock2.fetchImpl(input, init)
+      }
+      const core2 = await createQishui({
+        dataDir: home2,
+        device: MOCK_DEVICE,
+        fetchImpl: slowFetch,
+        player: { tickMs: 10 },
+      })
+      const started: string[] = []
+      core2.player.on('source', (e) => started.push(e.source.track.id))
+
+      // 开播 T1（慢），不等它解析完就切到 T2
+      const first = core2.player.playList([T1, T2])
+      await sleep(20)
+      expect(core2.player.current?.id).toBe(T1)
+      await core2.player.next()
+      await first
+
+      expect(core2.player.current?.id).toBe(T2)
+      expect(core2.player.source?.track.id).toBe(T2)
+      // 只有 T2 真正起播；T1 的迟到结果被丢弃
+      expect(started).toEqual([T2])
+      core2.player.dispose()
+      core2.dispose()
+    } finally {
+      rmDir(home2)
+    }
+  })
+})
+
 describe('player：失败路径（skipOnError）', () => {
   it('单首不可播 → error 且停在原地', async () => {
     const deadHome = makeTempDir('qishui-player-dead-')

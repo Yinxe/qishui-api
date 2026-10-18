@@ -25,11 +25,15 @@ afterAll(() => rmDir(home))
 describe('EntityCache：账号 scope 落盘', () => {
   it('public kind 落共享位；带态 kind 有激活号时落 _acct/<uid>', async () => {
     uid = '111'
+    await cache.set('sug', 'q1', { hit: 1 })
     await cache.set('search', 'q1', { hit: 1 })
     await cache.set('me', 'k', { who: 'A' })
-    expect(fs.existsSync(paths.entityFile('search', 'q1'))).toBe(true)
+    // 只回关键词/枚举的路子（sug/categories…）跨号共享
+    expect(fs.existsSync(paths.entityFile('sug', 'q1'))).toBe(true)
+    // 回实体的路子（search）响应里嵌了 `state.is_collected`，按观看者隔离
     expect(fs.existsSync(paths.entityFile('me', 'k', '111'))).toBe(true)
-    expect(fs.existsSync(path.join(home, 'cache', 'entities', '_acct', '111', 'search'))).toBe(false)
+    expect(fs.existsSync(path.join(home, 'cache', 'entities', '_acct', '111', 'search'))).toBe(true)
+    expect(fs.existsSync(path.join(home, 'cache', 'entities', 'search'))).toBe(false)
   })
 
   it('匿名（uid undefined）时带态 kind 落共享位', async () => {

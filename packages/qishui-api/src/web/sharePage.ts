@@ -35,7 +35,15 @@ export interface ShareMedia {
   play_url: string
   /** `audio_mp4` / `video_mp4`，取自 URL 上的 mime_type */
   mime_type?: string
+  /** track 的**整曲**时长（来自 `trackInfo.duration`）；试听片段时比实际音频长 */
   duration_ms?: number
+  /**
+   * 试听片段在整首歌里的起点（ms，来自 `offsetStart`）。整曲可播时缺省。
+   * 试听片段从 0 开始也会给 `0`，所以判断「是不是片段」看 `offset_duration_ms`。
+   */
+  offset_start_ms?: number
+  /** 试听片段实际可播时长（ms，来自 `offsetDuration`）；整曲可播时缺省 */
+  offset_duration_ms?: number
   title?: string
   artist?: string
   cover_url?: string
@@ -109,6 +117,12 @@ function mimeOf(url: string): string | undefined {
   return new URL(url).searchParams.get('mime_type') ?? undefined
 }
 
+/** 分享页的 `offsetStart` / `offsetDuration` 是秒（浮点），统一换算成 ms；非法值归 undefined */
+function offsetMs(seconds: unknown): number | undefined {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) return undefined
+  return Math.round(seconds * 1000)
+}
+
 function pageUrlFor(item: ShareItem): string {
   return `https://www.qishui.com/share/${item.kind}?${item.kind}_id=${item.id}&auto_play_bgm=1`
 }
@@ -161,6 +175,9 @@ function toMedia(item: ShareItem, loader: any, coverWidth?: number): ShareMedia 
     mime_type: mimeOf(play_url),
     duration_ms:
       info?.duration ?? (typeof track?.duration === 'number' ? Math.round(track.duration * 1000) : undefined),
+    // 分享页给的试听片段区间；整曲可播时这两个字段缺省
+    offset_start_ms: offsetMs(track?.offsetStart),
+    offset_duration_ms: offsetMs(track?.offsetDuration),
     title: info?.name ?? track?.videoName,
     artist:
       info?.artists

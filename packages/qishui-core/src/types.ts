@@ -36,6 +36,16 @@ export interface TrackVipFlags {
   qualityMap?: Record<string, unknown>
 }
 
+/**
+ * 实体上嵌的「我是否收藏」水印 —— **登录态才有**（实测 2026-10-18：匿名响应里这一项根本不存在，
+ * 带会话时 `Search` / `MGetMedia` / `GetChartDetail` / `FeedSongTab` / `GetArtistDetail` 每条都回）。
+ * 三态口径：`state` 缺失 = 这一路没带（未验证，别当成「没收藏」）；
+ * `state` 在但没 `is_collected` 键 = 上游省略了 false（实测未收藏的曲目回 `state: {}`，已收藏的回 `{"is_collected":true}`）。
+ */
+export interface MyCollectState {
+  isCollected?: boolean
+}
+
 export interface TrackData {
   id: string
   name: string
@@ -50,6 +60,8 @@ export interface TrackData {
   vip?: TrackVipFlags
   /** 试听/可播区间（部分曲目只放开一段） */
   playableRange?: { startMs?: number; durationMs?: number }
+  /** 这一首「我」收藏了没有（只在响应带了 `state` 时才有值） */
+  state?: MyCollectState
   raw?: unknown
 }
 
@@ -62,6 +74,8 @@ export interface AlbumData {
   countTracks?: number
   description?: string
   stats?: TrackStats
+  /** 这张专辑我收藏了没有（响应带了 `state` 才有值） */
+  state?: MyCollectState
   raw?: unknown
 }
 
@@ -97,6 +111,8 @@ export interface PlaylistData {
   fromFeed?: boolean
   ownerId?: string
   stats?: PlaylistStats
+  /** 这张歌单我收藏了没有（响应带了 `state` 才有值） */
+  state?: MyCollectState
   raw?: unknown
 }
 

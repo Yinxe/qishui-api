@@ -23,6 +23,8 @@ export interface ClientOptions {
   timeout?: number
   fetchImpl?: typeof fetch
   logger?: (line: string) => void
+  /** 扫码确认页上显示的电脑名（深链 `computer_name`）；省略则自动派生 */
+  computerName?: string
 }
 
 export interface Client extends LoginContext {
@@ -56,6 +58,7 @@ export async function createClient(options: ClientOptions = {}): Promise<Client>
     cookies,
     baseUrl: options.baseUrl,
     fetchImpl: options.fetchImpl,
+    computerName: options.computerName,
 
     async request(key, req, opts) {
       const fn = endpointFn(key) as unknown as (c: IRequestCaller, r: unknown, ctx: unknown) => Promise<any>

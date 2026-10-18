@@ -39,7 +39,8 @@ function readText(file: string): string {
 
 /**
  * 本地播放历史（数据目录下 `journal/plays.jsonl`，一行一次播放，append-only）。
- * 这是「听过什么」的真相源；上游的最近播放接口实测写回不落地，不能当依据。
+ * 这记的是「这台机器放过什么」；上游那张「最近播放」（`GetRecentPlayedTracks`）是账号级、
+ * 跨设备的，两边不是一回事，各自都是自己的真相源。
  * 多账号：`setScope(uid)` 后读写各号自己的 `journal/<uid>/plays.jsonl`，互不串记录。
  */
 export class PlayHistory {

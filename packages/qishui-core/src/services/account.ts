@@ -149,27 +149,21 @@ export class AccountService {
   }
 
   /**
-   * 上报「刚播过这几首」。
-   * **默认不会自动调用**（`config.reportPlayback` 打开才会由 player 调）——
-   * 写接口一律显式；且实测该接口「写通道通、回读不落地」，别拿它当播放历史，本地历史见 `core.history`。
+   * 上报「刚播过这几首」→ 进上游的最近播放（`library.recent()` 读的就是这张表）。
+   * **默认不会自动调用**（`config.reportPlayback` 打开才会由 player 调）——写接口一律显式。
+   * 实测落地：上报后 `total_num` +1、该首排在最前；删回用 `removePlayed`。
    */
   async reportPlayed(tracks: (TrackData | string)[]): Promise<void> {
-    const media = tracks
-      .map((track) => (typeof track === 'string' ? track : track.id))
-      .filter(Boolean)
-      .map((id) => ({ id, type: 'track' }))
-    if (!media.length) return
-    await this.core.request('AppendRecentlyPlayedMedia', { media })
+    const ids = tracks.map((track) => (typeof track === 'string' ? track : track.id)).filter(Boolean)
+    if (!ids.length) return
+    await this.core.request('AppendRecentPlayedTracks', { track_ids: ids })
   }
 
   /** 从最近播放里删掉这几首（写接口，同样不自动调） */
   async removePlayed(tracks: (TrackData | string)[]): Promise<void> {
-    const media = tracks
-      .map((track) => (typeof track === 'string' ? track : track.id))
-      .filter(Boolean)
-      .map((id) => ({ id, type: 'track' }))
-    if (!media.length) return
-    await this.core.request('DeleteRecentlyPlayedMedia', { media })
+    const ids = tracks.map((track) => (typeof track === 'string' ? track : track.id)).filter(Boolean)
+    if (!ids.length) return
+    await this.core.request('DeleteRecentPlayedTracks', { track_ids: ids })
   }
 
   /**

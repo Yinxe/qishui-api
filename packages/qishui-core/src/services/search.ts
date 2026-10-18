@@ -11,8 +11,12 @@ export interface SearchGroup {
   id?: string
   /** 结果分组标题（榜单/歌手/专辑…） */
   title?: string
-  /** 2023 版才有的展示类型 */
+  /** 2023 版才有的展示类型；`Search` 实测回空串，**别拿去当 `search_type`**（会打到 `/luna/search/` 404） */
   type?: string
+  /** 这一组的检索类型，由 `id` 映射；聚合组（`top_results`）没有单一类型，回 undefined */
+  searchType?: SearchType
+  /** 上游 `display_view_all`：这一组要不要给「查看全部」 */
+  viewAll: boolean
   cursor?: string
   hasMore: boolean
   tracks: Track[]
@@ -40,6 +44,14 @@ export interface SuggestItem {
   type?: string
   groupId?: string
   raw?: unknown
+}
+
+/** `Search` 分组里能直接对应回一个 `search_type` 的（实测 `all` 搜索给的 id 就是这四个复数形式 + `top_results`） */
+const GROUP_SEARCH_TYPE: Record<string, SearchType> = {
+  tracks: 'track',
+  albums: 'album',
+  artists: 'artist',
+  playlists: 'playlist',
 }
 
 /**
@@ -113,6 +125,8 @@ export class SearchService {
         id: str(group.id),
         title: str(group.display_title ?? group.title),
         type: str(group.display_type),
+        searchType: GROUP_SEARCH_TYPE[String(group.id ?? '')],
+        viewAll: Boolean(group.display_view_all),
         cursor: str(group.next_cursor),
         hasMore: Boolean(group.has_more),
         tracks,

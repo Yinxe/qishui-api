@@ -6,6 +6,8 @@
 
 ### Changed
 
+- **`login` 的终端二维码补静区，并给一张官方 PNG 兜底**：`qrcode-terminal` 是贴着边画码的，一格白边都不给，App 要对焦很久才认出来（官方那张 PNG 带 4 模块白边）——`loginQr.ts` 现在自己补一圈 4 模块留白再上屏；同时把 core 落盘的 `login.qrImage` 打在下面一行「识别慢就扫官方二维码图片：<路径>」（`--json` 里是 `qrImage` 字段）。二维码本体仍是那条 `bff-pc.qishui.com` 深链，没换载荷
+
 - **测试从冒烟台改为 vitest 单测**：删 `test/smoke.ts`（64 项、真打上游），改为 `test/cli.test.ts`（命令面/配置/分档表/多账号离线机制）+ `test/format.test.ts`（格式化纯函数）+ `test/playback.test.ts`（`seedTrack` 预置实体+媒体缓存后队列/落盘/导出全零网络，真 mpv `--ao=null` 会话 + PTY 按 `q`；缺 mpv/script 只跳分节）+ `test/support/`。数据目录 mkdtemp 并预置假 `device.json`，**不碰 `~/.qishui`、不打上游**；`QISHUI_CLI_TEST_HOME` 环境变量随之取消
 - **`--as` 指错号/空壳号现在直接报错**（原来会静默用激活号跑）：错误原样转述「没有账号 …」/「没有留存会话 …」，并带「先看 `qishui accounts`」提示，不被通用映射吞成「需要登录」
 
@@ -15,6 +17,8 @@
 - **`search --type all` 空表墙**：每组只有一种实体，但四个 `print*List` 对空数组也照打「表头+横线」，一组结果塞满四张空表。现在空列表直接不打（`render.ts` 四处护栏）
 - **`chart <id>` 名次列整列空白**：上游不给名次数字（core 的 `parseChart` 已按数组位次补），表格随之有 1..n
 - **`link` 的「过期 刚刚」**：未来时刻被 `ago()` 误判（差值 <60 秒分支含了负数）。新增 `until()`——`25 小时后` / `30 分钟后` / 远期给日期 / 已过给 `已过期`；`link` 过期行与 `whoami` 会员「到期」都改用它，`ago()` 本身也对未来时间回落到日期不再谎报「刚刚」
+- **`playback.test.ts` 的「无残留进程」断言不再数全系统的 mpv**：原来 `pgrep -c mpv` 只要是台机器上跑着别的 qishui 播放器（例如用户自己开着的 TUI 听歌）就必红。现在按 cmdline 里的 CLI 专属 socket 名 `qishui-mpv-*` 认「CLI 的播放器」（TUI 是 `qishui-tui-mpv-*`，不会误伤），且只比对跑之前/之后的 pid 差集——不仅免误报，还能抓住「这一跑新漏下的」
+- **试听片段歌词错位**：`-l` 的歌词窗口原来直接拿 mpv 的片段内位置查整曲歌词，片段从非 0 处开始时整段对不上；现在加上 `player.clipStartMs`（core 已从分享页解析片段起点），进度条/钳位也随之用片段实际时长
 
 ## 0.2.0 — 2026-10-17
 

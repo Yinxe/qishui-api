@@ -4,7 +4,7 @@
  * 写接口的约定（对齐 core / qishui-api 的实测口径）：
  *  - 只有用户明确敲的命令才发写请求（core 不会替上层偷偷写）；
  *  - 删除类（`drop`）要求 `--yes` 或交互确认，且都留了回滚/再操作的方式在提示里；
- *  - 部分写接口实测「写通道通、回读不落地」（如 AppendRecentlyPlayedMedia），文档里已标，不在这里假装成功。
+ *  - 上游回空只报「这页没回东西」，不替上游解释成「没数据」——空表和「写没落地」是两件事。
  */
 import type { Command } from 'commander'
 import { assertLoggedIn, CliError, core } from '../context.js'
@@ -227,15 +227,15 @@ export function registerLibraryCommands(program: Command): void {
         refresh: opts.refresh,
       })
       emit(() => {
-        heading('关注的艺人', `${page.items.length} 个`)
-        if (!page.items.length) print(dim('（空；实测 CollectArtists 回写后这里也可能看不到，属上游行为）'))
+        heading('关注的艺人', page.total !== undefined ? `${page.total} 位` : `${page.items.length} 个`)
+        if (!page.items.length) print(dim('（这个账号没关注任何人；`qishui collect artist:<id>` 之后这里读得到）'))
         printArtistList(page.items)
       }, page)
     })
 
   program
     .command('recent')
-    .description('上游的「最近播放」（注意：实测写回不落地，本地上游都看一遍更靠谱）')
+    .description('上游的「最近播放」（账号级、跨设备；本机听过什么看 `qishui history`）')
     .option('--count <n>', '取多少', '20')
     .option('--refresh', '该命令不缓存（参数无效，保留兼容）')
     .action(async (opts: { count: string; refresh?: boolean }) => {
@@ -246,9 +246,12 @@ export function registerLibraryCommands(program: Command): void {
         refresh: opts.refresh,
       })
       emit(() => {
-        heading('上游最近播放', `${page.items.length} 首`)
+        heading(
+          '上游最近播放',
+          page.total !== undefined ? `${page.total} 条 · 本页 ${page.items.length} 首` : `${page.items.length} 首`,
+        )
         if (!page.items.length) {
-          warn('上游回空（AppendRecentlyPlayedMedia 实测写回 0，回读仍空）')
+          warn('上游这页没回曲目')
           print(dim('本地历史：qishui history'))
           return
         }

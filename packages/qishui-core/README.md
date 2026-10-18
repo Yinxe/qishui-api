@@ -49,9 +49,12 @@ const tracks = await qishui.search.tracks('晴天')
 
 // 要登录：出二维码给汽水音乐 App 扫（不是抖音）
 const qr = await qishui.login({
-  onQr: ({ scanUrl }) => renderQrCode(scanUrl),   // core 不引二维码库，内容给你自己渲染
+  onQr: ({ scanUrl, qrImage }) => {                // core 不引二维码库，内容给你自己渲染
+    renderQrCode(scanUrl)
+    if (qrImage) console.log(`识别慢就扫这张官方图：${qrImage}`)
+  },
 })
-await qr.wait()                                   // confirmed 时会话已落盘
+await qr.wait()                                   // confirmed 出来即「已落盘 + 已激活」（入库没成会抛错并重试）
 ```
 
 ## 2. 分层
@@ -105,16 +108,20 @@ core.ts            QishuiCore 门面 + createQishui()
 |---|---|
 | `home({layout})` | 首页大盘。`grid`（默认）= 榜单块 + 推荐歌单 + 场景队列；`feed` = 听歌模式（30 个场景电台，榜单块不在里面） |
 | `mix({blockType, subChannelId})` | 单个内容块下钻（首页块点进去看全部） |
-| `feedSongTab(opts)` | 推荐流单曲。`preferenceMode`: `default`（推荐）/ `familiar`（熟悉）/ `fresh`（新鲜）；`count`（默认 6）；自动维护 `is_first_request`/`total_request_count`/`preference_mode_request_count` 会话计数。`withPlayedTracks` 默认 **false**：机制在（本地播放历史最近 20 条按时间升序当 `played_tracks`，字段名按同构 `MediaPlayed` 推、实测上游照收），但播放时长还没向上游上报，主动带反而暴露「只播不报」，上报口径补上前不带。`excludePlayed`/`excludeLiked`（`maxPages` 默认 3）是**客户端过滤**：本地把已播/已喜欢的剔掉、翻页补齐到 `count`——「只要没听过的」走这条确定性路径，别赌上游 `preference_mode` 是否真改变分布（仍未验证） |
+| `feedModeTracks(ref, opts)` | **按一个听歌模式取一批**的收门：`ref: FeedModeRef` = `{kind:'preference', mode}` 走 `feedSongTab`、`{kind:'scene', radioId}` 走 `radioTracks`。两边都是**一次约 6 首、每次随机**——用来连着播，不是摊开看。调用方不用自己分流，`FeedModeRef` 也是 `config.feedMode` 解析出来的形态 |
+| `feedSongTab(opts)` | 推荐流**一批**（默认 `count: 6`，一次约 6 首，是随机播放的批次来源，不是一屏可浏览的列表）。`preferenceMode`: `default`（推荐）/ `familiar`（熟悉）/ `fresh`（新鲜）；自动维护 `is_first_request`/`total_request_count`/`preference_mode_request_count` 会话计数。`withPlayedTracks` 默认 **false**：机制在（本地播放历史最近 20 条按时间升序当 `played_tracks`，字段名按同构 `MediaPlayed` 推、实测上游照收），但播放时长还没向上游上报，主动带反而暴露「只播不报」，上报口径补上前不带。`excludePlayed`/`excludeLiked`（`maxPages` 默认 3）是**客户端过滤**：本地把已播/已喜欢的剔掉、翻页补齐到 `count`——「只要没听过的」走这条确定性路径，别赌上游 `preference_mode` 是否真改变分布（仍未验证） |
 | `playlistSquare({categoryId})` | 歌单广场（含分类） |
-| `radioTracks(radioId)` | 场景电台续播。`radioId` 实测两种都吃：场景的 `scene_mode_id`（如 `48`）或首页场景块的 `inner_block_id` |
+| `radioTracks(radioId)` | 按场景取**一批**（同样一次约 6 首、每次随机，用于连着播）。`radioId` 实测两种都吃：场景的 `scene_mode_id`（如 `48`）或首页场景块的 `inner_block_id` |
 | `feedMode()` | FeedMode 原始响应 |
-| `feedModes()` | 解析成 `{preferences, bar, scenes}`：偏好栏（推荐/熟悉/新鲜，`current` 标上游选中的）+ 45 个场景（`radioId` 即 `scene_mode_id`） |
+| `feedModes()` | 解析成 `{preferences, bar, scenes}`：偏好栏（推荐/熟悉/新鲜，`current` 标上游选中的那**一**条）+ 45 个场景（`radioId` 即 `scene_mode_id`）。选出来的那一个喂 `feedModeTracks()` |
 | `launch()` | 冷启动配置：曲风/语种 + `boost_setting.need_set`（判断是否弹首启引导） |
 
 > `FeedMode` 的 `feed_mode_bar` **只回当前选中的那一个**（实测只回「推荐」），所以「熟悉/新鲜」两个取值来自 IDL 常量
 > （`PreferenceModeFamiliar` / `PreferenceModeFresh`），不是从响应枚举出来的。`preference_mode` 上游对未知值不报错，
 > 所以别拿「能回 6 首」当验证 —— 推荐流本来就是随机的。
+>
+> 「当前用哪个模式听」在 core 里只有一个形态：`FeedModeRef`（`{kind:'preference', mode}` | `{kind:'scene', radioId}`），
+> 配套的 `parseFeedMode()` / `formatFeedMode()` / `FEED_PREFERENCE_MODES` 都从包入口导出，`config.feedMode` 就是它格式化出来的串。
 
 ### 3.4 `search` —— 搜索
 
@@ -129,6 +136,9 @@ core.ts            QishuiCore 门面 + createQishui()
 
 > 结果实体在 `result_groups[].items[].entity.<kind>`（`entity.track` / `entity.artist` / `entity.album` / `entity.playlist`），
 > 和详情接口的 `*_wrapper` 不是一套壳。
+> **分组要按 `group.id` 认，不是 `display_type`**：`display_type` 实测每组都回空串（`group.type` 原样保留它，别拿去当 `search_type` —— 会打到 `/luna/search/` 直接 404）。core 另外给两个派生字段：
+> `searchType`（由 `id` 映射：`tracks`/`albums`/`artists`/`playlists` → `track`/`album`/`artist`/`playlist`；聚合组 `top_results` 映射不到，回 `undefined`）与
+> `viewAll`（上游 `display_view_all`，实测「你可能想搜」为 `false`、其余四类为 `true`）——「这一组要不要给『查看全部』」看这两个，不要自己猜。
 > **用户搜索拿不到**：`search_type=user`（或 `all`）都没有用户结果 —— 上游 `/luna/search/user` 回 `200` 但 body 里没有 `result_groups`，
 > 换 `search_method`/`search_scene`/带会话都一样，属**未验证 / 上游不返回**，不是本库漏解析。
 
@@ -240,10 +250,13 @@ qishui.player.playNext(afterTrack)         // 插到下一首
 qishui.player.setRepeat('all')             // off | all | one
 qishui.player.setShuffle(true)
 qishui.player.seek(30_000)
+qishui.player.setDuration(52_360)          // 外部播放器报的真实时长（试听片段以实际为准）
 await qishui.player.next()                 // 手动切歌（受 repeat 影响）
 qishui.player.lyricState()                 // 当前歌词行 + 下一行（渲染滚动的输入）
 qishui.player.dispose()
 ```
+
+试听片段口径：分享页给的音频常常只是片段，`PlaySource.durationMs` 是**片段**长度、`clipStartMs` 是它在整曲里的起点；`Player.durationMs` 依次取「`setDuration()` 外部真实时长 > 播放源时长 > 曲目元数据」，`lyricState()` 会自动加 `clipStartMs`，所以歌词按整曲时间轴对齐、进度条按片段长度走。频繁切歌时慢解析回来的旧曲目会被丢弃（`startCurrent` 的 loadToken），不会串台。
 
 口径（有意为之）：
 
@@ -288,6 +301,7 @@ qishui.player.dispose()
 | `maxMediaBytes` | `2GiB` | 媒体缓存上限，超了按最久未访问剔除 |
 | `reportPlayback` | `false` | 是否把播放上报给上游（**默认关**，见 §7） |
 | `defaultRepeat` / `defaultShuffle` | `off` / `false` | 播放器默认 |
+| `feedMode` | `''`（没选过） | 本机记住的**听歌模式**，一个值：`preference:<mode>`（`default`/`familiar`/`fresh`）或 `scene:<radioId>`。配 `parseFeedMode()`/`formatFeedMode()` 读写（认不出的值一律当没选过，不猜）。上游没有「保存听歌模式」的写接口，所以这只是本地偏好，不声称是上游状态 |
 | `activeUid` | 无（按索引 `lastUsedAt` 挑） | 激活账号；`useAccount`/登录/登出会写回，也可手改 |
 
 **媒体缓存的关键行为**（`MediaCache`）：
@@ -316,9 +330,11 @@ qishui.player.dispose()
 - **「不缓存」就是 `ttlMs: 0`**：`EntityCache.set()` 见 0 直接跳过写盘（内存里那条也立刻过期），磁盘上不留空文件。
 - **曲目分享元数据 `trackMeta()` 不缓存**：它把 `GetRelatedMedia` 的随机相关曲目裹在同一个响应里，缓存会把随机数据冻住。
 - **评论不缓存**（`comments.list()` 直接打上游）：评论区是实时的，且本身有风控。
-- 账号档的写后失效（`library` / `social` / `account`）：`like/unlike`、`collect/uncollect`、加歌/删歌、建/删/改名歌单 →
-  清 `my-playlists` `liked-tracks` `mixed-collections` `artist-collection` `me`；`follow/unfollow` → 清 `user` + `me`；
-  `updatePrivacy` → 清 `privacy`；`block/unblock` → 清 `user` + `block-list`。
+- 写后失效（`library` / `social` / `account`）的底线是**数据一变、读它的缓存就作废，不把旧值留给 TTL**：
+  `like/unlike`、`collect/uncollect`、加歌/删歌、建/删/改名歌单 → 清 `my-playlists` `liked-tracks` `mixed-collections` `artist-collection` `me` `playlist-detail`；
+  **`playlist-detail` 这条不能省**——我的喜欢本身就存在「我喜欢的音乐」（`type=1` 那张自动歌单）里，`likedTracks()`/`isLiked()` 是从它的详情重算的，
+  不清它取消喜欢后读回的仍是旧页（同一首按多少次都回同一个结论）；此外按 id 只清被动过的那条实体详情（`track` / `album-detail` / `artist-detail`，这些响应里嵌着「我是否收藏/关注」）；
+  `follow/unfollow` → 清 `user` + `me`；`updatePrivacy` → 清 `privacy`；`block/unblock` → 清 `user` + `block-list`。
 - 元数据缓存的 `entityTtlMs` 配置只是兜底：所有调用点都显式传档位了。
 
 ### 6.2 账号隔离维度：同一档位再按「谁的可见性」分两层
@@ -354,7 +370,14 @@ TTL 档位之外，每个 kind 还有一档 **scope**（同样只在 `policy.ts`
 qishui.loggedIn                 // 有会话 cookie 吗
 const qr = await qishui.login({ onQr })            // 汽水音乐 App 扫码；新号入库并**默认激活**，不动其他号
 await qr.wait(2000, 180_000)                        // 轮询到 confirmed/expired/timeout
+// 只想自己控制节奏（比如 TUI 每 2s 刷一次界面）就轮 status()：
+// confirmed 只在「会话真的写进 accounts/<uid>.json」之后才报出来（入库失败会抛错，下次轮询重试）；
+// 上游事后把同一个 token 判成 expired 也不影响已经成立的登录
+await qr.status()                                   // 'waiting' | 'scanned' | 'confirmed' | 'expired' | ...
 await qishui.login({ keepActive: true })            // 入库但不切激活号
+// 二维码两条出路：`scanUrl`（深链，上层自己画）+ `qrImage`（上游那张官方 PNG，core 已落到
+// `${TMPDIR}/qishui-login-qr-<token 前 8 位>.png`，0600；终端 ASCII 识别慢时点开它扫）。
+// 上游没给 `data.qrcode` 时 `qrImage` 是 undefined，core 不硬编一张。
 
 qishui.accounts()              // [{ uid, nickname, savedAt, lastUsedAt, active }]
 qishui.activeUid               // 当前激活号

@@ -64,6 +64,14 @@ export class Track {
     return this.data.vip
   }
 
+  /**
+   * 「我」有没有把这首加进我的喜欢 —— 只报响应里带了的水印：
+   * 登录态下 Search/MGetMedia/榜单/推流/艺人详情都回 `state`（实测），匿名或这一路没带 = undefined（未验证）。
+   */
+  get liked(): boolean | undefined {
+    return this.data.state?.isCollected
+  }
+
   get raw(): unknown {
     return this.data.raw
   }
@@ -151,6 +159,11 @@ export class Album {
       .map((a) => a.name)
       .filter(Boolean)
       .join(', ')
+  }
+
+  /** 这张专辑我收藏了没有（响应没带 `state` = undefined，不当作「没收藏」） */
+  get collected(): boolean | undefined {
+    return this.data.state?.isCollected
   }
 
   get raw(): unknown {
@@ -269,6 +282,11 @@ export class Playlist {
 
   get isPrivate(): boolean {
     return this.data.type === 2
+  }
+
+  /** 这张歌单我收藏了没有（响应没带 `state` = undefined，不当作「没收藏」） */
+  get collected(): boolean | undefined {
+    return this.data.state?.isCollected
   }
 
   get raw(): unknown {

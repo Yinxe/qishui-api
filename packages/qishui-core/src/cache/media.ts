@@ -25,7 +25,7 @@ export interface CachedAudio {
 }
 
 export interface CachedMediaMeta {
-  v: 1
+  v: 1 | 2
   trackId: string
   track: TrackData
   audio: CachedAudio
@@ -47,7 +47,10 @@ export interface PlaySource {
   /** kind=remote 时的签名地址（约 24h 过期） */
   url?: string
   mime?: string
+  /** 实际可播时长：试听片段时是**片段长度**，不是整曲元数据时长 */
   durationMs?: number
+  /** 试听片段在整首歌里的起点（ms）；歌词按整曲时间轴对齐，查询时要加这个偏移 */
+  clipStartMs?: number
   /** 远程地址过期时刻（unix 秒） */
   expiresAt?: number
   bytes?: number
@@ -93,6 +96,12 @@ const MIME_EXT: Record<string, string> = {
   audio_mp4: '.m4a',
   video_mp4: '.mp4',
 }
+
+/**
+ * media.json 版本：v1 没记试听片段（`playableRange`），读到 v1 命中时重拉一次分享页
+ * 补片段信息（音频文件继续用，不重下），之后就升到 v2。
+ */
+const META_VERSION = 2
 
 /**
  * 本地媒体缓存：一首曲目一个目录，装音频 + 歌词 + 封面 + meta.json。
@@ -176,10 +185,11 @@ export class MediaCache {
 
     if (!opts.refresh) {
       const hit = await this.peek(id)
-      if (hit) {
+      if (hit && hit.v >= META_VERSION) {
         this.logger(`[media] 命中缓存 ${id}（${formatBytes(hit.audio.bytes)}）`)
         return await this.touch(hit)
       }
+      // v1 命中：音频还在，只重拉分享页补试听片段信息（不重下音频）
     }
 
     const previous = await this.readMeta(id)
@@ -231,7 +241,7 @@ export class MediaCache {
     }
 
     const meta: CachedMediaMeta = {
-      v: 1,
+      v: META_VERSION,
       trackId: id,
       track: mergeTrack(track, share),
       audio,
@@ -256,12 +266,14 @@ export class MediaCache {
 
     if (!useCache) {
       const share = await this.sharePage(track.id, opts.signal)
+      const clip = clipOf(share)
       return {
         track: mergeTrack(track, share),
         kind: 'remote',
         url: share.play_url,
         mime: share.mime_type,
-        durationMs: share.duration_ms ?? track.durationMs,
+        durationMs: clip?.durationMs ?? share.duration_ms ?? track.durationMs,
+        clipStartMs: clip?.startMs,
         expiresAt: share.expires_at,
         lyrics: share.lyrics ? new Lyrics(share.lyrics) : undefined,
         fromCache: false,
@@ -269,12 +281,14 @@ export class MediaCache {
     }
 
     const meta = await this.ensure(track, opts)
+    const range = meta.track.playableRange
     return {
       track: meta.track,
       kind: 'cache',
       path: path.join(this.dirOf(meta.trackId), meta.audio.file),
       mime: meta.audio.mime,
-      durationMs: meta.track.durationMs,
+      durationMs: range?.durationMs ?? meta.track.durationMs,
+      clipStartMs: range?.startMs,
       bytes: meta.audio.bytes,
       lyrics: await this.readLyrics(meta),
       fromCache: true,
@@ -535,6 +549,8 @@ function mergeTrack(track: TrackData, share: ShareMedia): TrackData {
         .map((name) => name.trim())
         .filter(Boolean)
         .map((name) => ({ id: '', name }))
+  // 分享页给的试听片段优先：它就是这次真正拿到的音频区间
+  const clip = clipOf(share)
   return {
     ...track,
     name: track.name || share.title || '',
@@ -542,7 +558,19 @@ function mergeTrack(track: TrackData, share: ShareMedia): TrackData {
     coverUrl: track.coverUrl ?? share.cover_url,
     vid: track.vid ?? share.vid,
     artists,
+    playableRange: clip ? { startMs: clip.startMs, durationMs: clip.durationMs } : track.playableRange,
   }
+}
+
+/**
+ * 分享页的试听片段 → 可播区间。`offsetDuration` 与整曲几乎等长时不算片段
+ * （有些整曲也会带上这两个字段），避免把完播曲目误标成「试听」。
+ */
+function clipOf(share: ShareMedia): { startMs: number; durationMs: number } | undefined {
+  const durationMs = share.offset_duration_ms
+  if (typeof durationMs !== 'number' || durationMs <= 0) return undefined
+  if (share.duration_ms != null && durationMs >= share.duration_ms - 1000) return undefined
+  return { startMs: share.offset_start_ms ?? 0, durationMs }
 }
 
 export function formatBytes(bytes: number): string {
