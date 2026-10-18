@@ -6,6 +6,7 @@
 
 ### Added
 
+- **`qishui play scene:<id>`**：场景也能直接当播放目标（`scene:30` = 日语场景的一批）；`radio:<id>` 仍是电台队列，两个前缀各走各的路（场景短数字喂 `radio:` 会被上游忽略、回通用池）
 - **`qishui scene [sceneModeId]`：场景档单独成命令**（听歌模式的 45 个场景：日语/粤语/古典/助眠…）。不带 id 列场景表（`scene_mode_id` 是短数字，配 `scene_mode_*` 队列名）；带 id 拉该场景一批，走 core 的 `feedModeTracks({kind:'scene'})` → `FeedSongTab` 的 `feed_preference.scene_mode_id`。修的是「选日语推中文歌」：原来场景和电台队列共用 `radio` 命令，而 `radio_id` 只认电台队列的雪花 id
 
 ### Changed

@@ -176,12 +176,12 @@ qishui --help
 晴天                                 搜索词 → 取最相关的一条
 7068138081588611073                  裸曲目 id
 track:7068138081588611073            显式类型前缀
-album:<id>  artist:<id>  playlist:<id>  chart:<id>  radio:<id>
+album:<id>  artist:<id>  playlist:<id>  chart:<id>  radio:<id>  scene:<id>
 liked                                我喜欢的音乐
 https://qishui.douyin.com/s/xxxx/    分享链接（短链会跟一次跳转）
 ```
 
-解析顺序：`liked` → 类型前缀 → 裸 id / 分享链接（`link.parse` + 短链跟跳）→ 其它一律当搜索词。多个目标会去重合并成一条队列；`user:` / `video:` / `ugc_video:` 不能当播放目标（会给明确提示，不会静默失败）。
+解析顺序：`liked` → 类型前缀 → 裸 id / 分享链接（`link.parse` + 短链跟跳）→ 其它一律当搜索词。`radio:<id>` 是电台队列（雪花 id），`scene:<id>` 是听歌模式的场景（短数字 `scene_mode_id`，如 `scene:30` = 日语）——两条不同的路，别互换。多个目标会去重合并成一条队列；`user:` / `video:` / `ugc_video:` 不能当播放目标（会给明确提示，不会静默失败）。
 
 ## 5. 播放会话
 

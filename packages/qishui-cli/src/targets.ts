@@ -3,7 +3,8 @@
  *
  * 支持（`play` / `download` 共用）：
  *   `<id>`                 曲目 id（10~20 位数字）
- *   `track:<id>` `album:<id>` `artist:<id>` `playlist:<id>` `chart:<id>` `radio:<id>`
+ *   `track:<id>` `album:<id>` `artist:<id>` `playlist:<id>` `chart:<id>` `radio:<id>` `scene:<id>`
+ *   （`radio:` 是电台队列的雪花 id，`scene:` 是听歌模式场景的短数字 `scene_mode_id`，两条不同的路）
  *   `liked`                我喜欢的音乐
  *   `https://…`            分享链接（短链会跟一次跳转）
  *   其它文本               当搜索词（`qishui play 晴天`）
@@ -17,7 +18,7 @@ export interface TargetOptions {
   limit: number
 }
 
-const PREFIXED = /^(track|album|artist|playlist|chart|radio|user|video|ugc_video):(.+)$/i
+const PREFIXED = /^(track|album|artist|playlist|chart|radio|scene|user|video|ugc_video):(.+)$/i
 
 export async function resolveTargets(core: QishuiCore, targets: string[], opts: TargetOptions): Promise<Track[]> {
   const out: Track[] = []
@@ -87,12 +88,22 @@ async function expand(core: QishuiCore, item: ShareItem, opts: TargetOptions): P
     }
     case 'radio':
       return (await core.discover.radioTracks(item.id)).slice(0, limit)
+    case 'scene': {
+      // 场景只认短数字 `scene_mode_id`；走 FeedSongTab 的 feed_preference（radio_id 那条路不认场景）
+      const id = Number(item.id)
+      if (!Number.isSafeInteger(id) || id <= 0)
+        throw new CliError(
+          `场景 id 要是短数字：${item.id}`,
+          '场景 id 见 `qishui scene`（如 30=日语）；电台队列用 radio:<雪花 id>',
+        )
+      return (await core.discover.feedModeTracks({ kind: 'scene', sceneModeId: id })).slice(0, limit)
+    }
     case 'user':
       throw new CliError('用户不能直接当播放目标', `先看 ta 的歌单：qishui user ${item.id} --playlists`)
     case 'video':
     case 'ugc_video':
       throw new CliError('视频类没有音频源', '分享页对 video/ugc_video 给的是视频地址，本 CLI 只播音频（track）')
     default:
-      throw new CliError(`不认识的分享类型：${item.kind}`, '可用的前缀：track/album/artist/playlist/chart/radio')
+      throw new CliError(`不认识的分享类型：${item.kind}`, '可用的前缀：track/album/artist/playlist/chart/radio/scene')
   }
 }
