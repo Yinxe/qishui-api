@@ -7,6 +7,7 @@
 | [`qishui-api`](packages/qishui-api/README.md) | `packages/qishui-api` | **协议层**：PC 端接口 TypeScript 客户端（320 端点 IDL + 纯 HTTP 请求层 + web 分享页解析） |
 | [`qishui-core`](packages/qishui-core/README.md) | `packages/qishui-core` | **应用后端层**：OO 封装账号/曲库/歌单/发现/搜索/评论/社交 + 播放器状态机 + 本地数据与媒体缓存（数据目录 `~/.qishui`） |
 | [`qishui-cli`](packages/qishui-cli/README.md) | `packages/qishui-cli` | **命令行播放器**：把 core 摆成命令（搜索/发现/歌单/评论/下载/缓存维护），出声交给 mpv 子进程；每条命令都支持 `--json` |
+| [`qishui-tui`](packages/qishui-tui/README.md) | `packages/qishui-tui` | **终端 TUI**：ink（React → 终端）界面，侧边栏导航（搜索/发现/听歌/我的 + 账号；榜单在「发现」的首页块里摊平，「听歌」是听歌模式单选台——选中即起播、一批播完自动续下一批）+ 通用列表页 + 曲目详情/用户主页 + 播放条 + 歌词/评论弹层，扫码登录出终端二维码、歌单可增删改、`S` 设置与缓存、鼠标可滚可点（`QISHUI_TUI_MOUSE=0` 关），跑在 core 上、出声交给 mpv |
 
 ```ts
 import { createQishui } from 'qishui-core'
@@ -33,13 +34,16 @@ pnpm run check:catalog      # 端点参数与 IDL 的一致性核对（纯 node 
 pnpm run cli <args>         # 跑 CLI（pnpm 12 不加 `--`，直接跟在 cli 后）
 pnpm run cli search 晴天 --json
 
-pnpm test                            # core/cli 单测（vitest，全程离线：mock 上游 / 独立数据目录）
+pnpm run tui:build        # 构建 TUI
+pnpm run tui              # 跑 TUI（侧边栏 + 列表 + 播放条；q 退出，输入态先 Esc）
+
+pnpm test                            # core/cli/tui 单测（vitest，全程离线：mock 上游 / 独立数据目录 / PTY 跑产物）
 pnpm --filter qishui-cli run test    # 只跑 CLI（含真 mpv 会话，--ao=null 不出声）
 ```
 
 pnpm 版本钉在本文件同目录的 `package.json` `packageManager` 字段，Node ≥ 20（`node --experimental-strip-types` 跑 `.ts` 测试脚本）。质量检测只用 **Biome** 一个工具（`check` / `check:fix` / `format`），不引入 ESLint + Prettier。
 
 完整文档与变更记录在包目录内，见 [`qishui-api`](packages/qishui-api/README.md) / [`qishui-core`](packages/qishui-core/README.md) /
-[`qishui-cli`](packages/qishui-cli/README.md)，
-以及三者的 `CHANGELOG.md`。接口可达性与「能不能拿来做什么」的实测清单在
+[`qishui-cli`](packages/qishui-cli/README.md) / [`qishui-tui`](packages/qishui-tui/README.md)，
+以及各自的 `CHANGELOG.md`。接口可达性与「能不能拿来做什么」的实测清单在
 [`packages/qishui-api/docs/APP_ENDPOINTS.md`](packages/qishui-api/docs/APP_ENDPOINTS.md)（90 条，13 个能力分类）。
