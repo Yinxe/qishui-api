@@ -82,7 +82,7 @@
 |---|---|---|
 | 冷启动 + 首次偏好引导 | `Launch`（`boost_setting` 里有 15 个曲风 + 5 个语种 + `need_set`） | ✅ |
 | 首页（推荐 + 榜单） | `DiscoverView` 空 body | ✅ |
-| 场景电台（专注/摸鱼/图书馆…） | `FeedMode` → 45 个场景 → `DiscoverView` sceneMode 版 / `FeedRadioTracks` | ✅ |
+| 场景电台（专注/摸鱼/图书馆…） | `FeedMode` → 45 个场景 → `FeedSongTab { feed_preference: { scene_mode_id } }`（场景真正生效的唯一一条路，见下） | ✅ |
 | 推荐流（单曲） | `FeedSongTab`（6 首/次） | ✅ |
 | 歌单广场 | `FeedPlaylistSquare` | ✅ |
 | 搜索框下拉 | `Sug`（词条） | ✅ |
@@ -149,7 +149,8 @@ blocks[1] type=discover_top_song_list
 | `FeedMode` | ✅ | `feed_mode_block[1]` + `feed_mode_bar` | 45 个场景音乐（`feed_scene_mode{scene_mode_id, sub_queue_type}`，标题如「图书馆/专注模式/摸鱼」）；偏好栏**只回当前选中的那一个**（实测只回 `default`=推荐），`familiar`/`fresh` 两个取值来自 IDL 常量（`PreferenceModeFamiliar`/`PreferenceModeFresh`），不是响应里枚举出来的 |
 | `FeedSongTab` | ✅ | `items[6]` | 单曲推荐流，`entity.track_wrapper.track` + `predict_info.model_preds`（打分，做排序/过滤可用）。`preference_mode` 实测对**任意值**都回 6 首（随机流，不能当验证），有效取值靠 IDL 常量。2026-10-17 补测：App 口径全量 body（`feed_mode:'track'`/`count`/会话计数/`played_tracks`〔字段名按 `MediaPlayed` 同构推，IDL 里 `TrackPlayed` 是 opaque〕）上游全收，`count=3` 就回 3 首；但「熟悉/新鲜是否改变出歌分布」仍未验证。core 现按此口径发，`played_tracks` 默认**不带**（只本地记历史、播放时长未向上游上报，主动带会暴露「只播不报」） |
 | `FeedPlaylistSquare` | ✅ | `items[14~17]` + `categories` | 歌单广场；`items[].entity.playlist` |
-| `FeedRadioTracks` | ✅ | `items[6]` | 电台续播：`radio_id` 实测两种都吃 —— 场景的 `scene_mode_id`（短数字，如 `2/3/5/48`）或首页场景块的 `inner_block_id`（雪花大数），各回 6 首 |
+| `FeedRadioTracks` | ✅ | `items[6]` | **电台队列**续播：`radio_id` 是首页 `discover_radio` 块的 `inner_block_id`（雪花大数，与 `resources[].resource_id`/link 里的 `queue_id` 同值）。2026-10-18 修正旧结论：`radio_id` **不是**场景选择器 —— 喂场景的 `scene_mode_id`（短数字 `30`/`8`）不报错、但回的是通用推荐池（选「日语」推中文歌），连不存在的 `999999999999` 也照回 6 首；队列雪花 id 至少被接受（内容与队列主题的相关性仍未验证，实测混着通用池）。场景见下一行 |
+| `FeedSongTab` + 场景 | ✅ | `items[6~12]` | **场景档的正确口径**：body 里带扁平 `feed_preference: { scene_mode_id: 30 }`（套一层 `{scene_mode:{scene_mode_id}}` 不生效，回通用池）。2026-10-18 实测：`30`=日语回 12 首里 9 首日文（中島美嘉/米津玄師/まふまふ…）、`10`=粤语回富士山下/处处吻/情人、`32`=古典回 Mozart/巴赫、`22`=K-pop 回 aespa/MOMOLAND；`count=12` 就回 12 首 |
 | `GetChartDetail` | ✅ | `chart{…}`（~150KB） | 整榜明细：`chart_id` 取榜单块的 `inner_block_id` → `chart{title,count_tracks,period,release_time,track_ranks[{rank,track}],style{desc,bg_url…}}`。**不是** `hot_song_chart` 这种常量名（那样回 `1000004`） |
 | `GetFeaturedContents` | ✅ | `ok_thin`（空） | 精选推荐位，实测无数据，别指望 |
 
@@ -357,11 +358,16 @@ blocks[1] type=discover_top_song_list
 「我的」页顶部一次 `GetMyInfo`（昵称/头像/`is_vip`/`vip_stage`/`my_stats` 的收藏/关注/粉丝数）就够；
 设置页用 `GetMyPrivacySetting` 的 6 个开关。
 
-**⑤ 场景电台 / 榜单**
-`FeedMode` 列 45 个场景 → 选中一个场景走 `DiscoverView` sceneMode 版拿 `discover_radio` 队列，
-或直接 `FeedRadioTracks { radio_id: <scene_mode_id 短数字 或 inner_block_id> }` 拿 6 首续播；榜单在 `DiscoverView` 空 body 版的
-`discover_top_song_list` 块里（热歌/新歌/欧美，各 48~50 首），要整榜再 `GetChartDetail { chart_id: <榜单块的 inner_block_id> }`。
-偏好流走 `FeedSongTab { preference_mode }`，取值 `default`/`familiar`/`fresh`（见 IDL 常量）。
+**⑤ 场景 / 电台队列 / 榜单**
+
+- **场景**（听歌模式的一档，45 个）：`FeedMode` 列出 `feed_scene_mode{scene_mode_id, sub_queue_type}` →
+  `FeedSongTab { feed_mode:'track', preference_mode:'default', count, feed_preference:{ scene_mode_id } }`。
+  场景 id 必须落在 `feed_preference.scene_mode_id`（扁平），**这是唯一让场景生效的地方**。
+- **电台队列**（首页 `discover_radio` 块，30 条）：`FeedRadioTracks { radio_id: <inner_block_id> }` 拿 6 首。
+  两条路的 id 空间不同：场景是短数字、电台队列是雪花大数，**不能互换**（短数字喂电台不报错但回通用池）。
+- **榜单**：`DiscoverView` 空 body 版的 `discover_top_song_list` 块里（热歌/新歌/欧美，各 48~50 首），
+  要整榜再 `GetChartDetail { chart_id: <榜单块的 inner_block_id> }`。
+- **偏好流**：`FeedSongTab { preference_mode }`，取值 `default`/`familiar`/`fresh`（见 IDL 常量）。
 
 ---
 

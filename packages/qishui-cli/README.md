@@ -69,7 +69,7 @@ qishui --help
 
 - **列表统一三线表**（顶线 / 表头线 / 底线，无竖线）：曲目 `序号|曲目|歌手|时长(|id)`，专辑/歌手/歌单同款；标题、歌手列过宽时按终端宽度截断（`…`）。「试听」这类噪音标记不进列表，只在 `track` 详情与播放链路提醒；
 - 单个实体（`track`/`user` 详情、播放队列、评论）仍是一行式/key-value；
-- 表格：id 作为一列（`qishui modes` 的 `radio_id`、`qishui cache list` 的曲目 id 这类**命令产物本身**的列不受 `--no-id` 影响）；
+- 表格：id 作为一列（`qishui modes` 的 `scene_mode_id`、`qishui cache list` 的曲目 id 这类**命令产物本身**的列不受 `--no-id` 影响）；
 - `home` / `charts` / `mix` 的「播放目标」列是 `qishui play` 的写法（`type:id`，如 `chart:7036…`）——`qishui chart <id>`、`qishui radio <id>`、`qishui playlist <id>` 只要冒号后面的**裸 id**，整串喂进去认不出。
 
 ## 3. 命令速查
@@ -97,16 +97,17 @@ qishui --help
 | `home [--layout grid\|feed] [--tracks] [--playlists]` | 首页大盘；表格直接给「播放目标」（`playlist:…` / `chart:…`） |
 | `chart [chartId] [--limit 50]` | 不带 id 列榜单块；带 id 打出整榜名次 |
 | `charts` | 只列榜单块（`chart` 的别名） |
-| `radio [radioId] [--limit 20]` | 不带 id 列场景电台；带 id 拉续播曲目（`radioId` 可给短数字，如 `48`） |
+| `radio [radioId] [--limit 20]` | **电台队列**：不带 id 列首页的 30 条 `discover_radio` 队列（带雪花 id）；带 id 拉该队列一批。**不吃场景 id** |
+| `scene [sceneModeId] [--limit 20] [--count 6]` | **场景档**（日语/粤语/古典/助眠…）：不带 id 列 45 个场景（`scene_mode_id` 是短数字）；带 id 拉该场景一批（走 `FeedSongTab` 的 `feed_preference.scene_mode_id`） |
 | `feed [--mode default\|familiar\|fresh] [--count 6] [--played] [--exclude none\|played\|liked\|both]` | 「随便听听」单曲推荐；`--mode` 也可写中文 `推荐/熟悉/新鲜`；`--played` 才带本地播放历史当 `played_tracks`（默认不带，见 core `feedSongTab`）；`--exclude` 是**客户端过滤**：本地按已播/已喜欢筛掉再翻页补齐，默认 `none` 直接透传上游 |
 | `square [--category <id>] [--limit 20]` | 歌单广场（含分类） |
-| `modes` | 偏好模式（推荐/熟悉/新鲜）+ **45 个场景音乐**（每个带 `radio_id`，可直接 `play radio:<id>`） |
+| `modes` | 偏好模式（推荐/熟悉/新鲜）+ **45 个场景音乐**（每个带 `scene_mode_id`，用 `qishui scene <id>` 取） |
 | `mix <blockType> [subChannelId] [--limit 20]` | 单个内容块下钻（首页块点进去看全部） |
 | `launch` | 冷启动偏好（曲风/语种、是否该弹首启引导） |
 
-`discover` 是上面这批的**总入口**：`qishui discover home` ≡ `qishui home`，`discover chart|radio|feed|square|modes|mix|charts|launch` 同理（`qishui discover` 不带子命令时打 help）。两种写法输出完全一致，平铺命令留着是为了顺手。
+`discover` 是上面这批的**总入口**：`qishui discover home` ≡ `qishui home`，`discover chart|radio|scene|feed|square|modes|mix|charts|launch` 同理（`qishui discover` 不带子命令时打 help）。两种写法输出完全一致，平铺命令留着是为了顺手。
 
-> **FeedMode 的 45 个场景**：`feed_mode_block` 里每个场景的 `scene_mode_id`（如 `48`）能直接当 `radioTracks()` 的 `radio_id` 用 —— 所以 `modes` 列出的 `radio_id` 可以立刻 `qishui play radio:<radio_id>`。偏好栏上游**只回当前选中的那一个**，「熟悉/新鲜」的取值来自 IDL 常量，别拿「能回 6 首」当验证（推荐流本来就随机）。
+> **FeedMode 的 45 个场景**（`scene_mode_id`，短数字）与**首页的电台队列**（`discover_radio` 的 `inner_block_id`，雪花大数）是两条不同的路，别混：场景走 `FeedSongTab` 的 `feed_preference.scene_mode_id`（`qishui scene <id>`），电台队列走 `FeedRadioTracks`（`qishui radio <id>`）。2026-10-18 修正：早先把场景 id 当 `radio_id` 喂给 `FeedRadioTracks`，短数字不报错也不生效，回的是通用推荐池（选「日语」推中文歌）。偏好栏上游**只回当前选中的那一个**，「熟悉/新鲜」的取值来自 IDL 常量，别拿「能回 6 首」当验证（推荐流本来就随机）。
 
 ### 搜索
 

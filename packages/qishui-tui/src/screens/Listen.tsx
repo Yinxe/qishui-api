@@ -48,17 +48,17 @@ export function feedModeLabel(modes: FeedModeView | undefined, ref: FeedModeRef 
   if (ref.kind === 'preference') {
     return FEED_PREFERENCE_MODES.find((item) => item.mode === ref.mode)?.label ?? ref.mode
   }
-  return modes?.scenes.find((item) => item.radioId === ref.radioId)?.text || `场景 ${ref.radioId}`
+  return modes?.scenes.find((item) => item.sceneModeId === ref.sceneModeId)?.text || `场景 ${ref.sceneModeId}`
 }
 
 /** 场景档收进弹层（45 条，`ActionMenuOverlay` 自带按游标滚动） */
 export function buildSceneEntries(ctx: ListenCtx): Entry[] {
   return (ctx.modes?.scenes ?? [])
-    .filter((scene) => scene.radioId)
+    .filter((scene) => scene.sceneModeId !== undefined)
     .map((scene) => {
-      const ref: FeedModeRef = { kind: 'scene', radioId: scene.radioId as string }
+      const ref: FeedModeRef = { kind: 'scene', sceneModeId: scene.sceneModeId as number }
       return {
-        key: `scene:${ref.radioId}`,
+        key: `scene:${ref.sceneModeId}`,
         label: `${mark(isCurrent(ctx.current, ref))} ${feedModeLabel(ctx.modes, ref)}`,
         onEnter: () => {
           // 先关弹层再切模式：起播的提示别被弹层挡住（弹层本身是打开那一刻的快照）

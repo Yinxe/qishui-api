@@ -1,6 +1,11 @@
 /**
  * 听歌模式离线单测：`FeedModeRef` 的扁平串往返（认不出就是「没选过」）、
- * `feedModeTracks` 按档分派到 `FeedSongTab` / `FeedRadioTracks`，以及「一次只给一小批」的口径。
+ * `feedModeTracks` 两档都落到 `FeedSongTab`（偏好走 `preference_mode`、场景走
+ * `feed_preference.scene_mode_id`），以及「一次只给一小批」的口径。
+ *
+ * 场景曾经被分派到 `FeedRadioTracks {radio_id: scene_mode_id}` —— 那是错的：短数字喂进去
+ * 不报错也不生效，回的是通用推荐池（实测选「日语」推中文歌），所以这里钉死「场景不许打
+ * radio/tracks」这一条。
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createQishui, type FeedModeRef, formatFeedMode, parseFeedMode, type QishuiCore } from '../dist/index.js'
@@ -27,9 +32,8 @@ describe('parseFeedMode / formatFeedMode', () => {
     const refs: FeedModeRef[] = [
       { kind: 'preference', mode: 'default' },
       { kind: 'preference', mode: 'familiar' },
-      { kind: 'scene', radioId: '48' },
-      // 首页 discover_radio 块的雪花 id 也当场景记（radioTracks 实测两种 id 都吃）
-      { kind: 'scene', radioId: '7302849374857382901' },
+      { kind: 'scene', sceneModeId: 48 },
+      { kind: 'scene', sceneModeId: 30 },
     ]
     for (const ref of refs) expect(parseFeedMode(formatFeedMode(ref))).toEqual(ref)
   })
@@ -41,8 +45,11 @@ describe('parseFeedMode / formatFeedMode', () => {
     expect(parseFeedMode(undefined)).toBeUndefined()
   })
 
-  it('模式串里带冒号时只切第一个（不把 id 再拆一遍）', () => {
-    expect(parseFeedMode('scene:a:b')).toEqual({ kind: 'scene', radioId: 'a:b' })
+  it('`scene:` 后面只认纯数字：雪花 id（电台队列）与其它写法都算「没选过」', () => {
+    // 老版本把 discover_radio 的 inner_block_id 写进过 scene:，那其实是电台队列，不是场景
+    for (const raw of ['scene:7302849374857382901', 'scene:a:b', 'scene:30.5', 'scene:-1', 'scene:0', 'scene: 30'])
+      expect(parseFeedMode(raw), `不该解析出值：${JSON.stringify(raw)}`).toBeUndefined()
+    expect(parseFeedMode('scene:30')).toEqual({ kind: 'scene', sceneModeId: 30 })
   })
 })
 
@@ -56,14 +63,26 @@ describe('feedModeTracks', () => {
     expect(tracks.map((t) => t.id)).toEqual(['7101', '7102', '7103', '7104', '7105', '7106'])
   })
 
-  it('场景档打 FeedRadioTracks，并把 radio_id 带进请求体', async () => {
-    const tracks = await core.discover.feedModeTracks({ kind: 'scene', radioId: '48' })
-    const call = mock.calls.find((c) => c.url.includes('/luna/pc/feed/radio/tracks'))
+  it('场景档也打 FeedSongTab：场景 id 进 feed_preference.scene_mode_id（扁平），绝不碰 radio/tracks', async () => {
+    const tracks = await core.discover.feedModeTracks({ kind: 'scene', sceneModeId: 30 })
+    const call = mock.calls.find((c) => c.url.includes('/luna/pc/feed/song-tab'))
     expect(call?.url).toBeTruthy()
-    expect(mock.calls.some((c) => c.url.includes('/luna/pc/feed/song-tab'))).toBe(false)
-    expect(JSON.parse(call?.body ?? '{}').radio_id).toBe('48')
+    // 这条是回归闸：radio_id 只认电台队列 id，短数字喂进去不报错也不生效（选「日语」推中文歌）
+    expect(mock.calls.some((c) => c.url.includes('/luna/pc/feed/radio/tracks'))).toBe(false)
+    const body = JSON.parse(call?.body ?? '{}')
+    expect(body.feed_preference).toEqual({ scene_mode_id: 30 })
+    expect(body.preference_mode).toBe('default')
     // 一次就一小批（实测 6 首）：不装作能摊成浏览列表
     expect(tracks).toHaveLength(6)
+  })
+
+  it('两个场景各自带自己的 scene_mode_id（不串味）', async () => {
+    await core.discover.feedModeTracks({ kind: 'scene', sceneModeId: 30 })
+    await core.discover.feedModeTracks({ kind: 'scene', sceneModeId: 10 })
+    const bodies = mock.calls
+      .filter((c) => c.url.includes('/luna/pc/feed/song-tab'))
+      .map((c) => JSON.parse(c.body ?? '{}').feed_preference?.scene_mode_id)
+    expect(bodies).toEqual([30, 10])
   })
 
   it('实时批次不进缓存：连着两次同样打上游', async () => {

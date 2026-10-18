@@ -12,11 +12,11 @@ const modes = (): FeedModeView =>
     preferences: [{ mode: 'familiar', label: '熟悉', current: true }],
     bar: [],
     scenes: [
-      { type: 'scene_mode', text: '专注模式', radioId: '48' },
-      { type: 'scene_mode', text: '通勤', radioId: '52' },
-      // 没有 radioId 的场景取不了批次，不该出现在弹层里
+      { type: 'scene_mode', text: '专注模式', sceneModeId: 48 },
+      { type: 'scene_mode', text: '通勤', sceneModeId: 52 },
+      // 没有 sceneModeId 的场景取不了批次，不该出现在弹层里
       { type: 'scene_mode', text: '缺 id 的' },
-      { type: 'scene_mode', text: '', radioId: '77' },
+      { type: 'scene_mode', text: '', sceneModeId: 77 },
     ],
     raw: {},
   }) as unknown as FeedModeView
@@ -84,7 +84,7 @@ describe('buildListenSections', () => {
     expect(spy.picked).toEqual([{ kind: 'preference', mode: 'default' }])
   })
 
-  it('场景收进弹层：只有带 radioId 的进得去，点它是先关弹层再切模式', () => {
+  it('场景收进弹层：只有带 sceneModeId 的进得去，点它是先关弹层再切模式', () => {
     const { c, spy } = ctx({ modes: modes() })
     const gate = buildListenSections(c)[1].entries[0]
     expect(labelOf(gate)).toBe('更多场景（3）> 选择')
@@ -93,7 +93,7 @@ describe('buildListenSections', () => {
     expect(spy.opened[0].map((e) => e.key)).toEqual(['scene:48', 'scene:52', 'scene:77'])
     spy.opened[0][0]?.onEnter?.()
     expect(spy.closed).toBe(1)
-    expect(spy.picked).toEqual([{ kind: 'scene', radioId: '48' }])
+    expect(spy.picked).toEqual([{ kind: 'scene', sceneModeId: 48 }])
   })
 
   it('没拿到模式列表时场景档置灰，不假装认得', () => {
@@ -111,7 +111,7 @@ describe('buildListenSections', () => {
     stopEntry?.onEnter?.()
     expect(running.spy.stopped).toBe(1)
 
-    const idle = ctx({ current: { kind: 'scene', radioId: '48' }, modes: modes() })
+    const idle = ctx({ current: { kind: 'scene', sceneModeId: 48 }, modes: modes() })
     const playEntry = buildListenSections(idle.c)[2].entries[0]
     expect(labelOf(playEntry)).toBe('按「专注模式」再来一批')
     playEntry?.onEnter?.()
@@ -125,9 +125,9 @@ describe('buildListenSections', () => {
 describe('feedModeLabel', () => {
   it('偏好给中文、场景给上游文案、缺文案就照实写 id', () => {
     expect(feedModeLabel(modes(), { kind: 'preference', mode: 'familiar' })).toBe('熟悉')
-    expect(feedModeLabel(modes(), { kind: 'scene', radioId: '48' })).toBe('专注模式')
-    expect(feedModeLabel(modes(), { kind: 'scene', radioId: '77' })).toBe('场景 77')
-    expect(feedModeLabel(modes(), { kind: 'scene', radioId: '999' })).toBe('场景 999')
+    expect(feedModeLabel(modes(), { kind: 'scene', sceneModeId: 48 })).toBe('专注模式')
+    expect(feedModeLabel(modes(), { kind: 'scene', sceneModeId: 77 })).toBe('场景 77')
+    expect(feedModeLabel(modes(), { kind: 'scene', sceneModeId: 999 })).toBe('场景 999')
     expect(feedModeLabel(undefined, { kind: 'preference', mode: 'fresh' })).toBe('新鲜')
     expect(feedModeLabel(modes(), undefined)).toBe('未选')
   })
@@ -135,7 +135,7 @@ describe('feedModeLabel', () => {
 
 describe('buildSceneEntries', () => {
   it('记住的场景带 `(x)`，其余 `( )`', () => {
-    const { c } = ctx({ modes: modes(), current: { kind: 'scene', radioId: '52' } })
+    const { c } = ctx({ modes: modes(), current: { kind: 'scene', sceneModeId: 52 } })
     const entries = buildSceneEntries(c)
     expect(entries.map((e) => e.label)).toEqual(['( ) 专注模式', '(x) 通勤', '( ) 场景 77'])
   })

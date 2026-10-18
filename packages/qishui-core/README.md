@@ -108,19 +108,19 @@ core.ts            QishuiCore 门面 + createQishui()
 |---|---|
 | `home({layout})` | 首页大盘。`grid`（默认）= 榜单块 + 推荐歌单 + 场景队列；`feed` = 听歌模式（30 个场景电台，榜单块不在里面） |
 | `mix({blockType, subChannelId})` | 单个内容块下钻（首页块点进去看全部） |
-| `feedModeTracks(ref, opts)` | **按一个听歌模式取一批**的收门：`ref: FeedModeRef` = `{kind:'preference', mode}` 走 `feedSongTab`、`{kind:'scene', radioId}` 走 `radioTracks`。两边都是**一次约 6 首、每次随机**——用来连着播，不是摊开看。调用方不用自己分流，`FeedModeRef` 也是 `config.feedMode` 解析出来的形态 |
+| `feedModeTracks(ref, opts)` | **按一个听歌模式取一批**的收门：`ref: FeedModeRef` = `{kind:'preference', mode}` 走 `feedSongTab({preferenceMode})`、`{kind:'scene', sceneModeId}` 走 `feedSongTab({sceneModeId})`（场景进 `feed_preference.scene_mode_id`，**这是场景唯一生效的路**）。两边都是**一次约 6 首、每次随机**——用来连着播，不是摊开看。调用方不用自己分流，`FeedModeRef` 也是 `config.feedMode` 解析出来的形态 |
 | `feedSongTab(opts)` | 推荐流**一批**（默认 `count: 6`，一次约 6 首，是随机播放的批次来源，不是一屏可浏览的列表）。`preferenceMode`: `default`（推荐）/ `familiar`（熟悉）/ `fresh`（新鲜）；自动维护 `is_first_request`/`total_request_count`/`preference_mode_request_count` 会话计数。`withPlayedTracks` 默认 **false**：机制在（本地播放历史最近 20 条按时间升序当 `played_tracks`，字段名按同构 `MediaPlayed` 推、实测上游照收），但播放时长还没向上游上报，主动带反而暴露「只播不报」，上报口径补上前不带。`excludePlayed`/`excludeLiked`（`maxPages` 默认 3）是**客户端过滤**：本地把已播/已喜欢的剔掉、翻页补齐到 `count`——「只要没听过的」走这条确定性路径，别赌上游 `preference_mode` 是否真改变分布（仍未验证） |
 | `playlistSquare({categoryId})` | 歌单广场（含分类） |
-| `radioTracks(radioId)` | 按场景取**一批**（同样一次约 6 首、每次随机，用于连着播）。`radioId` 实测两种都吃：场景的 `scene_mode_id`（如 `48`）或首页场景块的 `inner_block_id` |
+| `radioTracks(radioId)` | 按**电台队列**取一批（同样一次约 6 首、每次随机，用于连着播）。`radioId` 只认首页 `discover_radio` 块的 `inner_block_id`（雪花大数）；**别拿场景的 `scene_mode_id` 喂它**——短数字不报错也不生效，回的是通用推荐池（实测选「日语」推中文歌）。场景走 `feedSongTab({sceneModeId})` |
 | `feedMode()` | FeedMode 原始响应 |
-| `feedModes()` | 解析成 `{preferences, bar, scenes}`：偏好栏（推荐/熟悉/新鲜，`current` 标上游选中的那**一**条）+ 45 个场景（`radioId` 即 `scene_mode_id`）。选出来的那一个喂 `feedModeTracks()` |
+| `feedModes()` | 解析成 `{preferences, bar, scenes}`：偏好栏（推荐/熟悉/新鲜，`current` 标上游选中的那**一**条）+ 45 个场景（`sceneModeId` 即 `scene_mode_id`，短数字）。选出来的那一个喂 `feedModeTracks()` |
 | `launch()` | 冷启动配置：曲风/语种 + `boost_setting.need_set`（判断是否弹首启引导） |
 
 > `FeedMode` 的 `feed_mode_bar` **只回当前选中的那一个**（实测只回「推荐」），所以「熟悉/新鲜」两个取值来自 IDL 常量
 > （`PreferenceModeFamiliar` / `PreferenceModeFresh`），不是从响应枚举出来的。`preference_mode` 上游对未知值不报错，
 > 所以别拿「能回 6 首」当验证 —— 推荐流本来就是随机的。
 >
-> 「当前用哪个模式听」在 core 里只有一个形态：`FeedModeRef`（`{kind:'preference', mode}` | `{kind:'scene', radioId}`），
+> 「当前用哪个模式听」在 core 里只有一个形态：`FeedModeRef`（`{kind:'preference', mode}` | `{kind:'scene', sceneModeId}`），
 > 配套的 `parseFeedMode()` / `formatFeedMode()` / `FEED_PREFERENCE_MODES` 都从包入口导出，`config.feedMode` 就是它格式化出来的串。
 
 ### 3.4 `search` —— 搜索
@@ -301,7 +301,7 @@ qishui.player.dispose()
 | `maxMediaBytes` | `2GiB` | 媒体缓存上限，超了按最久未访问剔除 |
 | `reportPlayback` | `false` | 是否把播放上报给上游（**默认关**，见 §7） |
 | `defaultRepeat` / `defaultShuffle` | `off` / `false` | 播放器默认 |
-| `feedMode` | `''`（没选过） | 本机记住的**听歌模式**，一个值：`preference:<mode>`（`default`/`familiar`/`fresh`）或 `scene:<radioId>`。配 `parseFeedMode()`/`formatFeedMode()` 读写（认不出的值一律当没选过，不猜）。上游没有「保存听歌模式」的写接口，所以这只是本地偏好，不声称是上游状态 |
+| `feedMode` | `''`（没选过） | 本机记住的**听歌模式**，一个值：`preference:<mode>`（`default`/`familiar`/`fresh`）或 `scene:<scene_mode_id>`（纯数字，如 `30`=日语）。配 `parseFeedMode()`/`formatFeedMode()` 读写（认不出的值一律当没选过，不猜；`scene:` 后面不是纯数字也算认不出——雪花 id 是电台队列，不是场景）。上游没有「保存听歌模式」的写接口，所以这只是本地偏好，不声称是上游状态 |
 | `activeUid` | 无（按索引 `lastUsedAt` 挑） | 激活账号；`useAccount`/登录/登出会写回，也可手改 |
 
 **媒体缓存的关键行为**（`MediaCache`）：

@@ -9,7 +9,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { FEED_MAX_FAILURES, FEED_REFILL_AT, FeedStream } from '../dist/feedStream.js'
 
 const PREF: FeedModeRef = { kind: 'preference', mode: 'familiar' }
-const SCENE: FeedModeRef = { kind: 'scene', radioId: '48' }
+const SCENE: FeedModeRef = { kind: 'scene', sceneModeId: 48 }
 
 const batch = (n: number, prefix = 't'): TrackData[] =>
   Array.from({ length: n }, (_, i) => ({ id: `${prefix}${i}`, name: `${prefix}${i}` }) as unknown as TrackData)

@@ -67,8 +67,16 @@ export interface FeedModeOption {
   text: string
   /** 偏好模式的取值（`default` / `familiar` / `fresh`），场景模式为 undefined */
   preferenceMode?: FeedPreferenceMode
-  /** 场景模式的 id，可直接当 `radioTracks()` 的 `radio_id` 用 */
-  radioId?: string
+  /**
+   * 场景模式的 id（`scene_mode_id`，短数字）。
+   *
+   * **只能喂 `FeedSongTab` 的 `feed_preference.scene_mode_id`**（= `feedSongTab({sceneModeId})`）。
+   * 别拿它去当 `radioTracks()` 的 `radio_id`：那条路的 id 是**电台队列**（首页 `discover_radio` 块的
+   * `inner_block_id`/`resource_id`，雪花大数），短数字喂进去不报错、但也不生效——回的是通用推荐池
+   * （实测：`radio_id=30`「日语」与 `radio_id=8`「助眠」各回 6 首、全是同一类中文流行，
+   * 连不存在的 `999999999999` 也照回 6 首）。
+   */
+  sceneModeId?: number
   /** 场景模式的内部队列名（`scene_mode_focus` 这类，只是标识） */
   subQueueType?: string
   raw: unknown
@@ -97,7 +105,7 @@ export interface FeedModeView {
   preferences: FeedPreferenceOption[]
   /** 上游回来的偏好栏条目（通常只有当前那一条，原样留着备查） */
   bar: FeedModeOption[]
-  /** 场景音乐（45 个），`radioId` 给 `radioTracks()` */
+  /** 场景音乐（45 个），`sceneModeId` 给 `feedSongTab({sceneModeId})` */
   scenes: FeedModeOption[]
   raw: unknown
 }
@@ -109,6 +117,16 @@ export interface FeedModeView {
  */
 export interface FeedSongTabOptions {
   preferenceMode?: FeedPreferenceMode
+  /**
+   * 场景模式（`feedModes()` 的 `scene_mode_id`）：进请求体的
+   * `feed_preference: { scene_mode_id }`。
+   *
+   * 这是**场景唯一生效的入口**（实测 2026-10-18）：`scene_mode_id=30`（日语）回 12 首里 9 首
+   * 是日文歌（中島美嘉/米津玄師/まふまふ…）、`10`（粤语）回粤语、`32`（古典）回 Mozart/巴赫、
+   * `22`（K-pop）回 aespa/MOMOLAND；同一时刻不传它则回通用推荐。注意形状是**扁平**的
+   * `{scene_mode_id}`，套一层 `{scene_mode:{scene_mode_id}}` 不生效（实测同样回通用推荐）。
+   */
+  sceneModeId?: number
   /** 信息流类型；IDL 常量只有 `track`/`mix`，单曲 tab 用 `track` */
   feedMode?: 'track' | 'mix' | (string & {})
   /** 一次要几首，上游默认 6 */
@@ -129,17 +147,24 @@ export interface FeedSongTabOptions {
 
 /**
  * 一个**听歌模式**的选择，只能是一个值：要么三档偏好之一，要么某个场景。
- * 场景可以是 `feedModes()` 的 `scene_mode_id`（短数字），也可以是首页 `discover_radio` 块的
- * `inner_block_id`（雪花 id）——`radioTracks()` 实测两种都吃。
+ *
+ * 场景只认 `feedModes()` 的 `scene_mode_id`（短数字）：它进 `FeedSongTab` 的
+ * `feed_preference.scene_mode_id`（见 `feedSongTab({sceneModeId})`）。**电台队列**（首页
+ * `discover_radio` 的 `inner_block_id`，雪花大数）不是听歌模式的一档，要播走 `radioTracks()`。
  */
-export type FeedModeRef = { kind: 'preference'; mode: FeedPreferenceMode } | { kind: 'scene'; radioId: string }
+export type FeedModeRef = { kind: 'preference'; mode: FeedPreferenceMode } | { kind: 'scene'; sceneModeId: number }
 
 /** `config.feedMode` 的写法：带前缀的扁平串，不用「纯数字就是场景」这种隐式判定 */
 export function formatFeedMode(ref: FeedModeRef): string {
-  return ref.kind === 'preference' ? `preference:${ref.mode}` : `scene:${ref.radioId}`
+  return ref.kind === 'preference' ? `preference:${ref.mode}` : `scene:${ref.sceneModeId}`
 }
 
-/** 解析 `config.feedMode`；空串或认不出就是「没选过」，不猜 */
+/**
+ * 解析 `config.feedMode`；空串或认不出就是「没选过」，不猜。
+ *
+ * `scene:` 后面必须是**纯数字**（`scene_mode_id`）。老版本可能把雪花 id 写进过 `scene:`，
+ * 那串现在按「认不出」处理（它其实是电台队列，不是场景）——宁可当没选过，也不把电台当场景播。
+ */
 export function parseFeedMode(raw: string | undefined): FeedModeRef | undefined {
   const text = raw?.trim()
   if (!text) return undefined
@@ -149,7 +174,11 @@ export function parseFeedMode(raw: string | undefined): FeedModeRef | undefined 
   const tail = text.slice(sep + 1)
   if (!tail) return undefined
   if (head === 'preference') return { kind: 'preference', mode: tail }
-  if (head === 'scene') return { kind: 'scene', radioId: tail }
+  if (head === 'scene') {
+    if (!/^\d+$/.test(tail)) return undefined
+    const id = Number(tail)
+    return Number.isSafeInteger(id) && id > 0 ? { kind: 'scene', sceneModeId: id } : undefined
+  }
   return undefined
 }
 
@@ -233,10 +262,12 @@ export class DiscoverService {
   async feedSongTab(opts: FeedSongTabOptions = {}): Promise<Track[]> {
     const mode = opts.preferenceMode ?? 'default'
     const want = opts.count ?? 6
+    // 缓存键必须带场景：不然「日语」与「粤语」会互相顶掉对方那一批（ttl 0 只是不落盘，内存里还在）
+    const key = opts.sceneModeId === undefined ? mode : `${mode}@scene${opts.sceneModeId}`
     if (!opts.excludePlayed && !opts.excludeLiked) {
       const { value } = await this.core.cache.fetch<any>(
         'feed-song-tab',
-        mode,
+        key,
         () => this.core.request('FeedSongTab', this.feedSongTabBody(mode, opts)),
         { force: opts.refresh, ttlMs: CacheTtl.none },
       )
@@ -289,6 +320,10 @@ export class DiscoverService {
       total_request_count: this.feedTabSession.total,
       preference_mode_request_count: modeCount,
     }
+    if (opts.sceneModeId !== undefined) {
+      // 形状是扁平的 `{scene_mode_id}`（实测；套一层 `{scene_mode:{...}}` 不生效）
+      body.feed_preference = { scene_mode_id: opts.sceneModeId }
+    }
     if (opts.withPlayedTracks) {
       const played = this.core.history.recent(20).reverse()
       if (played.length) {
@@ -324,10 +359,13 @@ export class DiscoverService {
   }
 
   /**
-   * 场景模式的曲目批次（听歌模式的场景档）。
-   * `radioId` 实测两种都吃：FeedMode 场景的 `scene_mode_id`（如 `48`），
-   * 或首页 `discover_radio` 块的 `inner_block_id`（雪花 id）。
-   * **一次只随机给一小批（实测 6 首）**，是「随机播放的批次来源」，不是一屏可浏览的列表。
+   * 电台队列的曲目批次：`radioId` 是首页 `discover_radio` 块的 `inner_block_id`（雪花大数，
+   * 与 `resources[].resource_id` / link 里的 `queue_id` 同一个值）。
+   *
+   * **别拿场景的 `scene_mode_id` 喂这里**：短数字不报错、但也不生效，回的是通用推荐池
+   * （实测 `radio_id=30`/`8`/`999999999999` 三档各回 6 首、内容同一类）。场景走
+   * `feedSongTab({sceneModeId})`——那是唯一能让场景真正生效的路。
+   * **一次只随机给一小批（实测 6 首）**，是「连着播的批次来源」，不是一屏可浏览的列表。
    */
   async radioTracks(radioId: string | number, opts: { refresh?: boolean } = {}): Promise<Track[]> {
     const key = String(radioId)
@@ -341,11 +379,16 @@ export class DiscoverService {
   }
 
   /**
-   * 按一个听歌模式取一批曲目：偏好档走 `feedSongTab`，场景档走 `radioTracks`。
-   * 两边都是「一次约 6 首、每次随机」，用来连着播而不是摊开看。
+   * 按一个听歌模式取一批曲目。**两档都走 `FeedSongTab`**：
+   *  - 偏好档 → `preference_mode`（推荐/熟悉/新鲜）；
+   *  - 场景档 → `feed_preference.scene_mode_id`。
+   *
+   * 场景档曾经走 `FeedRadioTracks {radio_id: scene_mode_id}`，那是错的（短数字被忽略、
+   * 回通用推荐池：选「日语」推中文歌）。实测 `FeedSongTab` + `feed_preference.scene_mode_id`
+   * 才真按场景出歌。一次约 6 首、每次随机，用来连着播而不是摊开看。
    */
   async feedModeTracks(ref: FeedModeRef, opts: FeedSongTabOptions & { refresh?: boolean } = {}): Promise<Track[]> {
-    if (ref.kind === 'scene') return this.radioTracks(ref.radioId, { refresh: opts.refresh })
+    if (ref.kind === 'scene') return this.feedSongTab({ ...opts, sceneModeId: ref.sceneModeId })
     return this.feedSongTab({ ...opts, preferenceMode: ref.mode })
   }
 
@@ -372,7 +415,7 @@ export class DiscoverService {
         type: str(item?.type) ?? '',
         text: str(item?.text) ?? '',
         preferenceMode: str(preference?.mode),
-        radioId: scene?.scene_mode_id === undefined ? undefined : String(scene.scene_mode_id),
+        sceneModeId: typeof scene?.scene_mode_id === 'number' ? scene.scene_mode_id : undefined,
         subQueueType: str(scene?.sub_queue_type),
         raw: item,
       }

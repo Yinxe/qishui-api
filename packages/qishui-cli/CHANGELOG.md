@@ -4,6 +4,13 @@
 
 ## Unreleased
 
+### Added
+
+- **`qishui scene [sceneModeId]`：场景档单独成命令**（听歌模式的 45 个场景：日语/粤语/古典/助眠…）。不带 id 列场景表（`scene_mode_id` 是短数字，配 `scene_mode_*` 队列名）；带 id 拉该场景一批，走 core 的 `feedModeTracks({kind:'scene'})` → `FeedSongTab` 的 `feed_preference.scene_mode_id`。修的是「选日语推中文歌」：原来场景和电台队列共用 `radio` 命令，而 `radio_id` 只认电台队列的雪花 id
+
+### Changed
+
+- **`qishui radio` 口径纠正**：现在只讲电台队列（首页 `discover_radio` 块的 `inner_block_id`），不带 id 时列这 30 条队列（原来错列了 45 个场景的 `radio_id`）；`qishui modes` 的场景表列头改成 `scene_mode_id`，提示改成 `qishui scene <id>`
 ### Changed
 
 - **`login` 的终端二维码补静区，并给一张官方 PNG 兜底**：`qrcode-terminal` 是贴着边画码的，一格白边都不给，App 要对焦很久才认出来（官方那张 PNG 带 4 模块白边）——`loginQr.ts` 现在自己补一圈 4 模块留白再上屏；同时把 core 落盘的 `login.qrImage` 打在下面一行「识别慢就扫官方二维码图片：<路径>」（`--json` 里是 `qrImage` 字段）。二维码本体仍是那条 `bff-pc.qishui.com` 深链，没换载荷

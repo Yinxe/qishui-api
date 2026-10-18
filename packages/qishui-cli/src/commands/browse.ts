@@ -193,27 +193,36 @@ function addChart(cmd: Command): void {
 function addRadio(cmd: Command): void {
   cmd
     .command('radio [radioId]')
-    .description('场景电台：不带 id 列出 45 个场景（FeedMode）；带 id 拉该场景的续播曲目')
+    .description('电台队列：不带 id 列出首页的电台队列（DiscoverView 的 discover_radio 块）；带 id 拉该队列的一批')
     .option('--limit <n>', '最多几首', '20')
     .option('--refresh', '该命令不缓存（参数无效，保留兼容）')
     .addHelpText(
       'after',
-      '\n提示：<radioId> 只要「裸 id」（`qishui modes` 表里那串 radio_id）；播放整个电台用 `qishui play radio:<radioId>`。',
+      '\n提示：<radioId> 是队列 id（雪花大数，`qishui radio` 表里那串）；播放整个队列用 `qishui play radio:<radioId>`。' +
+        '\n想看「场景」（日语/粤语/古典…）用 `qishui scene` —— 场景是听歌模式的一档，不是电台队列。',
     )
     .action(async (radioId: string | undefined, opts: { limit: string; refresh?: boolean }) => {
       const instance = await core()
       if (!radioId) {
-        const modes: FeedModeView = await instance.discover.feedModes({ refresh: opts.refresh })
+        const view = await instance.discover.home({ layout: 'feed', refresh: opts.refresh })
+        const queues = view.blocks
+          .filter((block) => block.type === 'discover_playlist_mix')
+          .flatMap((block) => block.inner)
+          .filter((inner) => inner.type === 'discover_radio')
+          .map((inner) => ({
+            id: inner.id ?? '',
+            title: inner.title ?? '',
+          }))
         emit(
           () => {
-            heading('场景电台', `${modes.scenes.length} 个场景（FeedMode）`)
+            heading('电台队列', `${queues.length} 个（discover_radio）`)
             printTable(
-              ['场景', 'radio_id', '队列'],
-              modes.scenes.map((scene) => [scene.text, scene.radioId ?? '', scene.subQueueType ?? '']),
+              ['队列', 'radio_id'],
+              queues.map((queue) => [queue.title, queue.id]),
             )
             print(dim('播放：qishui play radio:<radio_id>（qishui radio <radio_id> 只要裸 id）'))
           },
-          { scenes: modes.scenes },
+          { queues },
         )
         return
       }
@@ -225,6 +234,52 @@ function addRadio(cmd: Command): void {
           printTrackList(tracks.slice(0, limit))
         },
         { radioId, tracks },
+      )
+    })
+}
+
+/**
+ * 场景（听歌模式的一档）：`scene_mode_id` 走 `FeedSongTab` 的 `feed_preference.scene_mode_id`。
+ * 早先这里和 `radio` 合成一条命令，导致「选日语推中文歌」——电台队列与场景是两条不同的路。
+ */
+function addScene(cmd: Command): void {
+  cmd
+    .command('scene [sceneModeId]')
+    .description('听歌模式的场景档（日语/粤语/古典/助眠…）：不带 id 列出 45 个场景；带 id 拉该场景的一批')
+    .option('--limit <n>', '最多几首', '20')
+    .option('--count <n>', '一次向上游要几首（默认 6）')
+    .action(async (sceneModeId: string | undefined, opts: { limit: string; count?: string }) => {
+      const instance = await core()
+      if (!sceneModeId) {
+        const modes: FeedModeView = await instance.discover.feedModes()
+        emit(
+          () => {
+            heading('场景音乐', `${modes.scenes.length} 个场景（FeedMode）`)
+            printTable(
+              ['场景', 'scene_mode_id', '队列'],
+              modes.scenes.map((scene) => [scene.text, String(scene.sceneModeId ?? ''), scene.subQueueType ?? '']),
+            )
+            print(dim('用：qishui scene <scene_mode_id>'))
+          },
+          { scenes: modes.scenes },
+        )
+        return
+      }
+      const id = Number(sceneModeId)
+      if (!Number.isSafeInteger(id) || id <= 0) {
+        throw new CliError(`认不出场景 ${sceneModeId}`, '场景 id 是 `qishui scene` 表里的短数字，如 30（日语）')
+      }
+      const tracks = await instance.discover.feedModeTracks(
+        { kind: 'scene', sceneModeId: id },
+        { count: opts.count ? Number(opts.count) : undefined },
+      )
+      const limit = Math.max(1, Number(opts.limit) || 20)
+      emit(
+        () => {
+          heading(`场景 ${sceneModeId}`)
+          printTrackList(tracks.slice(0, limit))
+        },
+        { sceneModeId: id, tracks },
       )
     })
 }
@@ -333,10 +388,10 @@ function addModes(cmd: Command): void {
         )
         heading('场景音乐', `${modes.scenes.length} 个`)
         printTable(
-          ['场景', 'radio_id', '队列'],
-          modes.scenes.map((scene) => [scene.text, scene.radioId ?? '', scene.subQueueType ?? '']),
+          ['场景', 'scene_mode_id', '队列'],
+          modes.scenes.map((scene) => [scene.text, String(scene.sceneModeId ?? ''), scene.subQueueType ?? '']),
         )
-        print(dim('用：qishui feed --mode familiar · qishui play radio:<radio_id>'))
+        print(dim('用：qishui feed --mode familiar · qishui scene <scene_mode_id>'))
       }, modes)
     })
 }
@@ -414,6 +469,7 @@ export function registerBrowseCommands(program: Command): void {
   addHome(program)
   addChart(program)
   addRadio(program)
+  addScene(program)
   addFeed(program)
   addSquare(program)
   addModes(program)
@@ -424,12 +480,13 @@ export function registerBrowseCommands(program: Command): void {
   // `qishui discover <子命令>`：同一批实现再挂一份，按「发现」的心智模型找命令
   const discover = program
     .command('discover')
-    .description('发现（子命令：home / chart / charts / radio / feed / square / modes / mix / launch）')
+    .description('发现（子命令：home / chart / charts / radio / scene / feed / square / modes / mix / launch）')
   discover.action(() => discover.help())
   addHome(discover)
   addChart(discover)
   addCharts(discover)
   addRadio(discover)
+  addScene(discover)
   addFeed(discover)
   addSquare(discover)
   addModes(discover)

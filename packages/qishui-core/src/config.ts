@@ -37,8 +37,9 @@ export interface CoreConfig {
   tuiMouse: boolean
   /**
    * 本机记住的**听歌模式**，一个值。文法：`preference:<mode>`（`default`/`familiar`/`fresh`）
-   * 或 `scene:<radioId>`（`feedModes()` 场景的 `scene_mode_id`，也可以是首页 `discover_radio` 的块 id）。
-   * 空串 = 没选过。
+   * 或 `scene:<scene_mode_id>`（`feedModes()` 场景的短数字 id，如 `30`=日语）。
+   * 空串 = 没选过。**`scene:` 后面只认纯数字**：首页 `discover_radio` 的雪花 id 是电台队列、
+   * 不是场景（写进 `scene:` 会被当成「没选过」，免得把电台当场景播）。
    * **只是本地记住的偏好**：上游没有「保存听歌模式」的写接口，`FeedMode` 的 `feed_mode_bar`
    * 也只回它自己当前的那一条，所以这个值不声称是上游状态。
    */

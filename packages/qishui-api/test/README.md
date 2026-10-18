@@ -12,6 +12,7 @@
 | `probe-variants.ts` | 变体试探：某端点回空/404 时，把它的每条 path 变体（pc / 非 pc、GET / POST）都打一遍；可带 `k=v` 覆盖参数 |
 | `probe-search.ts` | `Search` 系的手工参数矩阵（定位「不带 `debug_params` + 非 pc 变体」这个组合） |
 | `probe-feedmode.ts` | `FeedMode` 偏好/场景 + `FeedSongTab` 的 `preference_mode` + `FeedRadioTracks` 的 `radio_id`（短数字 `scene_mode_id` vs 雪花 `inner_block_id`）实测 |
+| `probe-scene.ts` | **场景到底怎么请求才生效**：`FeedRadioTracks {radio_id: 30}` 回通用池（错路）vs `FeedSongTab {feed_preference:{scene_mode_id: 30}}` 回日文歌（正路）——「选日语推中文歌」那条 bug 的现场记录 |
 | `check-catalog.ts` | **参数回归闸门**（`pnpm run check:catalog`）：把 `catalog.ts` 每条端点的参数与 IDL 声明逐字核对（必填/位置/类型），当前 90 条 0 问题 |
 | `dump.ts` | 抓一批匿名接口的**完整响应**到 `/tmp/opencode/samples/*.json`，写文档/核对字段名用 |
 | `dump-details.ts` | 同上，补详情类（专辑/艺人/用户/权益/统计/Launch） |
