@@ -475,6 +475,11 @@ export function CoreProvider({ children }: { children: ReactNode }) {
         const next = order[(order.indexOf(q.player.state.repeat) + 1) % order.length]
         q.player.setRepeat(next)
         setPlayer((s) => ({ ...s, repeat: next }))
+        // 推荐队列是一条自动续批的流：单曲循环会让播放头停在原地、续批永远不触发。
+        // 默认已经固定成「关」，手动按到「单曲」是明确的例外，但得提醒一句，别让人以为卡住了
+        if (next === 'one' && queues.find((item) => item.active)?.kind === 'recommend') {
+          toast('推荐队列是自动续批的流，单曲循环会停在这一首（再按 r 回到「关」）', 'info')
+        }
       },
       toggleShuffle() {
         const q = instance()

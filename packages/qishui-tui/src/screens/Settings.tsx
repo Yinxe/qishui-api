@@ -265,6 +265,8 @@ function formatConfigValue(key: string, value: unknown): string {
   if (key === 'defaultShuffle' || key === 'reportPlayback' || key === 'autoCacheMedia' || key === 'tuiMouse') {
     return value ? '开' : '关'
   }
+  // 循环模式存的是 'off' / 'all' / 'one'，给人看中文词（推荐队列固定「关」，见 core 的 QueueBook）
+  if (key === 'defaultRepeat') return value === 'all' ? '全部' : value === 'one' ? '单曲' : '关'
   // 听歌模式存的是 `preference:familiar` 这种文法串，给人看名字别看文法
   if (key === 'feedMode') return feedModeLabel(undefined, parseFeedMode(value as string | undefined))
   if (typeof value === 'number' && /Bytes$/.test(key)) return formatBytes(value)

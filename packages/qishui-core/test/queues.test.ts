@@ -215,3 +215,40 @@ describe('队列书架：切号', () => {
     expect(core.queues.activeQueueId).toBe(undefined)
   })
 })
+
+describe('队列书架：默认循环模式', () => {
+  it('推荐队列固定「关」：配置里默认循环是单曲也不开（否则续批被冻住）', async () => {
+    core.config.defaultRepeat = 'one'
+    stubFeed()
+    await core.queues.open({
+      kind: 'recommend',
+      title: '推荐 · 默认',
+      feed: { kind: 'preference', mode: 'default' },
+      refresh: true,
+    })
+    expect(core.player.state.repeat).toBe('off')
+    // 队列本身照常取到并起播
+    expect(core.player.queue.length).toBeGreaterThan(0)
+  })
+
+  it('推荐队列上手动开过单曲循环，切走再切回来又回到「关」', async () => {
+    stubFeed()
+    await core.queues.open({
+      kind: 'recommend',
+      title: '推荐',
+      feed: { kind: 'preference', mode: 'default' },
+      refresh: true,
+    })
+    core.player.setRepeat('one')
+    expect(core.player.state.repeat).toBe('one')
+    await core.queues.open({ kind: 'temporary', title: '搜索', items: [track('x')] })
+    await core.queues.activate('recommend')
+    expect(core.player.state.repeat).toBe('off')
+  })
+
+  it('其它队列认「默认循环模式」这个设置（歌单 / 我喜欢 / 临时）', async () => {
+    core.config.defaultRepeat = 'all'
+    await core.queues.open({ kind: 'temporary', title: '榜单', items: [track('a'), track('b')] })
+    expect(core.player.state.repeat).toBe('all')
+  })
+})

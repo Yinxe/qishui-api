@@ -4,6 +4,14 @@
 
 ## Unreleased
 
+### Fixed
+
+- **推荐队列不再默认开「单曲循环」**（`player/queues.ts` 的 `QueueBook`）
+  - 推荐队列是一条**自动续批的流**：单曲循环会让播放头停在原地，`onPlayerQueue` / `onPlayerEnded` 的续批永远不触发 —— 一首歌无限重播，队列再也走不动
+  - 现在 `recommend` 队列的循环**固定「关」**：新建时不管 `config.defaultRepeat` 是什么都按「关」起播；切走再切回时若书架里记着「单曲」，也降回「关」（其它队列不动）
+  - 顺带修好「默认循环模式」这个设置：此前新队列的 `repeat` 硬编码成 `'off'`，设置页那一项等于失效；现在歌单 / 我喜欢 / 临时队列按 `config.defaultRepeat` 起播
+  - 离线单测 `test/queues.test.ts` 补 3 条：配置默认单曲时推荐队列仍是「关」、推荐队列手动开过单曲后切回来变「关」、其它队列认配置
+
 ### Added
 
 - **`core.queues`（`player/queues.ts` 的 `QueueBook`）：按来源分的多份播放队列 + 推荐队列的滑动窗口续批**

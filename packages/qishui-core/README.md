@@ -314,10 +314,12 @@ qishui.events.on('queue-note', ({ message, kind }) => toast(message, kind))    /
 
 | kind | 谁用 | 曲目 | 策略 |
 |---|---|---|---|
-| `recommend` | 听歌模式（场景 / 推荐 / 熟悉 / 新鲜） | 上游每批约 6 首 | **滑动窗口**：每前进一首踢掉「上上个」；剩 ≤ `RECOMMEND_REFILL_AT`(2) 首补一批，长度钳在 `RECOMMEND_WINDOW_MAX`(8)；顺序播；队列播完自动重启续批，连续 `RECOMMEND_MAX_FAILURES`(2) 批失败停 |
+| `recommend` | 听歌模式（场景 / 推荐 / 熟悉 / 新鲜） | 上游每批约 6 首 | **滑动窗口**：每前进一首踢掉「上上个」；剩 ≤ `RECOMMEND_REFILL_AT`(2) 首补一批，长度钳在 `RECOMMEND_WINDOW_MAX`(8)；顺序播；队列播完自动重启续批，连续 `RECOMMEND_MAX_FAILURES`(2) 批失败停；**循环固定「关」**（单曲循环会让播放头停在原地、续批永远不触发） |
 | `playlist` | 每张歌单（含本地歌单） | 整张 | 顺序播，切走再切回接着上次那一首 |
 | `liked` | 我喜欢的音乐 / 本地喜欢 | 全部 | 随机 |
 | `temporary` | 搜索 / 榜单 / 专辑 / 艺人 / 首页块 | 这一次点播的那一批 | 顺序播，**每次 `open` 整队替换** |
+
+新队列的默认循环取 `config.defaultRepeat`（设置页的「默认循环模式」），推荐队列除外——它固定「关」，切回来时若记着「单曲」也会被降回「关」（见上表）。
 
 实现要点：切走时 `park()` 把当前队列停放到书架里，切回 `activate()` 时用 `player.playList(items, start)` 恢复；
 书架自己改播放器队列的那几步走 `applying` 守卫，不会被误当成用户操作再触发滚窗/续批；

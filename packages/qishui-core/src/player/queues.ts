@@ -11,6 +11,10 @@
  * | `liked` 我喜欢 | 「我喜欢的音乐」/ 本地喜欢 | 全部 | **随机** |
  * | `temporary` 临时 | 搜索 / 榜单 / 专辑 / 艺人 / 首页推荐块 | 这一次点播的那一批 | 顺序播；**每次点播整队替换上一批**（临时就是不留旧账） |
  *
+ * **循环模式**：新队列的默认循环取 `config.defaultRepeat`（设置页的「默认循环模式」），
+ * 唯独推荐队列**固定「关」**——它是一条自动续批的流，单曲循环会让播放头停在原地、
+ * 续批（`onPlayerQueue` / `onPlayerEnded`）永远不触发，一首歌就无限重播了。
+ *
  * 「在播的那一份」仍然是 `Player` 里那个 `PlayQueue`（时钟、歌词、mpv 都对着它），
  * 书架只负责**换出去时存位置、换回来时装回去**，以及在推荐队列上跑滑动窗口与续批。
  * 取数（歌单曲目 / 喜欢列表 / 推荐批次）由调用方给 `load` 或 `feed`，书架自己不猜上游。
@@ -148,7 +152,8 @@ export class QueueBook {
         title: opts.title,
         items: [],
         index: -1,
-        repeat: 'off',
+        // 推荐队列是流，单曲循环会冻住续批，固定关；其余队列认「默认循环模式」这个设置
+        repeat: opts.kind === 'recommend' ? 'off' : this.core.config.defaultRepeat,
         shuffle: opts.shuffle ?? opts.kind === 'liked',
         load: opts.load,
         feed: opts.feed,
@@ -209,6 +214,9 @@ export class QueueBook {
     this.applying = true
     try {
       await player.playList(entry.items, start)
+      // 推荐队列切回来也不认单曲循环（上一次听的时候手动开过也一样）：
+      // 这条流的下一首由续批给，单曲循环会让它原地打转、永远等不到续批
+      if (entry.kind === 'recommend' && entry.repeat === 'one') entry.repeat = 'off'
       player.setRepeat(entry.repeat)
       player.setShuffle(entry.shuffle)
     } finally {
