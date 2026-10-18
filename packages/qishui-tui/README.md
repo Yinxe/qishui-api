@@ -1,0 +1,158 @@
+# qishui-tui
+
+汽水音乐的**终端 TUI**，基于 [ink](https://github.com/vadimdemedes/ink)（React → 终端渲染），跑在 `qishui-core` 之上：**左侧边栏导航 + 通用列表页 + 播放条 + 歌词/评论覆盖层**。页面结构见 [`DESIGN.md`](./DESIGN.md)，可用数据见 [`DATA_TYPES.md`](./DATA_TYPES.md)。
+
+```bash
+pnpm run tui:build                                  # = pnpm --filter qishui-tui run build
+pnpm run tui                                        # = node packages/qishui-tui/dist/cli.js
+pnpm --filter qishui-tui run test                   # vitest（全程离线，不碰上游）
+QISHUI_TUI_STUB=1 pnpm run tui                      # 骨架模式：只画外壳，不建 core
+```
+
+## 已实现
+
+| 页面 | 来源（core） | 备注 |
+|---|---|---|
+| 搜索 `1` / `/` | `search.categories` → `search.suggest`（输入框下面的联想词）→ `search.search`（综合/歌曲/专辑/歌手/歌单） | 直接打字；打字停 250ms 才问一次联想，`↑↓` 在联想里走、`Enter` 或点一条**只把词回填输入框**（不重新联想），`Enter` 空手搜索、`Esc` 收起输入、`←→` 切分类；结果行 `Enter` 或点一下开**这一行的操作菜单**（与列表页同一条路：曲目 播放这首/下一首播放/加入队尾/我的喜欢/评论/详情…，歌单与专辑 打开+播放整张+收藏，艺人 热门/全部歌曲/全部专辑/关注）——**Enter 不再一按就出声**；「综合」按分组列预览，每组末尾的**「查看全部 →」**用上游 `display_view_all` 决定给不给、类型用 core 派生的 `group.searchType`（分组判别看 `group.id`，`display_type` 实测恒空串，拿它当 `search_type` 就是 404） |
+| 发现 `2` | `discover.home` | 首页各区块摊平成「分区条目」，**只做内容浏览**（含**榜单块**：进去就是整榜列表页；**歌单广场**唯一入口：`[ ]` 切分类）；听歌模式/场景电台不在这里（归「听歌」页），首页尾部的「更多歌单」段已去掉——内容与歌单广场重复 |
+| 听歌 `3` | `discover.feedModes` → `discover.feedModeTracks`（偏好走 `feedSongTab`、场景走 `radioTracks`） | **听歌模式单选台**，不是列表页：上游每次只随机回一小批（实测 6 首），所以这一页只定「当前用哪个模式听」——常用三档在页内选、45 个场景在弹层里选，**只能有一个 `(x)`**；`Enter` = 设为当前并按它取一批起播，一批播完由 `src/feedStream.ts` 在剩 ≤2 首时自动续一批（`停止自动续播` 是页内一条条目，不是散键）。`（上游当前）`只标上游 `feed_mode_bar` 那一条，与本机记住的 `config.feedMode` 并存显示，不当真相源。骨架模式（无 core）也画得出常用三档（`FEED_PREFERENCE_MODES` 是 core 常量），`Enter` 只提示不起播 |
+| 我的 `4`（`0` 同页） | `snapshot`/`accounts`/`login`/`useAccount`/`logout`/`membership` + `library.*` | 账号与音乐收藏**合并成一页**：当前账号（昵称/数据目录/会员态）/ **已入库账号切号 `Enter`** / 「我的喜欢」/ 最近播放（登录后走 `library.recent` 云端，匿名回落本地历史）/ 关注艺人 / 收藏混排 / **我的歌单（新建 `N`；改名·删除·播放整张·收藏都在每行的 `Enter` 菜单里）** / 操作（刷新 `R`）。**账号行 `Enter` = 账号操作菜单**（扫码登录 / 换号 / 退出 / 刷新 / 数据目录），`l`、`x`、`e`、`D` 四个散键已删 |
+| 用户主页（压栈） | `social.user` + `social.userPlaylists` / `following` / `followers` + `social.follow`/`unfollow`/`block` | 从搜索结果的用户行走「打开 TA 的主页」进来：昵称/抖音号/签名/统计（关注·粉丝·获赞·作品）+ TA 的公开歌单 / TA 关注的人 / TA 的粉丝（两个列表页复用通用列表）+ 关注·取消关注·拉黑（拉黑过确认框）。**关注态不猜**：`GetUserInfo` 不回「我关注了没有」，所以不写「已关注/未关注」，关注与取关各成一条；风控口径见下 |
+| 设置与缓存 `5` / `S` | `cacheStats` / `clearCache` / `media.verify` / `config`+`saveConfig` / `paths` / `CACHE_TIERS`·`KIND_SCOPE` | 存储位置、缓存统计、清理（过期元数据 / 元数据 / 媒体，各过确认框）、媒体校验、配置项开关、缓存分档表。侧栏第 5 项直接切页；`S` 压在当下页之上、`Esc` 退回原页 |
+| 列表（通用页） | `catalog.chart/playlist/album/albumTracks/artist*`、`library.likedTracks/recent`、`discover.playlistSquare/mix`、`library.mixedCollections/collectedArtists`、`social.userPlaylists`、`history.recent`、`search.search` | 所有「曲目/条目列表」共用一屏，见 `ui/useList.ts` 的 `ListSource`；**每行的动作全在 `Enter` 打开的「操作菜单」里**（条目按行类型自适应，构造在 `ui/rowActions.ts`），页面只留 `L`/`R`/`[ ]`。**听歌模式不在这张表里**——它一次只随机回一批，凑成列表是假象，走「听歌」页（`3`）|
+| 曲目详情（压栈） | `catalog.track` + `catalog.related` | 播放 / 我的喜欢 / 相似歌曲 / 评论 / 专辑 / 艺人——都是条目式菜单，无散键 |
+| 正在播放（覆盖层 `f`） | `player.*` + `media.lyrics` | `t` 切歌词/队列；逐字歌词高亮当前词（颜色区分、无背景块），试听片段按整曲时间轴对齐；一行常驻 `循环:` `随机:` `音量:` 词标签（播放条窄到装不下时，开关就只看这里） |
+| 评论（覆盖层） | `comments.list` / `comments.post` | `p` 发评论（需登录）；**`Enter` 看这条评论的作者主页**（进 `kind:'user'` 压栈页）；入口在曲目的「操作菜单」里 |
+| 加入歌单（覆盖层） | `library.playlists` → `library.addToPlaylist`；`N` 就地新建后顺手加入 | 入口在曲目的「操作菜单」里 |
+| 举报（覆盖层） | `feedback.reportReasons` → `feedback.report` | 理由列表来自接口，不写死枚举；入口在曲目的「操作菜单」里 |
+| 轻量弹层 | — | 确认框 / 单行输入（歌单改名）/ 新建歌单（名字 + `Tab` 切私密） |
+| 操作菜单（覆盖层 `Enter`） | `ui/rowActions.ts` | 一行的全部动作，**同步构造、不等任何请求**（收藏状态只白拿 core 的内存缓存，拿不到就不写状态，执行那一刻再真读）：曲目行 10 项（播放这首 / 下一首播放 / 加入队尾 / 我的喜欢 / 评论 / 详情 / 加入歌单 / 相似歌曲 / 不感兴趣 / 举报），在歌单页里再补 3 项（把这首移出 / 本歌单改名 / 删歌单）；歌单与专辑行「打开 + 播放整张 + 收藏」，自己的歌单另有改名/删除；艺人行「热门 / 全部歌曲 / 全部专辑 / 关注」；用户行「打开 TA 的歌单」；未登录的写类项照常列出但置灰，末尾补「去登录」 |
+| 帮助（覆盖层 `?`） | — | 全量键位；内容高于终端时 `↑↓` 滚动 |
+
+### 扫码登录的终端二维码
+
+`core.login()` 交出的是 `https://bff-pc.qishui.com/…` 扫码深链，`src/overlays/Login.tsx` 用 `qrcode-terminal` 把它画成终端二维码（**只能用「汽水音乐」App 扫**，抖音扫不出来），并每 2 秒轮询 `qr.status()` 显示「待扫码 / 已扫码待确认 / 已过期」。`status()` 观测到 confirmed 时 core 已经把会话入库并激活，弹层只管关掉自己 —— 登录态之后由 core 的 `account-changed` 事件驱动刷新（`src/core/context.tsx` 订阅它顶起 `sessionRevision`，各页面因此重读），不靠弹层自己记得重绘。
+
+识别快慢的两处处理：
+
+- **静区**：`qrcode-terminal` 贴着边画、一格白边都不给，App 要对焦很久才认得出（官方那张 PNG 是带 4 模块白边的）。这里画完自己补一圈 4 模块留白再上屏，终端太矮时退成不带留白的紧凑图。
+- **官方图片兜底**：core 把上游 `data.qrcode` 那张 PNG 落成临时文件（`login.qrImage`，0600），弹层在码下面一行显示「识别慢就扫官方二维码图片：<路径>」，点开就能拿手机扫它。
+
+版面按行数自适应：一行标题 + 二维码 + 一行深链 + 一行图片路径 + 一行键位（码本体 22 行 × 43 列，带静区 30 行）。
+
+- `≥34` 行：带 4 模块静区的**整图**（好识别，等价于 CLI `qishui login` 那张）；
+- `26~33` 行：不带静区的紧凑版（还是完整的一张码，只是识别会慢些）；
+- 再矮、或宽度不足 45 列：不装作画得下，改为「终端太矮/太窄 + 深链文本」，改窗口大小后按 `r` 重画；实在嫌慢就直接扫上面那行给出的官方 PNG。
+
+写操作口径沿用仓库约定：无会话只在本地拦下并提示怎么登录，不去撞上游的 `1000016`；「不可播 / 未验证」照实显示，不画结论。
+
+**出声**走外部播放器：core 的 `Player` 只维护状态机，`src/core/mpv.ts` 在 `source` 事件上把解析好的播放源喂给 **mpv 子进程**（JSON IPC 做暂停/seek/音量），进程退出时兜底 `SIGKILL` 收尾不留孤儿进程。切歌时 `start()` 会先**同步**收掉上一首再起新的（同一时刻只有一个 mpv 在响）。进度以实际音频为准：每 400ms 经 IPC 读 mpv 的 `time-pos`/`duration`，真实时长喂回 `player.setDuration()`、真实位置纠偏 core 时钟（试听片段常比元数据时长短得多）。换播放器：`QISHUI_PLAYER=ffplay`、无音频设备时 `QISHUI_MPV_ARGS=--ao=null`。
+
+**歌单写操作**统一收在 `src/ui/playlistActions.ts`（新建/改名/删除/移出曲目）：「我的」页与歌单列表页共用同一套流程——登录前置检查 → 弹层 → `core.library.*` → toast；改名会先读回歌单，把 `description`/`is_private` 一起带上，避免上游把没传的字段清空。
+
+## 结构
+
+| 文件 | 作用 |
+|---|---|
+| `src/cli.tsx` | 入口：TTY 先切**备用屏**再 `render(<App />)`，`await waitUntilExit()` 后还原 |
+| `src/App.tsx` | 壳：侧边栏 + 顶栏（面包屑/账号徽标）+ 内容 + 播放条 + 提示行；全局按键（`1–4`/`0`/`S`/`/`/`f`/`?`/`Tab`/`Esc`/`q` + 播放键）与弹层分发；扫码登录时整屏让给 `LoginOverlay` |
+| `src/core/context.tsx` | `CoreProvider`：惰性 `createQishui()`、订阅 `player` 事件、把播放源交给 mpv；另订阅 `account-changed` 顶起 `sessionRevision`（登录/切号/登出的刷新源头）；`QISHUI_TUI_STUB=1` 时不建 core |
+| `src/core/mpv.ts` | mpv 子进程 + JSON IPC（起播/暂停/seek/音量/收尾；`process.on('exit')` 兜底清子进程） |
+| `src/feedStream.ts` | **听歌模式的「批次流」**：按当前模式取一批（替换或追加）、剩余 ≤ `FEED_REFILL_AT` 首时异步续批；`pending` 互斥 + `generation` 作废在途结果，连续 `FEED_MAX_FAILURES` 次失败或空批就自动停（不留重试定时器）。只认依赖注入的 `fetch`/`replace`/`append`/`note`，可离线单测 |
+| `src/ui/context.tsx` | `UiProvider`：`screenStack`、焦点区（sidebar/content）、弹层、浮出提示、终端尺寸、`revision`/`bump()`（异步写入后强制全屏重读） |
+| `src/ui/useList.ts` | `ListSource` → 行 + 分页的唯一取数处；`useAsync` 是通用单次取数。**听歌模式不在 `ListSource` 里**——它一次只随机回一批，不是一屏可浏览的列表 |
+| `src/ui/entries.tsx` | 「分区条目」渲染（发现/听歌/我的/账号共用一套游标） |
+| `src/ui/mouse.tsx` | 鼠标层：`MouseProvider` 包树 + 开/关追踪；`hitTest`（半开区间 + 盒内行列）、`useWheelScroll`/`useRowClick`、`Pressable`、`isMouseInput`/`stripMouse` |
+| `src/ui/keys.ts` | **单键命令的统一入口 `useKeys`**：ink 的 `useInput` 把一次 read 的整串交给 handler，快按 `jj` 拿到的是 `'jj'`、`input === 'j'` 必然不中；这里把多字符可打印输入按字符拆开逐个派发，鼠标报文/ESC 序列/带修饰键的不拆。文本输入处（搜索框/评论/歌单名）仍用 `useInput`（它们本来就按字符收） |
+| `src/ui/rowActions.ts` | **一行的「能做什么」在这里一次说清**：按行类型产出操作菜单条目（含收藏状态快照、未登录置灰、末尾「去登录」）；各屏不再各自绑散键 |
+| `src/ui/playlistActions.ts` | 歌单写操作（新建/改名/删除/移出）的共用流程与登录前置检查 |
+| `src/ui/widgets.tsx` | 复用件：Loading/Empty/Error/PageTitle/Modal/`Row`（选中行就一种画法）/`useCursor`/`windowFor`（滚窗算法，列表与弹层同一套） |
+| `src/ui/theme.ts` | **一处口径**：颜色 token（`COLOR.accent/success/danger/warning`）、内外边距 `GUTTER`、符号词表（`SELECT_PREFIX`/`CURRENT_PREFIX`/`ERROR_PREFIX`）、空态固定文案 |
+| `src/ui/playMode.ts` | 播放状态/循环/随机/音量的中文标签（`播放` `循环:关` `随机:关` `音量:60`），播放条与「正在播放」共用 |
+| `src/ui/layout.ts` | 可视行数/内容宽度推导（`listHeight`/`contentWidth`），替掉各页手写的 `Math.max(rows - N)` |
+| `src/screens/*` | 各页；列表页只认 `ListSource`，不认具体内容类型；`Settings.tsx` 是缓存/配置维护页；`User.tsx` 是用户主页（条目构造是导出的纯函数 `buildUserSections`，可离线单测） |
+| `src/overlays/*` | 登录（全屏二维码）/ 正在播放 / 评论 / 加入歌单 / 输入 / 新建歌单 / 举报 / 确认 / 帮助 / **`ActionMenu.tsx`（行操作菜单）** |
+| `src/useFullscreenRows.ts` | 全屏高度归属：首帧行数进 JSX，之后 `prependListener` 抢在 ink 前写 yoga |
+
+## 界面口径（只用 ASCII + 汉字）
+
+界面不掺表情符号和装饰图形——`▶⏸ 🔊 ↻ ⇉ ♥ ★ ▍ ✕ ○● ⠋ ✓` 这类一律不用，改成中文词与 ASCII：**状态/模式是词**（`播放` `暂停` `载入` `循环:关` `随机:开` `音量:60` `静音`），**选中与当前行是 `>`**，**错误是 `x`**，**加载转圈是 `| / - \`**。
+
+理由不是审美：同一个码位在 emoji 呈现 / 中文字体下经常占 2 格，`displayWidth()` 估不准，播放条和列表的列就会跟着错位；纯字符与汉字怎么都只占 1 格（汉字固定 2 格）。唯一保留的图形是进度条的 `━●─`——它本身就是终端图形元素，而且每格只画它一个字符。
+
+- 词表集中在 `src/ui/theme.ts`（`SELECT_PREFIX`/`CURRENT_PREFIX`/`ERROR_PREFIX`/`NO_TRACK_TEXT`），标签集中在 `src/ui/playMode.ts`，颜色集中在 `COLOR`——加控件时从这三处取，别在页面里裸写 `'cyan'` 或某个符号。
+- 播放条因此改成**按宽度收起**：中文标签比图标宽，装不下就按优先级从尾巴往后丢（队列位置 → 随机 → 循环），时间与音量保底；被丢的开关在「正在播放」里常驻一行，功能不缩水。
+- PTY 单测的锚点跟着换了（`关键词 abc`、`>最近播放`），输入行的唯一标识是收起输入后的占位 `（按 / 继续输入）`——侧边栏和面包屑里都有「搜索」二字，不能拿它当行锚点。
+
+## 键位
+
+| 键 | 行为 |
+|---|---|
+| `1–5` | 搜索 / 发现 / 听歌 / 我的 / 设置 |
+| `0` / `S` | 「我的」（登录、切号） / 设置与缓存 |
+| `/` | 到搜索并直接输入 |
+| `Tab` / `Shift+Tab` | 焦点区：侧边栏 ↔ 内容 |
+| `Esc` | 关弹层 → 上一页 → 焦点回侧边栏（**输入态下先收起输入**） |
+| `f` / `?` / `q` | 正在播放 / 帮助 / 退出（Ctrl+C 随时退出） |
+| `↑↓ j k g G` | 列表移动 |
+| `Enter` | **打开这一行的「操作菜单」**（菜单里 `Enter` / 点击 = 执行该项；第一项就是播放，所以 `Enter Enter` 即出声） |
+| `N` | 新建歌单（「我的」页的页面级键；**改名 / 删歌单 / 播放整张 / 收藏都在每行的 `Enter` 菜单里**，`e`/`D` 已删） |
+| `Enter`（「我的」页） | 账号行 = **账号操作菜单**（扫码登录 / 换号 / 退出 / 刷新 / 数据目录）；歌单行 = 行操作菜单（`l`/`x` 两个散键已删） |
+| `Enter`（用户主页） | 条目式：TA 的公开歌单 / 关注 / 粉丝 / 关注 / 取消关注 / 拉黑 |
+| `[` `]` | 歌单广场切分类 |
+| `L` `R` | 加载更多 / 重新加载 |
+| `Space` `n` `p` `s` `r` `<` `>` `+` `-` | 播放暂停 / 上下首 / 随机 / 循环 / 快退快进 / 音量 |
+| 滚轮 / 左键 | 见下面「鼠标」 |
+
+> 输入态（搜索、写评论、歌单名/改名）里单键**让位给文字**：`q` 只是打字，退出要 `Esc` 后按 `q` 或 Ctrl+C。
+>
+> ink 的 `useInput` 把每次按键**发给所有活跃 handler**（没有「消费」语义），所以同一个键不能两处都用：「我的」（原账号页）只留 `0`（`L` 让给列表的「加载更多」），新建歌单用 `N`（`n` 是全局下一首）。加键前先看 `App.tsx` 的全局键表。**行操作因此不再各占一个散键**——全部收进 `Enter` 打开的操作菜单，一个键管五种行类型，键位表从十来行缩成一行。
+>
+> 命令类按键一律走 `ui/keys.ts` 的 `useKeys`（= ink 的 `useInput` + **多字符输入按字符拆开派发**）：ink 把一次 read 的整串交给 handler，人快手连按 `jj`、或粘贴一段文字时拿到的是 `'jj'`/`'晴天'`，而命令 handler 比的都是 `input === 'j'`——不拆就是「按了两下、列表没动」。文本输入处（搜索框、评论、歌单名）仍用 `useInput`，它们本来就按字符收下。
+
+## 鼠标
+
+报文解析交给 `@ink-tools/ink-mouse`（底层 `xterm-mouse`，SGR 编码、坐标 **1 基**），`src/ui/mouse.tsx` 只做三件薄事：把事件换算成**盒内 0 基行列**、把库的**闭区间**命中收成**半开区间**、`Pressable` 省掉每处手写 `useRef`。
+
+能点的：侧边栏导航、通用列表/分区条目的每一行（**单击直达**：列表页点一行 = 直接开这一行的操作菜单，弹层/条目页点一条 = 跑它的 `Enter`。开菜单与开弹层都不写任何东西，写操作还得在里面再选一次，删歌单另过确认框；滚轮只挪游标）、操作菜单/加入歌单/举报/评论的列表行、播放条的每个控件（播放/暂停、进度条、`循环:` `随机:` `音量:` 三个词标签，曲名与队列计数进「正在播放」）、正在播放的进度条/歌词行/队列行/`[歌词]` `[队列]` tab/「艺人 · 专辑」行、顶栏面包屑与账号徽标、搜索的分类 tab、输入行与联想词行、歌单广场的分类 tab 与「加载更多」、确认框的 `[确认]` `[取消]`、新建歌单的私密勾选、评论的选块与「写评论」、帮助正文行、登录页的「重新获取 / 取消」。落在内容区的一次点击/滚动还会顺手把焦点交给内容（等价 `Tab`）。
+
+**点击穿透这一道闸**：弹层正画在指针下方，双击的第二下（`SectionView` 挂载后 350ms 内的点击）只挪游标、不执行条目——否则「点一行开菜单」顺带就把菜单第一项跑了。键盘 `Enter Enter` 不受这道闸影响（那才是主路径）。
+
+三条口径：
+
+- **接缝归属**：库判定命中用 `left..right` 闭区间，而 `right = left + width`——宽 16 的侧边栏会盖到第 17 列，而第 17 列正是内容区第一列，一次点击两个 handler 都跑。`hitTest()` 收成 `[left, right)` / `[top, bottom)`，接缝列只给真正的持有者（单测里那条「点第 17 列不切页」就是守这个的）。同理，**同类型的 handler 不要挂在父子两个盒子上**：库会把一份报文发给每个命中的 handler，父子都注册就双跑；现在的接法是「一个盒子管一段行」，按钮之间都是兄弟盒。
+- **只开按键/滚轮上报**（`?1000` + SGR `?1006`），`?1002`（拖动）/`?1003`（移动）是 `xterm-mouse` 顺手打开的，`MouseSetup` 紧接着关掉它们：那样鼠标每动一下都往 stdin 灌一条报文、ink 每个 handler 白跑一遍。代价是**终端原生的拖选复制被接管**——要复制请按住 `Shift` 拖选，或者干脆 `QISHUI_TUI_MOUSE=0` 启动（彻底不接管鼠标）。退出（含被强杀，走 `process.on('exit')` 兜底）会把四个模式一并关掉，不留鼠标模式。
+- **鼠标报文也是「输入」**：ink 的 `useInput` 没有「消费」语义，原始报文会同时进按键 handler，所以文输入处过 `stripMouse()`、单键快捷键处过 `isMouseInput()`，否则滚一下轮就往搜索框里塞 `[<64;10;5M`。
+
+不做悬停高亮（要重开 `?1003`）、不做按住拖动 scrub（要 `?1002` + 防抖）；进度条是**点击定位 + 滚轮 ±5 秒**，音量键滚轮 ±5%。`MouseProvider` 的 `cacheInvalidationMs` 设为 `0`：默认 16ms 的盒子尺寸缓存，在「刚点完 → 重排 → 再点」时会拿陈旧矩形判命中。
+
+## 骨架模式（`QISHUI_TUI_STUB=1`）
+
+不创建 core、不连网、不读账号，只画外壳（顶栏标「骨架模式」）。用途有两个：单测做到**完全不碰上游**；改版面时不必等设备身份注册/账号解析。此时各页停在「加载中」是预期行为。
+
+## 尺寸 / 备用屏 / 非 TTY
+
+- **备用屏**：满屏帧必然走 ink 的 `clearTerminal`（`ESC[2J ESC[3J ESC[H`，带清回滚），留在主屏会把用户自己的滚动历史一起抹掉，所以 TTY 里先 `?1049h`、退出 `?1049l`。
+- **resize**：ink 的 `resized()` 只重算 yoga 布局 + 重绘、**不重渲染 React 树**，尺寸全写在 JSX 里会停在旧值。宽度交给 `width="100%"`（ink 自己算对），高度由 `useFullscreenRows()` 用 `prependListener` 抢在 ink 之前写进 yoga 节点——一次 resize 只画一帧（实测 `ESC[2J` 次数减半）。
+- **窄终端**：`≥72` 列两栏；`48–71` 列侧边栏收成 4 列图标栏；`<48` 列侧边栏隐藏，`Tab` 焦点回导航时以浮层形式弹出（`src/ui/context.tsx` 的 `sidebarWidthFor`）。
+- **非 TTY**（管道/CI）：stdin 开不了 raw mode，`useInput` 关活、不切屏、`stdout.rows` 拿不到就让帧按内容收缩，只打一句「非交互终端」后退出 0。
+
+## 测试
+
+`test/rowActions.test.ts` 十三条 vitest 是**「散键收进菜单」的主验证面**：注入假 core（记录被调用的方法）与假 `UiValue`（记录开了哪些弹层），断言五种行类型各得到预期的条目与顺序、未登录时写类项 `disabled` 且末尾补「去登录」、「我的喜欢」在 `isLiked` 回 true/false/抛错 三种情况下 note 分别是 已喜欢/未喜欢/状态未知、「我的歌单」用 `owned` 确证归属后没有 `owner.id` 也给改名/删除（「我喜欢的音乐」不给）、以及「执行只走该走的那一条路」（播放只出声不写库、删歌单必须先过确认框）。全程离线、不起 PTY。
+
+`test/user.test.ts` 三条 + `test/keys.test.ts` 四条：用户主页的条目构造（`buildUserSections` 纯函数）——读类项走路由、写类项走 `core.social`、**关注态一律不写「已关注/未关注」**（上游不回这条水印）、拉黑先过确认框、未登录时写类项置灰并补「去登录」；`useKeys` 的拆键判定——多字符可打印输入按字符拆，鼠标报文/ESC 序列/带修饰键的不拆。
+
+`test/tui.test.ts` 十九条 vitest：非 TTY 一帧退出；PTY（`script(1)`，缺则跳过）验侧边栏/播放条/提示行与 `q` 退出、数字键切页 + Esc 回焦点、搜索页打字吃满多字符 read、设置页分区、帮助里查得到菜单项（不感兴趣/举报/删歌单）、骨架下无行时连按 `Enter` 不崩且已删的散键不在提示里、我的页（账号+收藏合并页）入口齐全且不混设置/广场、我的页账号行 `Enter` 开「账号操作」菜单、开合弹层不重刷背景页（底层页面常驻，`jj` 一次灌进一个 chunk 顺带验拆键）、resize 后画面收敛到新行数；鼠标那几条往 PTY 里注入 SGR 报文（点击 = 同一格的按下 + 抬起，滚轮每次单独 `printf`，坐标从上一帧的文本反查），验模式开关、`QISHUI_TUI_MOUSE=0`、点侧边栏切页 + 接缝列不双触发、分区条目页单击直达（点「我的」的「我喜欢的音乐」进列表页）、滚轮挪游标后 Enter、点面包屑回跳、点搜索 tab 与输入行。**全部走 `QISHUI_TUI_STUB=1`，离线、不注入真实账号**。改完 `src` 先 `pnpm run tui:build` 再跑。
+
+> 骨架模式下 core 是 `undefined`，所以「登录 / 歌单写操作 / 缓存清理」在单测里只验**界面与本地拦截**（例如 `N` 会提示「core 还没就绪」），不验写入结果——真写入要会话，按仓库约定不跑。
+
+## 未做
+
+- 右键弹菜单（`?1000` 下 SGR 的中键/右键报得回来，但和「拖选复制」抢手势，得先想清楚）。
+- 行内「已喜欢」标记**只在实体自带水印时**才画（登录态的搜索/榜单/推流会带 `state.is_collected`）；「我的喜欢」「最近播放」这类**上游不带水印**的来源仍是空白列——要补就得整页批量查收藏状态（`isLiked` 是「翻完整张我喜欢的音乐」）。
+- 搜索「查看全部」进去仍是上游**单页**（实测每类 20 行，分组 `has_more` 回 `false`）：`next_cursor` 没接进 `ListSource` 的 search 分页，所以页脚显示「共 20 项」而不是无限下滚。
+- 听歌页已经做成「模式单选台」（`(x)` 标本机当前、`（上游当前）` 标上游栏里那一条，场景进弹层），剩下的细化是：模式列表还没有「这一档最近取过什么」的回溯，也不给每档单独记忆队列。
+- 榜单不再有独立页，只在「发现」的首页块里摊平。
+- 账号头像/封面上色（终端里只出文字）。
+- 分享链接（`qishui link` 那条路，core 的 `link.resolve`）还没接进 TUI：现在只能搜关键词，粘一条分享链接会当关键词搜。
