@@ -10,6 +10,7 @@ import { useKeys } from '../ui/keys.js'
 import { listHeight } from '../ui/layout.js'
 import { Pressable, stripMouse } from '../ui/mouse.js'
 import { buildRowActions } from '../ui/rowActions.js'
+import { looksLikeShareInput, type ShareRef, shareTarget } from '../ui/shareLink.js'
 import { COLOR, GUTTER } from '../ui/theme.js'
 import type { Route } from '../ui/types.js'
 import { useAsync } from '../ui/useAsync.js'
@@ -136,6 +137,50 @@ export function SearchScreen({ active }: { active: boolean }) {
     setQuery(text)
   }
 
+  /** 分享链接解析中（短链要跟一次重定向，慢一点；期间别让输入框看起来没反应） */
+  const [linkBusy, setLinkBusy] = useState(false)
+
+  /** 粘进来的是分享物就直接开对应页；返回 true 表示「这不是关键词，别搜了」 */
+  const openShare = useCallback(
+    (item: ShareRef): void => {
+      const target = shareTarget(item)
+      if ('note' in target) {
+        ui.toast(target.note, 'info')
+        return
+      }
+      setSubmitted('')
+      setEditing(false)
+      ui.setFocus('content')
+      ui.push(target.route)
+    },
+    [ui],
+  )
+
+  /** Enter 时先看是不是分享链接/裸 ID：能解析就开页面，解析不出再当关键词搜（不拦着正常搜索） */
+  const tryOpenShare = useCallback(
+    (text: string): boolean => {
+      if (!core || !looksLikeShareInput(text)) return false
+      const direct = core.link.parse(text)
+      if (direct) {
+        openShare(direct)
+        return true
+      }
+      // 短链（qishui.douyin.com/s/xxxx）解析不出 ID：跟一次重定向，失败就退回关键词搜索
+      setLinkBusy(true)
+      core.link
+        .resolve(text)
+        .then((item) => openShare(item))
+        .catch(() => {
+          ui.toast('这条链接没解析出条目，按关键词搜一下', 'info')
+          setSubmitted(text)
+          setEditing(false)
+        })
+        .finally(() => setLinkBusy(false))
+      return true
+    },
+    [core, openShare, ui],
+  )
+
   useInput(
     (input, key) => {
       if (key.upArrow || key.downArrow) {
@@ -155,8 +200,9 @@ export function SearchScreen({ active }: { active: boolean }) {
           pickSug(picked.keyword)
           return
         }
-        if (query.trim()) {
-          setSubmitted(query.trim())
+        const text = query.trim()
+        if (text && !tryOpenShare(text)) {
+          setSubmitted(text)
           setEditing(false)
           setNavSug(false)
         }
@@ -333,6 +379,7 @@ export function SearchScreen({ active }: { active: boolean }) {
         <Text dimColor> ←→ 切分类</Text>
       </Box>
       <Box marginTop={1} />
+      {linkBusy ? <Loading label="解析分享链接" /> : null}
       {result.status === 'loading' && submitted ? <Loading label="搜索中" /> : null}
       {result.status === 'error' ? <ErrorState error={result.error ?? '搜索失败'} hint="R 重试" /> : null}
       {sections.length === 0 && submitted && result.status === 'ready' ? (
@@ -344,7 +391,7 @@ export function SearchScreen({ active }: { active: boolean }) {
       <Box paddingX={GUTTER}>
         <Text dimColor wrap="truncate-end">
           {editing
-            ? 'Enter 搜索   ↑↓ 选联想词   Esc 收起输入   Ctrl+C 退出'
+            ? 'Enter 搜索（粘分享链接/裸 ID 直接打开）   ↑↓ 选联想词   Esc 收起输入   Ctrl+C 退出'
             : submitted
               ? truncate(`结果：${submitted}   Enter 操作菜单   / 改关键词   ←→ 切分类`, 72)
               : '按 / 或 Enter 输入关键词'}

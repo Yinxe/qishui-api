@@ -171,7 +171,17 @@ export async function fetchPage(core: QishuiCore, source: ListSource, cursor: st
     case 'liked': {
       if (index > 0) return { rows: [], hasMore: false }
       const tracks = await core.library.likedTracks()
-      return { title: '我喜欢的音乐', subtitle: `${tracks.length} 首`, rows: tracks.map(trackRow), hasMore: false }
+      // 这张表里的每一首**本来就都在「我喜欢」里**：不用问上游，直接盖水印，
+      // 行内「已喜欢」标记对「我喜欢的音乐」这一页也成立（以前这列是空的）
+      return {
+        title: '我喜欢的音乐',
+        subtitle: `${tracks.length} 首`,
+        rows: tracks.map((track) => {
+          track.data.state = { isCollected: true }
+          return trackRow(track)
+        }),
+        hasMore: false,
+      }
     }
     case 'recent': {
       // 登录后优先用上游的最近播放（跨设备、有分页）；云端**回空也算通**，接着往下走本地历史，

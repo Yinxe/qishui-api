@@ -126,4 +126,16 @@ describe('fetchPage：翻页游标', () => {
     expect(artistTracks.mock.calls[0][0]).toBe('a1')
     expect(artistTracks.mock.calls[0][1]).toEqual({ cursor: 0, count: 50 })
   })
+
+  it('我喜欢的音乐：这一页每一首直接标「已喜欢」，不用再问上游', async () => {
+    const likedTracks = vi.fn().mockResolvedValue([track('1'), track('2')])
+    const core = { library: { likedTracks } } as unknown as QishuiCore
+    const page = await fetchPage(core, { kind: 'liked' } as const, 0)
+    expect(page.hasMore).toBe(false)
+    expect(page.rows).toHaveLength(2)
+    for (const row of page.rows) {
+      expect(row.kind).toBe('track')
+      if (row.kind === 'track') expect(row.track.data.state?.isCollected).toBe(true)
+    }
+  })
 })
