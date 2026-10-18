@@ -147,12 +147,34 @@ blocks[1] type=discover_top_song_list
 |---|---|---|---|
 | `DiscoverMix` | ✅ | `inner_block[8~10]` | 按 `{block_type, sub_channel_id}` 下钻某个块（块名就是 `discover_feed_playlist` / `discover_playlist` 这类），换页/展开「更多」用 |
 | `FeedMode` | ✅ | `feed_mode_block[1]` + `feed_mode_bar` | 45 个场景音乐（`feed_scene_mode{scene_mode_id, sub_queue_type}`，标题如「图书馆/专注模式/摸鱼」）；偏好栏**只回当前选中的那一个**（实测只回 `default`=推荐），`familiar`/`fresh` 两个取值来自 IDL 常量（`PreferenceModeFamiliar`/`PreferenceModeFresh`），不是响应里枚举出来的 |
-| `FeedSongTab` | ✅ | `items[6]` | 单曲推荐流，`entity.track_wrapper.track` + `predict_info.model_preds`（打分，做排序/过滤可用）。`preference_mode` 实测对**任意值**都回 6 首（随机流，不能当验证），有效取值靠 IDL 常量。2026-10-17 补测：App 口径全量 body（`feed_mode:'track'`/`count`/会话计数/`played_tracks`〔字段名按 `MediaPlayed` 同构推，IDL 里 `TrackPlayed` 是 opaque〕）上游全收，`count=3` 就回 3 首；但「熟悉/新鲜是否改变出歌分布」仍未验证。core 现按此口径发，`played_tracks` 默认**不带**（只本地记历史、播放时长未向上游上报，主动带会暴露「只播不报」） |
+| `FeedSongTab` | ✅ | `items[6]` | 单曲推荐流，`entity.track_wrapper.track` + `predict_info.model_preds`（打分，做排序/过滤可用）。`preference_mode` 实测对**任意值**都回 6 首（随机流，不能当验证），有效取值靠 IDL 常量。2026-10-17 补测：App 口径全量 body（`feed_mode:'track'`/`count`/会话计数/`played_media`）上游全收，`count=3` 就回 3 首；但「熟悉/新鲜是否改变出歌分布」仍未验证。**2026-10-19 反编译校正**：官方 App 发的是 `played_media`（`MediaPlayed[]`，不是 `played_tracks`）+ `is_did_first_request`/`did_first_use_time`/`feed_counts.mix_session_count`（见 §3.2 末尾「推荐请求的种子口径」）。core 已按此口径发，种子默认带 |
 | `FeedPlaylistSquare` | ✅ | `items[14~17]` + `categories` | 歌单广场；`items[].entity.playlist` |
-| `FeedRadioTracks` | ✅ | `items[6]` | **电台队列**续播：`radio_id` 是首页 `discover_radio` 块的 `inner_block_id`（雪花大数，与 `resources[].resource_id`/link 里的 `queue_id` 同值）。2026-10-18 修正旧结论：`radio_id` **不是**场景选择器 —— 喂场景的 `scene_mode_id`（短数字 `30`/`8`）不报错、但回的是通用推荐池（选「日语」推中文歌），连不存在的 `999999999999` 也照回 6 首；队列雪花 id 至少被接受（内容与队列主题的相关性仍未验证，实测混着通用池）。场景见下一行 |
+| `FeedRadioTracks` | ✅ | `items[6]` | **电台队列**续播：`radio_id` 是首页 `discover_radio` 块的 `inner_block_id`（雪花大数，与 `resources[].resource_id`/link 里的 `queue_id` 同值）。2026-10-18 修正旧结论：`radio_id` **不是**场景选择器 —— 喂场景的 `scene_mode_id`（短数字 `30`/`8`）不报错、但回的是通用推荐池（选「日语」推中文歌），连不存在的 `999999999999` 也照回 6 首；队列雪花 id 至少被接受（内容与队列主题的相关性仍未验证，实测混着通用池）。场景见下一行。**App 口径**（反编译 `RadioQueueItem`）：`radio_id` + `cursor` + `flow_type`（默认 2）+ `trigger_info`，后两个是从队列资源 `style.link` 的查询串里取的（`?flow_type=…&trigger_info=…`） |
 | `FeedSongTab` + 场景 | ✅ | `items[6~12]` | **场景档的正确口径**：body 里带扁平 `feed_preference: { scene_mode_id: 30 }`（套一层 `{scene_mode:{scene_mode_id}}` 不生效，回通用池）。2026-10-18 实测：`30`=日语回 12 首里 9 首日文（中島美嘉/米津玄師/まふまふ…）、`10`=粤语回富士山下/处处吻/情人、`32`=古典回 Mozart/巴赫、`22`=K-pop 回 aespa/MOMOLAND；`count=12` 就回 12 首 |
 | `GetChartDetail` | ✅ | `chart{…}`（~150KB） | 整榜明细：`chart_id` 取榜单块的 `inner_block_id` → `chart{title,count_tracks,period,release_time,track_ranks[{rank,track}],style{desc,bg_url…}}`。**不是** `hot_song_chart` 这种常量名（那样回 `1000004`） |
 | `GetFeaturedContents` | ✅ | `ok_thin`（空） | 精选推荐位，实测无数据，别指望 |
+
+**推荐请求的种子口径（2026-10-19 反编译 `reaSodaMusic` 得到，与实测结论互补）**
+
+官方 App 只有一个「播放过的媒体」种子实现 `getMediaPlayed()`
+（`recovered/src/services/queue/queueItemUnlimited.ts`），三处共用：`FeedSongTab`（推荐流）、
+`FeedSongTab`（听歌模式/场景档）、`GetRelatedMedia`（相似 / 搜索推荐）：
+
+| 段 | 内容 | 字段 |
+|---|---|---|
+| 1 | 待播队列：当前曲目之后、按播放顺序**逆序** | `{type, media_id, duration, played_mills: -1}`（`-1` = 还没播） |
+| 2 | 播放记录：最近的在前 | `{type, media_id, duration, played_mills}`（`duration` 是**秒**，`played_mills` 是已听毫秒） |
+| 3 | 两段拼起来**截断到 30 条**（`MAX_COUNT`） | —— |
+
+- `GetRelatedMedia` 的**种子音乐只有 1 首**：`media_list: [{id, type:'track'}]`（当前曲目），不是多首；
+  多曲目种子的 `GetRelatedTracks {track_ids[]}` 在 App 里**只有 IDL 声明、零调用点**。
+- `FeedSongTab` 每次推荐都带 `played_media`（≤30 条）+ `is_did_first_request`/`did_first_use_time`（设备首刷，落本地 storage）+
+  `feed_counts: {mix_session_count}`；偏好档/场景档都走 `feed_preference`（`{preference_mode}` / `{scene_mode_id}`，扁平，不套壳）；
+  `FeedRadioTracks` 带 `radio_id`/`cursor`/`flow_type`/`trigger_info`。
+- **上游对种子条数没有文档化上限**：IDL 里 `media_list?: media.Media[]`、`track_ids?: string[]` 都不带约束，
+  我们也没实测过 >1 个种子 —— 「最多几个」属于**未验证**，别把 App 的 1 首当上游上限。
+- core 的实现（`buildPlayedMedia()`）按同一顺序做，但把「播放记录」换成**云端 `GetRecentPlayedTracks` + 本地 journal 混合**：
+  云端（账号级、跨设备，登录态才有）在前，本地历史里云端没有的按时间补在后，去重后同样 ≤30 条。
 
 ### 3.3 搜索
 
@@ -171,6 +193,7 @@ blocks[1] type=discover_top_song_list
 > **`search_type=user` 与 `display_type` 是两回事**（都实测过，别混）：
 >  - 用户搜索匿名与带会话都拿不到：`/luna/search/user` 回 `200` 但 **body 里没有 `result_groups`**（175 字节，只有 `status_info`/`extra`），试过改 `search_method`（track/user/search/空）、`search_scene=user`、`scene_name=search_page` 都一样；`all` 的结果分组里也没有 `users` 分组。属**未验证 / 上游不返回**（PC 客户端那个「用户」tab 走哪条路尚未找到，不拿旧 h5 接口凑）。`artist`/`album`/`playlist` 匿名正常，实体在 `items[].entity.<kind>`。
 >  - **`result_groups[].display_type` 不能当 `search_type` 用**：`all` 搜「周杰伦」四个分组（歌单/音乐人/歌曲/专辑）+ 聚合组的 `display_type` **全回空串**，拿它拼路径就是 `/luna/search/` → **HTTP 404**；`<未知 type>` 一律 404。分组的判别看 **`group.id`**（实测 `top_results` / `playlists` / `artists` / `tracks` / `albums`），「这一组要不要给『查看全部』」看 **`display_view_all`**（实测 `top_results` = `false`，其余四组 = `true`）；`has_more` 在这些预览组上都是 `false`，分页另有 `next_cursor`。core 的 `SearchGroup` 已把这两项派生成 `searchType` / `viewAll`。
+>  - **翻页只在「按类型搜」时成立**（2026-10-18 复测）：`search_type=track` 回 20 条、`has_more=true`、`next_cursor="20"`，拿它再打一次回**另外 20 条**（与首页零重复）、游标继续 `"40"`；`search_type=album/artist/playlist` 同理。而 `search_type=all` 的那几个分组是**预览**（歌曲 6 / 歌单 3 / 专辑 3 / 音乐人 3，`has_more=false`、`next_cursor=""`）——所以「查看全部」必须拿 `searchType` 再搜一次，不能在 `all` 的预览组上翻页（那里没得翻）。
 
 ### 3.4 曲目 / 专辑 / 艺人
 
@@ -178,9 +201,24 @@ blocks[1] type=discover_top_song_list
 |---|---|---|---|
 | `GetAlbumDetail` | ✅ | `album_info{13}` + `tracks[11]` | `album_info`: `name`/`artists`/`count_tracks`/`release_date`/`url_cover`/`url_player_bg`/`stats{count_collected,count_shared,total_count_purchased}`/`pclines`（版权行）；`tracks[]` 是完整 track |
 | `GetArtistDetail` | ✅ | `artist_info{12}` + `hot_tracks[5]` + `hot_albums[10]` | `artist_info`: `name`/`count_albums`/`count_tracks`/`url_avatar`/`artist_profile`/`user`/`user_artist_type`；艺人页一个请求就能铺满 |
-| `ListArtistAlbums` | ✅ | `albums[27]` | 分页（`next_cursor`/`has_more`） |
-| `ListArtistTracks` | ✅ | `tracks[50]` | 分页，返回完整 track |
-| `GetRelatedMedia` | ✅ | `items[6]` | 相似歌曲，`entity.track_wrapper.track`，播放页「相似」用它 |
+| `ListArtistAlbums` | ✅ | `albums[32]` | **一次回全量**（林俊杰 32 张 = 搜索页报的专辑数）：`count` 传 `'50'` 也只回 32 条、`has_more` 缺省、`next_cursor="145"` 再打回 0 条 —— 别按 `next_cursor` 翻（翻不动），`has_more` 缺失就当只有一页 |
+| `ListArtistTracks` | ✅ | `tracks[50]` | 分页，返回完整 track。2026-10-18 实测：`cursor='0'` → 50 条 + `has_more=true` + `next_cursor='50'`，拿它再打 → **另外 50 条、零重复**、游标继续 `'100'` ⇒ `cursor` 是偏移量字符串，**回传 `next_cursor` 就行，别自己页号 +1**（`count=50` 时页序 1 会被当偏移 1，第二页整页重复） |
+| `GetRelatedMedia` | ✅ | `items[6]` | 相似歌曲，`entity.track_wrapper.track`，播放页「相似」用它。**官方 App 口径**（反编译 `RelatedQueueItem`）：种子是 `media_list` 里的**1 首**（`{id, type:'track'}`，就是当前曲目），另带该曲全部 `artist_ids`、`scene_name:'search'`、`played_media`（≤30 条），**不传** `req_count`/`full_media`（用上游默认 6）。本项目 core 额外带 `full_media`/`req_count`（要完整实体、条数由调用方定），种子口径与 App 一致 |
+
+**列表分页的口径（2026-10-18 实测，别再按「页序 +1」传）**
+
+| 端点 | 游标形态 | 翻页 |
+|---|---|---|
+| `GetPlaylistDetail` | 偏移量（数字，`count` 生效） | 回传 `next_cursor` |
+| `ListArtistTracks` | 偏移量（字符串，50 条/页） | 回传 `next_cursor` |
+| `ListArtistAlbums` | 一次全量（`next_cursor` 打不动） | 只一页 |
+| `ListComments` | 偏移量（`cursor` 就是下一个偏移） | 回传 `cursor`/`next_cursor` |
+| `ListReplies` | 偏移量（实测 `cursor 0/10` 两页零重复） | 回传 `cursor` |
+| `GetUserPlaylists` | 偏移量（实测 7 条 → `next_cursor='10'` → 另外 10 条零重复） | 回传 `next_cursor` |
+| `GetRecentPlayedTracks` | 偏移量字符串（首页 `'0'`） | 回传 `next_cursor` |
+| `Search`（**按类型**） | 偏移量字符串（20 条/页） | 回传 `next_cursor`；`all` 的预览组没有游标 |
+
+判据是「拿上游给的游标再打一次，两页 id 零重复」（`test/probe-list-cursor.ts` / `test/probe-search-cursor.ts` / `test/probe-playlist-paging.ts` / `test/probe-replies-paging.ts`），不是「能回一页」——推荐/搜索本来就会回东西。
 
 **track 实体长这样**（约 30 个字段，实测键名）：`id` / `name` / `duration`(ms) / `vid` /
 `album{id,name,release_date,url_cover,…}` / `artists[{id,name,url_avatar,user_info,…}]` /
@@ -214,7 +252,7 @@ blocks[1] type=discover_top_song_list
 
 | 端点 | 匿名 | 实测 | 能力 |
 |---|---|---|---|
-| `GetPlaylistDetail` | ✅ | `playlist{19}` + `media_resources[13]` | 别人分享/公开的歌单可匿名读。`playlist.title`（**不是 `name`**）/`count_tracks`/`desc`/`url_cover`/`stats`；曲目在 `media_resources[].entity.track_wrapper.track` |
+| `GetPlaylistDetail` | ✅ | `playlist{19}` + `media_resources[13]` | 别人分享/公开的歌单可匿名读。`playlist.title`（**不是 `name`**）/`count_tracks`/`desc`/`url_cover`/`stats`；曲目在 `media_resources[].entity.track_wrapper.track`。**分页**：`cursor` 是偏移量（实测 206 首歌单 `cursor 0/5/10` 三段零重复、`next_cursor` 就是下一个偏移），`count` 生效且能开到 200；**返回条数可能少于 `count`**（`count=50` → 43 条、`count=200` → 179 条，不可播/非 track 的条目被上游滤掉），而 `next_cursor` 按**请求的 count** 前进（`50`/`200`）——所以翻页一律回传 `next_cursor`，**别拿返回条数自己累加偏移**（会重复） |
 | `GetUserPlaylists` | ✅ | `playlists[1]` + `total_num` | 某用户的公开歌单 |
 | `GetUserMixedCollections` | ✅ | `ok_thin`（该用户没收藏歌单/专辑） | 只装「收藏的歌单/专辑」，**不含收藏的曲目** |
 | `GetMyPlaylists` | 登录 | ✅ `playlists[2]` + `total_num` | 我的歌单（已验）。含「我喜欢的音乐」`type=1`、「抖音收藏的音乐」`type=4` —— 取收藏曲目的**唯一入口**；`playlists[]` 带 `title`/`count_tracks`/`url_cover`/`stats`/`type`/`from_feed`/`owner`/`all_sort_types` |
@@ -242,7 +280,7 @@ blocks[1] type=discover_top_song_list
 
 | 端点 | 匿名 | 实测 | 能力与关键字段 |
 |---|---|---|---|
-| `ListComments` | ✅ | `comments[19]` + `count`/`cursor`/`has_more`/`prompts[1]` | 评论列表。`{id, content, count_digged, time_created, count_reply, user{id,nickname,medium_avatar_url,vip_stage,is_vip,public_name}, ip_label, service_id}`；`prompts` = 输入框占位文案 |
+| `ListComments` | ✅ | `comments[19]` + `count`/`cursor`/`has_more`/`prompts[1]` | 评论列表（`cursor` 是偏移量：实测 `cursor='0'` → `next_cursor='10'`，`'10'` → 另外 10 条零重复）。`{id, content, count_digged, time_created, count_reply, user{id,nickname,medium_avatar_url,vip_stage,is_vip,public_name}, ip_label, service_id}`；`prompts` = 输入框占位文案 |
 | `ListReplies` | ✅ | `reply_infos[20]` | 评论回复分页 |
 | `CreateComment` / `DeleteComment` / `CommentAction` | 登录 | ✅ 实测通过（有前提） | **`group_type` 必须 `0`(Track)**（用 1 回 `status_code=5`）；**曲目评论区关着会回 `3056`**，换一首能发的就行（实测在别的曲目上发成功并已删除）。回 `created_comment`/`comment_token`；`DeleteComment{comment_id}` 删自己的那条 |
 
