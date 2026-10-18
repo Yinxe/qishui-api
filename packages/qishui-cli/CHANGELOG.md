@@ -6,6 +6,7 @@
 
 ### Added
 
+- **`qishui comments --pages <n>` 能翻页了，新增 `qishui replies <commentId> --track <trackId>`**：`ListComments` / `ListReplies` 的 `cursor` 都是偏移量（实测 `count=5` → `next_cursor='5'`、`count=10` → `'10'`，两页零重复），翻页统一走 `collectPages()` 回传上游游标（不按页号/条数自己累加）。`replies` 要 `--track` 是因为 `ListReplies` 的 `group_id` 是曲目 id
 - **`qishui search --pages <n>`：搜索能翻页了**。上游口径（2026-10-18 实测）：按类型搜（`--type track/album/artist/playlist`）20 条/页、`has_more=true`、`next_cursor` 是偏移量字符串（`"20"`→`"40"`，第二页零重复）；`--type all` 的分组是**预览**（6/3/3/3 条，没有游标）→ 配 `--pages` 会直接报错并指路。默认仍 1 页；单页时末尾会提示「还有下一页：--pages N」+ 上游游标
 - **推荐请求的种子按 App 口径带上**：`qishui feed` 默认带 `played_media`（待播队列 + 云端 `GetRecentPlayedTracks` + 本地历史，去重后 ≤30 条，core 的 `buildPlayedMedia()`），`--played` 换成 `--no-played`（默认开、要关才传）；`qishui radio` 补 `--flow-type`（默认 2）/`--trigger-info`，与 App 的 `FeedRadioTracks` 请求字段一致
 - **`qishui play scene:<id>`**：场景也能直接当播放目标（`scene:30` = 日语场景的一批）；`radio:<id>` 仍是电台队列，两个前缀各走各的路（场景短数字喂 `radio:` 会被上游忽略、回通用池）

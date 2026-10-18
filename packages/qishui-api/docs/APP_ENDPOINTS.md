@@ -212,7 +212,7 @@ blocks[1] type=discover_top_song_list
 | `GetPlaylistDetail` | 偏移量（数字，`count` 生效） | 回传 `next_cursor` |
 | `ListArtistTracks` | 偏移量（字符串，50 条/页） | 回传 `next_cursor` |
 | `ListArtistAlbums` | 一次全量（`next_cursor` 打不动） | 只一页 |
-| `ListComments` | 偏移量（`cursor` 就是下一个偏移） | 回传 `cursor`/`next_cursor` |
+| `ListComments` | 偏移量（`cursor` 就是下一个偏移，按**请求的 count** 前进：`count=5` → `next_cursor='5'`、`count=10` → `'10'`，两页零重复） | 回传 `cursor`/`next_cursor` |
 | `ListReplies` | 偏移量（实测 `cursor 0/10` 两页零重复） | 回传 `cursor` |
 | `GetUserPlaylists` | 偏移量（实测 7 条 → `next_cursor='10'` → 另外 10 条零重复） | 回传 `next_cursor` |
 | `GetRecentPlayedTracks` | 偏移量字符串（首页 `'0'`） | 回传 `next_cursor` |

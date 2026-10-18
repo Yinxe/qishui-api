@@ -22,10 +22,36 @@ import {
 } from '../output.js'
 import { printAlbumList, printPlaylistList, printTrackList } from '../render.js'
 
-function printComments(comments: Comment[]): void {
+function printComments(comments: Comment[], offset = 0): void {
   comments.forEach((comment, index) => {
-    print(commentLine(comment, { index: index + 1 }))
+    print(commentLine(comment, { index: offset + index + 1 }))
   })
+}
+
+/**
+ * 评论翻页：上游 `cursor` 是**偏移量**（实测 `0` → `'10'` → `'20'`，两页零重复），
+ * 所以每页都回传上一页给的 `cursor`，不自己按页号/条数累加（歌单那种「返回条数少于 count」的坑这里没有，
+ * 但口径统一了就不会各写一套）。
+ */
+async function collectPages<T extends { id?: string }>(
+  fetchPage: (cursor?: string) => Promise<{ items: T[]; hasMore: boolean; cursor?: string }>,
+  pages: number,
+): Promise<T[]> {
+  const out: T[] = []
+  const seen = new Set<string>()
+  let cursor: string | undefined
+  for (let page = 0; page < pages; page++) {
+    const result = await fetchPage(cursor)
+    for (const item of result.items) {
+      const id = String(item.id ?? '')
+      if (id && seen.has(id)) continue
+      if (id) seen.add(id)
+      out.push(item)
+    }
+    if (!result.hasMore || !result.cursor || !result.items.length) break
+    cursor = result.cursor
+  }
+  return out
 }
 
 export function registerDetailCommands(program: Command): void {
@@ -128,6 +154,32 @@ export function registerDetailCommands(program: Command): void {
     })
 
   program
+    .command('replies <commentId>')
+    .description('评论的回复（能翻页；需要 --track 指曲目 id）')
+    .requiredOption('--track <trackId>', '这条评论属于哪首曲目（ListReplies 要 group_id）')
+    .option('--pages <n>', '翻几页（每页 20 条）', '1')
+    .action(async (commentId: string, opts: { track: string; pages: string }) => {
+      const instance = await core()
+      const pages = Math.max(1, Number(opts.pages) || 1)
+      const items = await collectPages(async (cursor) => {
+        const page = await instance.comments.replies(commentId, {
+          cursor: cursor === undefined ? 0 : Number(cursor),
+          count: 20,
+          groupId: opts.track,
+        })
+        return { items: page.items, hasMore: page.hasMore, cursor: page.cursor }
+      }, pages)
+      emit(
+        () => {
+          heading('回复', `评论 ${commentId}`)
+          if (!items.length) print(dim('这条评论还没有回复'))
+          else printComments(items)
+        },
+        { commentId, trackId: opts.track, replies: items },
+      )
+    })
+
+  program
     .command('artist <id>')
     .description('艺人详情（--tracks 热门曲目 / --albums 专辑）')
     .option('--tracks', '列出热门曲目')
@@ -211,10 +263,11 @@ export function registerDetailCommands(program: Command): void {
 
   program
     .command('comments <trackId>')
-    .description('曲目评论（--post 发一条，需登录）')
-    .option('--count <n>', '取多少条', '20')
+    .description('曲目评论（--post 发一条，需登录；能翻页）')
+    .option('--count <n>', '每页取多少条', '20')
+    .option('--pages <n>', '翻几页（按上游 cursor 走，别自己页号 +1）', '1')
     .option('--post <text>', '发一条评论（写接口，需登录）')
-    .action(async (trackId: string, opts: { count: string; post?: string }) => {
+    .action(async (trackId: string, opts: { count: string; pages: string; post?: string }) => {
       const instance = await core()
       if (opts.post !== undefined) {
         assertLoggedIn(instance)
@@ -228,13 +281,23 @@ export function registerDetailCommands(program: Command): void {
         )
         return
       }
-      const page = await instance.comments.list(trackId, { count: Math.max(1, Number(opts.count) || 20) })
-      emit(() => {
-        heading(`评论 ${page.items.length} 条`)
-        if (!page.items.length) print(dim('没有评论（有些曲目的评论区是关着的，上游回 3056）'))
-        printComments(page.items)
-        if (page.hasMore) print(dim(`还有更多（cursor=${page.cursor ?? '-'}）`))
-      }, page)
+      const count = Math.max(1, Number(opts.count) || 20)
+      const pages = Math.max(1, Number(opts.pages) || 1)
+      const items = await collectPages(async (cursor) => {
+        const page = await instance.comments.list(trackId, {
+          count,
+          cursor: cursor === undefined ? 0 : Number(cursor),
+        })
+        return { items: page.items, hasMore: page.hasMore, cursor: page.cursor }
+      }, pages)
+      emit(
+        () => {
+          heading(`评论 ${items.length} 条${pages > 1 ? ` · ${pages} 页` : ''}`)
+          if (!items.length) print(dim('没有评论（有些曲目的评论区是关着的，上游回 3056）'))
+          printComments(items)
+        },
+        { trackId, pages, comments: items },
+      )
     })
 
   program

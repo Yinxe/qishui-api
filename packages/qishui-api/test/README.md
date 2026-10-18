@@ -15,6 +15,8 @@
 | `probe-search-cursor.ts` | 搜索分页：`search_type=track` 的 `has_more`/`next_cursor` 与第二页是否重复（结论：20 条/页、能翻；`all` 的预览组没有游标） |
 | `probe-page-size.ts` | 歌单详情的页大小：`count=50` 回 43 条、`count=200` 回 179 条，`next_cursor` 按请求的 count 前进（结论：翻页只能回传 `next_cursor`，别按返回条数累加） |
 | `probe-playlist-paging.ts` | 歌单详情 `cursor` 是不是偏移量（结论：是，`next_cursor` 就是下一个偏移） |
+| `probe-comment-page-size.ts` | 评论页大小：`next_cursor` 按**请求的 count** 前进（`count=5`→`'5'`、`count=10`→`'10'`，两页零重复），不是按实际返回条数 |
+| `probe-album-tracks.ts` | 专辑详情一次回多少首：`GetAlbumDetail` 无分页参数，50 曲专辑一次回 50 条（`ignore_tracks=true` 则连 `tracks` 键都没有）→ 播放整张不会少歌 |
 | `probe-replies-paging.ts` | 评论回复（`ListReplies`）与别人主页歌单（`GetUserPlaylists`）的游标口径（结论：都是偏移量，按 `next_cursor` 回传能翻） |
 | `probe-list-cursor.ts` | 艺人曲目/艺人专辑/评论三处的游标口径（曲目与评论能按 `next_cursor` 翻；艺人专辑一次全量、`next_cursor` 打不动） |
 | `probe-search-cursor.ts` | 搜索能不能翻页：`search_type=track` 的 `has_more`/`next_cursor`，拿游标再打一页看有没有重复（结论：能翻，20 条/页、零重复；`all` 的预览组翻不了） |

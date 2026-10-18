@@ -5,6 +5,12 @@ qishui-device.json
 
 # 账号绑定的实测产物：里面有本机账号的昵称/uid 尾号、真实歌单与曲目 id，不入库
 
+# 临时数据目录/临时输出（手工跑 CLI/TUI 时用 QISHUI_HOME 指到仓库内做隔离验证）
+# 里面有 device.json 与账号 cookie，**绝不能入库**
+.tmp-home/
+.tmp-*/
+.tmp-out.txt
+
 # 编辑器临时文件
 *.swp
 *.swo

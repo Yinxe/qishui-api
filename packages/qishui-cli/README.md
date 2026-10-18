@@ -126,7 +126,8 @@ qishui --help
 | `album <id> [--tracks]` | 专辑 |
 | `artist <id> [--tracks] [--albums]` | 艺人（热门曲目 / 专辑） |
 | `playlist <id> [--tracks] [--count 50]` | 歌单（含「我喜欢的音乐」`type=1`、「抖音收藏」`type=4`） |
-| `comments <trackId> [--count 20] [--post <text>]` | 评论；`--post` 是写接口（需登录） |
+| `comments <trackId> [--count 20] [--pages 1] [--post <text>]` | 评论；能翻页（上游 `cursor` 是偏移量、按请求的 `count` 前进）；`--post` 是写接口（需登录） |
+| `replies <commentId> --track <trackId> [--pages 1]` | 某条评论的回复（`ListReplies` 要 `group_id`，所以得指曲目 id）；同样能翻页 |
 | `lyrics <trackId> [--json-lines]` | KRC 歌词（带时间轴） |
 | `user <userId> [--playlists]` | 用户资料（**连打会出验证码**，别遍历） |
 | `link <input> [--media]` | 分享链接/裸 id → 元数据 + 可播地址（不播） |
