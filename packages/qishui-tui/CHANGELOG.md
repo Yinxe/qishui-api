@@ -29,6 +29,8 @@
 
 ### Added
 
+- **预览图进文档**：`images/preview.png`（听歌页：封面原图 + 滚动歌词 + 右栏播放队列 + 底部播放条）挂到本包 README 开头与仓库根 README 的包表下面；根 README 侧边栏那一栏顺手补上「播放队列 / 本地」两页（早先只写了搜索/发现/听歌/我的）
+
 - **设置页能选缓存容量档位、淘汰策略，并显示「已用 / 上限」**
   - **为什么**：`maxMediaBytes` 从前在 TUI 是「只读」项（只有布尔和 `defaultRepeat` 能 Enter 改），容量看不见也调不动
   - **做法**：缓存一节加「容量」行（`已用 X / 3G（60%）`，不限制直说，超限再写 `超 Y`）与一条「按上限清理媒体」（确认框里说明按哪个策略、正在播的那首不动，toast 报释放量）；`cycleConfig` 的枚举特例换成 `ENUM_ORDERS` 表（`defaultRepeat` + `mediaEvictPolicy`），`maxMediaBytes` 走 core 的 `nextMediaCapacityTier()` 循环 2G→3G→4G→5G→10G→不限制；`formatConfigValue` 的布尔判定从硬写四个键名改成 `typeof === 'boolean'`

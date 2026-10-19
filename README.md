@@ -7,7 +7,9 @@
 | [`qishui-api`](packages/qishui-api/README.md) | `packages/qishui-api` | **协议层**：PC 端接口 TypeScript 客户端（320 端点 IDL + 纯 HTTP 请求层 + web 分享页解析） |
 | [`qishui-core`](packages/qishui-core/README.md) | `packages/qishui-core` | **应用后端层**：OO 封装账号/曲库/歌单/发现/搜索/评论/社交 + 播放器状态机 + 本地数据与媒体缓存（数据目录 `~/.qishui`） |
 | [`qishui-cli`](packages/qishui-cli/README.md) | `packages/qishui-cli` | **命令行播放器**：把 core 摆成命令（搜索/发现/歌单/评论/下载/缓存维护），出声交给 mpv 子进程；每条命令都支持 `--json` |
-| [`qishui-tui`](packages/qishui-tui/README.md) | `packages/qishui-tui` | **终端 TUI**：ink（React → 终端）界面，侧边栏导航（搜索/发现/听歌/我的 + 账号；榜单在「发现」的首页块里摊平，「听歌」是听歌模式单选台——选中即起播、一批播完自动续下一批）+ 通用列表页 + 曲目详情/用户主页 + 播放条 + 歌词/评论弹层，扫码登录出终端二维码、歌单可增删改、`S` 设置与缓存、鼠标可滚可点（`QISHUI_TUI_MOUSE=0` 关），跑在 core 上、出声交给 mpv |
+| [`qishui-tui`](packages/qishui-tui/README.md) | `packages/qishui-tui` | **终端 TUI**：ink（React → 终端）界面，侧边栏导航（搜索/发现/听歌/播放队列/我的/本地/设置；榜单在「发现」的首页块里摊平，「听歌」是听歌模式单选台——选中即起播、一批播完自动续下一批）+ 通用列表页 + 曲目详情/用户主页 + 播放条 + 歌词/评论弹层，扫码登录出终端二维码、歌单可增删改、`S` 设置与缓存、鼠标可滚可点（`QISHUI_TUI_MOUSE=0` 关），跑在 core 上、出声交给 mpv |
+
+![听歌页：左栏是侧边栏导航，中间「正在播放」带封面（探到终端支持 kitty 图形协议就贴原图）与滚动歌词，右栏是播放队列，底部一条播放条](packages/qishui-tui/images/preview.png)
 
 ```ts
 import { createQishui } from 'qishui-core'

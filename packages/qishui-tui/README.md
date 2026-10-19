@@ -2,6 +2,8 @@
 
 汽水音乐的**终端 TUI**，基于 [ink](https://github.com/vadimdemedes/ink)（React → 终端渲染），跑在 `qishui-core` 之上：**左侧边栏导航 + 通用列表页 + 播放条 + 歌词/评论覆盖层**。页面结构见 [`DESIGN.md`](./DESIGN.md)，可用数据见 [`DATA_TYPES.md`](./DATA_TYPES.md)。
 
+![听歌页：左栏是侧边栏导航，中间「正在播放」带封面（探到终端支持 kitty 图形协议就贴原图）与滚动歌词，右栏是播放队列，底部一条播放条](./images/preview.png)
+
 ```bash
 pnpm run tui:build                                  # = pnpm --filter qishui-tui run build
 pnpm run tui                                        # = node packages/qishui-tui/dist/cli.js
