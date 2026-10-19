@@ -69,6 +69,9 @@ export {
   type PlaySource,
   type ResolveOptions,
   type VerifyIssue,
+  type VerifyIssueKind,
+  type VerifyReport,
+  type VerifySeverity,
 } from './cache/media.js'
 /* ------------------------------------------------------------ 缓存与媒体 */
 export {
@@ -104,7 +107,7 @@ export { type CoreEvents, createQishui, QishuiCore, type QishuiOptions } from '.
 export { Album, Artist, Chart, Comment, Playlist, Track, User } from './entities.js'
 export { CacheError, CoreError, MediaUnavailableError, NotLoggedInError } from './errors.js'
 export { Emitter, type EventMap } from './events.js'
-export { PlayHistory, type PlayRecord, type PlayStats } from './history.js'
+export { PlayHistory, type PlayRecord, type PlaySettlement, type PlayStats } from './history.js'
 /* ------------------------------------------------------------ 本地库（本地喜欢 / 本地歌单 / 音乐文件夹）
  * 纯本地、不出网；`core.local` 是入口，这里的类型给上层做形状约束。 */
 export {

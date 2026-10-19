@@ -8,7 +8,7 @@
  */
 import type { Command } from 'commander'
 import { assertLoggedIn, CliError, core, parseCount, parseVolume } from '../context.js'
-import { tailParts } from '../format.js'
+import { duration, tailParts } from '../format.js'
 import { askYesNo, dim, emit, green, heading, idTag, print, warn } from '../output.js'
 import { runPlaySession } from '../playSession.js'
 import { printArtistList, printPlaylistList, printTrackList } from '../render.js'
@@ -280,13 +280,16 @@ export function registerLibraryCommands(program: Command): void {
             return
           }
           records.forEach((record, index) => {
+            // 收听时长由播放器在切歌/停播/播完/退出时补；补不上的（老记录、被强杀的那次）照实说「没记下」
+            const heard =
+              record.playedMs === undefined
+                ? '没记下听到哪'
+                : record.completed
+                  ? '听完'
+                  : `听到 ${duration(record.playedMs)}`
             print(
               `${dim(String(index + 1).padStart(2) + '.')} ${record.name ?? record.trackId} ${dim('—')} ${dim(record.artist ?? '')}` +
-                tailParts(
-                  record.source ? dim(record.source) : undefined,
-                  dim(record.completed ? '听完' : '未听完'),
-                  idTag(record.trackId),
-                ),
+                tailParts(record.source ? dim(record.source) : undefined, dim(heard), idTag(record.trackId)),
             )
           })
         },

@@ -89,7 +89,10 @@ export async function buildPlayedMedia(core: QishuiCore, opts: PlayedMediaOption
 
   // 本地历史先读出来：既当「云端没有的补充」，也用来给云端条目补 played_mills / duration
   const local = opts.includeLocal === false ? [] : core.history.recent(Math.max(limit * 4, limit))
-  const localByTrack = new Map(local.map((record) => [record.trackId, record]))
+  // 同一首听过几次就用**最近那一次**的时长：`recent()` 是新→旧，所以「先见到的赢」。
+  // （`new Map(local.map(…))` 会把最旧那条留在最后，补出来的就是几周前那一次听到哪儿。）
+  const localByTrack = new Map<string, PlayRecord>()
+  for (const record of local) if (!localByTrack.has(record.trackId)) localByTrack.set(record.trackId, record)
 
   // 2) 云端最近播放（账号级、跨设备，新→旧）；未登录或失败就是这半缺席
   if (opts.includeCloud !== false) {

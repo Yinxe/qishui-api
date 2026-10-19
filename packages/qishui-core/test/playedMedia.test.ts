@@ -7,7 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { buildPlayedMedia, createQishui, PLAYED_MEDIA_MAX, type QishuiCore, type TrackData } from '../dist/index.js'
 import { createMockUpstream, MOCK_DEVICE } from './support/mockUpstream.js'
-import { makeTempDir, rmDir } from './support/tmp.js'
+import { makeTempDir, rmDir, sleep } from './support/tmp.js'
 
 const track = (id: string, durationMs = 60_000): TrackData => ({ id, name: `曲目 ${id}`, artists: [], durationMs })
 
@@ -61,6 +61,16 @@ describe('buildPlayedMedia：App 口径 + 云端/本地混合', () => {
     expect(seeds[0].played_mills).toBeUndefined()
     expect(seeds[1].played_mills).toBe(5_000)
     expect(seeds[2].played_mills).toBe(8_000)
+  })
+
+  it('同一首听过几次：云端条目补的是**最近那一次**的时长，不是最旧那次', async () => {
+    await boot({ recent: ['7601'] })
+    await core.history.append(track('7601'), { playedMs: 4_000 }) // 很久以前那次只听了几秒
+    await sleep(2)
+    await core.history.append(track('7601'), { playedMs: 11_000 }) // 最近这次快听完
+    const seeds = await buildPlayedMedia(core)
+    expect(seeds.map((seed) => seed.media_id)).toEqual(['7601'])
+    expect(seeds[0].played_mills).toBe(11_000)
   })
 
   it('去重后截断到 30 条（PLAYED_MEDIA_MAX），待播队列占前排', async () => {

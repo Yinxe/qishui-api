@@ -290,7 +290,7 @@ qishui.player.dispose()
 口径（有意为之）：
 
 - **播放源不落持久化**：签名地址约 25h 过期，绝不能存 JSON 里当长期地址；`source.path` 是本地缓存文件才有意义。
-- **历史只在「开始播」时记一条**（登录后 `journal/<uid>/plays.jsonl`、未登录 legacy 原位，带 `source: 'cache'|'remote'|'local'`，本地文件另带 `path`）；`playedMs` / `completed` 留给上层用 `qishui.history.append()` 补记。
+- **历史「开始播」记一条，收尾补一条**（登录后 `journal/<uid>/plays.jsonl`、未登录 legacy 原位，起播行带 `source: 'cache'|'remote'|'local'`，本地文件另带 `path`）：切歌 / `stop()` / `clear()` / 自然播完 / `dispose()` 时播放器追加一行 `{settle: true, at, trackId, playedMs, completed}` 的补丁，`history.read()` 再把它并回那一次收听。文件始终是 append-only——CLI 与 TUI 同开一个数据目录也只是各写各的行，不存在「整档重写互相踩」；上层也可以自己调 `history.settle()` 补记。收不上尾的那次（老记录、播到一半被强杀）就留着 `playedMs` 为空，不拿 0 冒充。
 - **`skipOnError`** 打开时，某首解析/下载失败自动跳下一首（不打断整张专辑）。
 
 ### 5.1 播放队列书架（`qishui.queues`，`player/queues.ts`）
@@ -356,7 +356,7 @@ qishui.events.on('queue-note', ({ message, kind }) => toast(message, kind))    /
 │       ├── audio.m4a               音频本体（下载中为 .part）
 │       ├── lyrics.json             KRC 结构化歌词
 │       └── cover.jpg               封面
-├── journal/plays.jsonl         未登录/迁移前的播放历史（append-only）
+├── journal/plays.jsonl         未登录/迁移前的播放历史（append-only：一行起播 + 若干行收尾补丁）
 ├── journal/<uid>/plays.jsonl   各账号的播放历史
 ├── local/library.json          本地库：本地喜欢 + 本地歌单 + 曲目快照 + 音乐文件夹（跨账号共享，不出网）
 ├── queues.json                 播放队列书架：每份队列的曲目/播到第几首/随机/续批状态（变化后 300ms 防抖原子写，启动恢复；换号作废；`TrackData.raw` 不写盘）
@@ -389,12 +389,26 @@ qishui.events.on('queue-note', ({ message, kind }) => toast(message, kind))    /
 - 音频下载用 `.part` + `Range: bytes=N-` **断点续传**（回 200 就重下），下完用 `content-range` 的总长核对再 rename。
 - **试听片段不算命中**（`meta.json` 的 `v: 3` 起有 `clip` 字段）：媒体缓存跨账号共享，匿名时那 30 秒不记下来，登录后就会一直被当成整首（文件尺寸对得上，`peek` 永远命中）。所以 `clip: true` 每次重取址；「上次是片段、这次上游给整首」强制重下（先删掉片段留下的 `.part`——偏移量对不上，续上去就是坏文件），并把 meta 里的 `playableRange` 一并剥掉。老缓存（v1/v2）没这字段，一律重判一次、只重取媒体不重下音频。
 - 同一曲目的 `meta.json`「读-改-写」按 trackId 排队（`withMetaLock`）：`recordPlay` 的计数要在**读之前**就锁上，光靠 `writeJsonAtomic` 排写入还是会丢计数。`writeJsonAtomic` 自身也在同一路径上串一条 promise 链（tmp 名带进程内序号）——并发写同一个文件时输家的 `rename` 从前必然 `ENOENT`。
-- `stats()` / `list()` / `verify({fix})` / `prune({maxBytes, maxAgeMs, policy, keep})` / `clear()` / `evict(id)`。
+- `stats()` / `list()` / `verify({fix, deep})` / `prune({maxBytes, maxAgeMs, policy, keep})` / `clear()` / `evict(id)`。
 - `capacity()`：**这一条只算不删**——真实占用 `usedBytes`、生效上限 `limitBytes`、`percent`（不限制时不给）、
   `overLimit`，再加「按当前策略清到上限要剔几首、能释放多少」（`reclaimableTracks` / `reclaimableBytes`）。
   CLI 的 `cache stats` 与 TUI 设置页显示的就是这一份。
-- `stats().diskBytes` / `capacity().usedBytes` 是 `dirStats(cache/tracks)` 的真实字节，含 `meta.json`、歌词、
-  封面、没下完的 `.part` 与 meta 丢失的孤儿目录；`prune()` 剔谁也算同一个口径，所以「看到 1.2GB」和「剔完释放 1.2GB」不会两套账。
+- `stats()` 按**文件真实字节**拆开：`audioBytes`（音频）、`coverBytes`、`lyricsBytes`、`metaBytes`、`residueBytes`
+  （`.part`/孤儿目录/杂文件），恒有 `diskBytes = 四项之和 + residueBytes`；另给 `clips`（试听片段数）、
+  `pendingParts`、`orphanDirs`、`incomplete`（音频缺失/为空/大小对不上，**试听片段不算**——它每次播放都要复核）。
+  这些数、`capacity().usedBytes` 与 `prune()` 剔谁全出自同一次目录扫描（`scan()`），所以「看到 1.9GB」和
+  「剔完释放 1.9GB」不会两套账。
+- `verify()` 返回 `VerifyReport`（`issues[]` + `checked/clips/staleMeta/elapsedMs/summary`），**默认只读**；
+  每条问题带 `kind`（`broken`/`drift`/`missing`/`residue`）、`severity`、`clip`、`fixable`：
+  - **试听片段**（`clip` 或老 meta 的 `playableRange`）比整曲短是正常的：它与记录对不上只报 `info`，
+    `fix` 只把记录改成磁盘上的实际字节，不删音频；
+  - 文件比记录**长**（像换成了整首）报 `warn`，`fix` 更新字节数（`deep` 时连 sha1 一起）；
+  - 文件比记录**短**报 `warn` 且 `fixable: false`——分不清是没下完还是换了编码，不把半截文件写成「完整」，
+    `peek()` 已判不中，下次播放会重下；
+  - 音频缺失/为空才是 `error`，`fix` 删目录；歌词/封面缺失报 `warn`，`fix` 只去掉失效引用；
+  - `deep: true` 才算 sha1（**只算 v3 记录**；老 meta 的指纹是旧下载逻辑记的、且下次播放会整条重取）：大小一致而指纹不同
+    （并发下过同一首、或换了编码）报 `warn`，`fix` 把指纹改成磁盘上这一份，**不删文件**；
+  不 deep 时只比大小。整个 `fix` 只有「音频缺失/为空」会删目录，其余一律只改记录。
 - `prune({ keep })`：列进来的曲目**无论如何不动**。`ensure()` 自动淘汰时把刚下的那首传进去（它 `plays` 还是 0，
   `leastPlayed` 下排第一，不保护就会「下完立刻把自己删了」）；`clearCache()` 也保住 `player.current`。
 - **媒体文件不过期**（`sourceExpiresAt` 只是溯源信息）；元数据缓存按下面的分档走。
@@ -513,7 +527,7 @@ try {
 
 ```ts
 await qishui.cacheStats()        // 元数据条数/命中数 + 媒体占用/播放计数
-await qishui.media.verify()      // 校验文件（缺了/长度不符/坏 JSON）→ issues[]（{fix:true} 顺手修）
+await qishui.media.verify()      // 校验缓存 → VerifyReport（试听片段单独计数、不算坏；{fix:true} 修记录、{deep:true} 算 sha1）
 await qishui.media.capacity()    // 只算不删：真实占用/上限/占比/是否超限 + 按当前策略能释放几首多少字节
 await qishui.media.prune()       // 按 maxMediaBytes 剔到上限内，谁先走看 mediaEvictPolicy（keep 保住不动）
 await qishui.cache.prune()       // 清过期元数据

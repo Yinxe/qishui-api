@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { type CorePaths, PlayHistory, resolvePaths, type TrackData } from '../dist/index.js'
-import { makeTempDir, rmDir } from './support/tmp.js'
+import { makeTempDir, rmDir, sleep } from './support/tmp.js'
 
 let home: string
 let paths: CorePaths
@@ -88,5 +88,51 @@ describe('PlayHistory：按账号分文件', () => {
     expect(h.read()).toHaveLength(2000)
     expect(h.read()[0]?.trackId).toBe('t2001')
     expect(await h.compactIfNeeded()).toBe(false)
+  })
+})
+
+describe('PlayHistory：收听时长收尾（append-only 的补丁行）', () => {
+  it('settle 把时长并回那一次播放，别的行不动；stats 不把它当又一次播放', async () => {
+    const h = new PlayHistory(paths)
+    h.setScope('911')
+    const first = await h.append(track('a1', '听完的'), { durationMs: 30_000 })
+    const second = await h.append(track('a2', '中途切的'))
+    await h.settle(first, { playedMs: 30_000, completed: true })
+    await h.settle(second, { playedMs: 8_000, completed: false })
+    expect(h.read().map((r) => [r.trackId, r.playedMs, r.completed])).toEqual([
+      ['a1', 30_000, true],
+      ['a2', 8_000, false],
+    ])
+    expect(h.stats()).toMatchObject({ records: 2, tracks: 2 })
+  })
+
+  it('同一首听几次各记各的：补丁按 `at`+曲目认，不会串到另一次收听上', async () => {
+    const h = new PlayHistory(paths)
+    h.setScope('912')
+    const earlier = await h.append(track('same', '同一首'))
+    await sleep(2)
+    const later = await h.append(track('same', '同一首'))
+    await h.settle(later, { playedMs: 45_000, completed: true })
+    const [first, second] = h.read()
+    expect(first?.playedMs).toBeUndefined()
+    expect(first?.completed).toBeUndefined()
+    expect(second).toMatchObject({ playedMs: 45_000, completed: true })
+    expect(earlier.at).not.toBe(later.at)
+  })
+
+  it('settleSync：退出路径上写完立刻可读', async () => {
+    const h = new PlayHistory(paths)
+    h.setScope('913')
+    const record = await h.append(track('b1', '退出的那首'))
+    h.settleSync(record, { playedMs: 1_000, completed: false })
+    expect(h.read()[0]).toMatchObject({ playedMs: 1_000, completed: false })
+  })
+
+  it('没有归属的补丁行丢掉（原行被 compact 裁掉了），不凭空造一条没名字的播放', async () => {
+    const h = new PlayHistory(paths)
+    h.setScope('914')
+    await h.settle({ at: 1, trackId: 'ghost' }, { playedMs: 500, completed: false })
+    await h.append(track('c1', '还在的'))
+    expect(h.read().map((r) => r.trackId)).toEqual(['c1'])
   })
 })

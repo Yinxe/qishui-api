@@ -2,6 +2,7 @@ import type { PlaySource } from '../cache/media.js'
 import type { RepeatMode } from '../config.js'
 import type { QishuiCore } from '../core.js'
 import { Emitter } from '../events.js'
+import type { PlayRecord, PlaySettlement } from '../history.js'
 import type { TrackData } from '../types.js'
 import type { Lyrics } from './lyrics.js'
 import { PlayQueue } from './queue.js'
@@ -77,6 +78,8 @@ export class Player {
   private statusValue: PlayerStatus = 'idle'
   private sourceValue: PlaySource | null = null
   private lyricsValue: Lyrics | undefined
+  /** 正在听的这一次在 journal 里的那一行：切歌/停播/自然播完/退出时拿它补收听时长 */
+  private openRecord: PlayRecord | undefined
   private positionValue = 0
   /** 真实可播时长覆盖（外部播放器报的时长优先于元数据）；换曲时清空 */
   private durationOverride: number | undefined
@@ -271,6 +274,7 @@ export class Player {
   }
 
   stop(): void {
+    this.closeOpen()
     this.stopClock()
     this.loadToken++
     this.positionValue = 0
@@ -342,6 +346,7 @@ export class Player {
 
   /** 清空队列并回到 idle */
   clear(): void {
+    this.closeOpen()
     this.stopClock()
     this.loadToken++
     this.queue.clear()
@@ -402,6 +407,8 @@ export class Player {
 
   dispose(): void {
     this.stopClock()
+    // 退出路径上同步补最后一笔：dispose 之后进程就可能走掉，异步收尾会来不及落盘
+    this.closeOpen(true)
     // 认一次 token：还在 await 里的那次解析回来就该整段丢弃，别在已 dispose 的播放器上重开时钟
     this.loadToken++
     this.events.removeAll()
@@ -410,6 +417,8 @@ export class Player {
   /* ------------------------------------------------------------ 内部 */
 
   private async startCurrent(opts: PlayOptions = {}): Promise<void> {
+    // 换曲先给上一首收尾：位置/duration 在这一刻还是上一首的
+    this.closeOpen()
     const token = ++this.loadToken
     const track = this.queue.current
     if (!track) {
@@ -446,10 +455,11 @@ export class Player {
     this.events.emit('source', { source })
     this.events.emit('track', { track: source.track, index: this.queue.index })
 
-    await this.recordPlay(source)
+    const record = await this.recordPlay(source)
     // 记历史/上报也是 await：这期间用户已经切歌（或这一首被判定失败停在 `error`）时，
     // 上一首的收尾不许再把状态按回「播放中」—— 那样进度条会在没有声音的曲目上走表
     if (token !== this.loadToken) return
+    this.openRecord = record
     this.startClock()
     this.setStatus('playing')
   }
@@ -471,14 +481,15 @@ export class Player {
     await this.startCurrent()
   }
 
-  /** 本地历史永远记；上报上游要 config.reportPlayback 显式打开 */
-  private async recordPlay(source: PlaySource): Promise<void> {
+  /** 本地历史永远记；上报上游要 config.reportPlayback 显式打开。返回 journal 里那一行，收尾时拿它补时长 */
+  private async recordPlay(source: PlaySource): Promise<PlayRecord | undefined> {
     const track = source.track
+    let record: PlayRecord | undefined
     try {
       // 媒体缓存侧记一次「被拿去播了」（plays 计数 + accessedAt，供 LRU/prune 用，纯本地）。
       // 本地文件不在媒体缓存里，没有这一笔可记
       if (source.kind !== 'local') await this.core.media.recordPlay(track.id)
-      await this.core.history.append(track, {
+      record = await this.core.history.append(track, {
         source: source.kind,
         // 记下路径：本地历史据此能重播磁盘文件（云端曲目没有这一项）
         path: source.kind === 'local' ? source.path : undefined,
@@ -488,13 +499,37 @@ export class Player {
       this.core.logger(`[player] 写播放记录失败：${String(err)}`)
     }
     // 磁盘上的文件不是上游的曲目，没有「最近播放」可上报
-    if (source.kind === 'local') return
-    if (!this.core.config.reportPlayback) return
+    if (source.kind === 'local') return record
+    if (!this.core.config.reportPlayback) return record
     try {
       await this.core.account.reportPlayed([track])
     } catch (err) {
       this.core.logger(`[player] 上报最近播放失败（不影响播放）：${String(err)}`)
     }
+    return record
+  }
+
+  /**
+   * 给刚结束的那一次收听补收尾：把当前播放位置（和「到没到曲终」）写回 journal。
+   * 换曲、停播、清空、自然播完、dispose 各调一次；没起播过（或已经收过尾）就是空操作。
+   * `sync` 走退出路径：dispose 之后进程说没就没，异步那一笔来不及落盘。
+   */
+  private closeOpen(sync = false): void {
+    const record = this.openRecord
+    if (!record) return
+    this.openRecord = undefined
+    const duration = this.durationMs
+    const settlement: PlaySettlement = {
+      playedMs: Math.round(this.positionValue),
+      completed: duration > 0 && this.positionValue >= duration - 1,
+    }
+    if (sync) {
+      this.core.history.settleSync(record, settlement)
+      return
+    }
+    void this.core.history.settle(record, settlement).catch((err: unknown) => {
+      this.core.logger(`[player] 补收听时长失败：${String(err)}`)
+    })
   }
 
   private startClock(): void {
@@ -528,6 +563,8 @@ export class Player {
   }
 
   private async handleEnded(): Promise<void> {
+    // 到曲终的这一次在这里收尾（位置已被 tick 钳到时长，`completed` 由此为真）
+    this.closeOpen()
     const track = this.queue.current ?? null
     if (this.queue.repeat === 'one') {
       this.events.emit('ended', { track, action: 'repeat' })

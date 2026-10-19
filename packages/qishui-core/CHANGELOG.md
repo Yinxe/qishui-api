@@ -4,7 +4,21 @@
 
 ## Unreleased
 
+### Changed
+
+- **媒体缓存的统计与校验都改成「按文件真实字节 + 能不能播」：试听片段不再被当成坏文件**
+  - **为什么**：`stats()` 只把 meta 自报的 `audio.bytes` 相加，跟 `capacity()` 的真实占用永远差一截（歌词/meta/`.part`/孤儿目录都不在里面）；`verify()` 只比 `size !== meta.audio.bytes` 就报「大小不符」，`fix: true` 更是一律删目录——试听片段换了窗口（30s↔60s）、老版本下过整首而 meta 记的是片段，这些**能正常播**的文件都会被判坏删掉
+  - **做法**：`stats()` 改为一次目录扫描按文件拆开（`audioBytes`/`coverBytes`/`lyricsBytes`/`metaBytes`/`residueBytes`，恒有 `diskBytes = 四项之和 + residueBytes`），另给 `clips`/`pendingParts`/`orphanDirs`/`incomplete`；`verify()` 返回 `VerifyReport`（`issues[]` + `checked`/`clips`/`staleMeta`/`elapsedMs`/`summary`/`repaired`/`removedDirs`），每条问题带 `kind`（`broken`/`drift`/`missing`/`residue`）、`severity`、`clip`、`fixable`。试听片段与记录不符只报 `info`、`fix` 只改记录；文件比记录长（像换成整首）报 `warn`、`fix` 更新字节/sha1；文件比记录短**不修也不删**（分不清没下完还是换了编码，`peek()` 已判不中，下次播放会重下）；音频缺失/为空才是 `error`（也是唯一会被 `fix` 删掉的）；新增 `deep: true` 才算 sha1（只算 v3 记录；老 meta 的指纹不可信、且下次播放会整条重取，不拿它判坏；大小一致而指纹不同报 `warn`，`fix` 重记指纹、不删文件）
+  - **边界**：`clip` 的判据是 v3 的 `clip` 字段或老 meta 的 `playableRange`（v1/v2 老缓存照样认得出是片段）；`incomplete` 不把试听片段算进去（它每次播放都要向上游复核）；`clear()` 的 `freedBytes` 也改成真实字节；`scan()` 一次遍历同时喂 `stats`/`capacity`/`prune`，剔除与显示仍同一个口径
+  - 离线单测：`test/media.test.ts` 补七条（四项之和等于总占用且残留单列 / 文件短只提醒不动文件 / 试听片段漂移只改记录且保留 `clip` / 文件长则更新记录 / 歌词封面缺失只去引用、音频缺失才删 / `deep` 查 sha1 / 孤儿目录与 `.part` 的处置）
+
 ### Fixed
+
+- **「听了多久」从来没被记下来：`playedMs`/`completed` 是两处只在文档里的字段**
+  - **症状**：`PlayRecord` 的注释写着「暂停/切歌时会把最后的位置补进来」，但 `recordPlay()` 只 `append` 起播那一行，全仓库没有任何一处写这两个字段——于是本地历史里每一次收听都永远停在「没听完」，推荐种子（`played_media`）的 `played_mills` 也恒为 `0`（等于告诉上游「每首都只听了 0 秒」），CLI `qishui history` 每行都印「未听完」
+  - **做法**：`Player` 记住起播时 `append` 返回的那一行（`openRecord`），在**切歌 / `stop` / `clear` / 自然播完 / `dispose`** 五个收口处补一笔 `settle(record, {playedMs, completed})`（`completed` = 收尾那一刻位置已到可播时长）。收尾行是**追加**的 `{settle:true, at, trackId, …}` 补丁行，`read()` 按 `at`+曲目并回原来那次播放——不回写整档，因为 CLI 与 TUI 可能同时开着同一个数据目录，整档重写会互相踩坏；`dispose` 走 `settleSync`（`appendFileSync`），退出路径上异步那一笔常在落盘前就被丢掉。顺带修 `buildPlayedMedia()` 里给云端条目补时长的查表：`new Map(local.map(…))` 在「新→旧」的列表上是**最后赋值赢**，补出来的是一直往前数最旧那一次听到哪儿——改成先见到的赢
+  - **边界**：`playedMs` 缺着就是缺着（老记录、播到一半被 `SIGKILL` 的那次），不拿 `0` 冒充「一秒没听」；同一首听几次各记各的（`at` 不同），补丁不会串到别次收听上；原播放行被 `compactIfNeeded` 裁掉时补丁行没有归属，直接丢掉（不凭空造一条没名字的收听）；`stats().records` 仍按收听次数算（补丁行不算一次播放）；被切歌顶掉、根本没出声的那次不起收尾句柄（`loadToken` 校验在 `recordPlay` 之后），不会把新曲目的进度补到老曲目头上
+  - 离线单测：`test/history.test.ts` 补四条（并回原行且别的行不动 / 同曲两次收听互不串 / `settleSync` 写完立刻可读 / 无归属补丁丢掉），`test/player.test.ts` 补三条（自然播完 `completed` 为真、位置压到 30ms 拿确切数；中途切歌上一首停在 5 秒且不算听完、正在听的这首还没收尾；`dispose` 同步落住），`test/playedMedia.test.ts` 补一条（同一首听过几次要用最近那一次的时长）——把 `read()` 的并回注掉红四条、`closeOpen()` 注掉红三条、查表改回「最后赋值赢」红那一条
 
 - **上一首的收尾不许把新一首按回「播放中」**：`startCurrent()` 里 `await this.recordPlay(source)`（记媒体 `plays`、写本地历史、可选上报最近播放）之后原本**没有再认一次 `loadToken`** —— 这段 await 里用户切了歌、而新一首恰好被判定失败停在 `error` 时，上一首的收尾会照样跑完 `startClock()` + `setStatus('playing')`：现象是「报错卡片被顶掉、播放条显示在播、进度条在一首没出声的歌上走表」。`dispose()` 也补了一笔 `loadToken++`（还在 await 里的那次解析回来就该整段丢弃，不该在已销毁的播放器上重开时钟）
   - 离线单测 `test/player.test.ts` 补一条：把第一首的 `history.append` 卡在闸门上、切到必败的第二首，放开闸门后状态仍是 `error`、`positionMs` 仍是 0

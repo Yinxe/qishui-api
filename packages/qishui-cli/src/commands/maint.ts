@@ -96,7 +96,8 @@ export function registerMaintCommands(program: Command): void {
   program
     .command('cache <action>')
     .description(`缓存维护：${CACHE_ACTIONS.join('|')}`)
-    .option('--fix', 'verify 时顺手把坏掉的元数据文件清掉')
+    .option('--fix', 'verify 时修复记录（文件在就一个字节不动；只有缺音频的目录才删）')
+    .option('--deep', 'verify 时算 sha1（只算 v3 记录；能发现大小没变、内容被换过的文件）')
     .option('--media', 'clear/prune 时把音频文件也算上（默认只动元数据）')
     .option('--max-size <size>', 'prune 的体积上限（如 2GB；0 = 全清到只剩 keep）')
     .option('--max-age <days>', 'prune 的年龄上限（天）')
@@ -107,6 +108,7 @@ export function registerMaintCommands(program: Command): void {
         action: string,
         opts: {
           fix?: boolean
+          deep?: boolean
           media?: boolean
           maxSize?: string
           maxAge?: string
@@ -130,13 +132,26 @@ export function registerMaintCommands(program: Command): void {
             ])
             heading('媒体缓存')
             printKeyValues([
-              ['曲目', `${stats.media.tracks} 首`],
+              ['曲目', `${stats.media.tracks} 首${stats.media.clips ? `（试听 ${stats.media.clips}）` : ''}`],
               ['音频', formatBytes(stats.media.audioBytes)],
               ['封面', formatBytes(stats.media.coverBytes)],
-              ['带歌词', `${stats.media.withLyrics} 首`],
+              ['歌词', `${stats.media.withLyrics} 首 · ${formatBytes(stats.media.lyricsBytes)}`],
+              ['记录', formatBytes(stats.media.metaBytes)],
+              [
+                '残留',
+                `${formatBytes(stats.media.residueBytes)}` +
+                  (stats.media.pendingParts || stats.media.orphanDirs
+                    ? `（${stats.media.pendingParts} 个 .part · ${stats.media.orphanDirs} 个无记录目录）`
+                    : ''),
+              ],
+              [
+                '待重下',
+                stats.media.incomplete ? `${stats.media.incomplete} 首（大小对不上，下次播放会重下）` : dim('没有'),
+              ],
               ['累计播放', `${stats.media.totalPlays} 次`],
               ['最久没动', ago(Math.floor((stats.media.oldestAccessedAt ?? 0) / 1000))],
             ])
+            print(dim('音频/封面/歌词/记录 + 残留 = 已用；都是磁盘真实字节，试听片段算在音频里'))
             heading('容量', '按 cache/tracks 的真实磁盘占用算（含歌词/封面与残留 .part）')
             const cap = stats.capacity
             const rows: [string, string][] = [
@@ -226,23 +241,40 @@ export function registerMaintCommands(program: Command): void {
         }
 
         if (action === 'verify') {
-          const issues = await instance.media.verify({ fix: opts.fix === true })
-          emit(
-            () => {
-              if (!issues.length) {
-                print(`${green('✓')} 没发现问题（逐条核对 meta.json / 音频长度 / sha1）`)
-                return
+          const report = await instance.media.verify({ fix: opts.fix === true, deep: opts.deep === true })
+          const label = { error: '错误', warn: '提醒', info: '提示' } as const
+          emit(() => {
+            const meta =
+              `检查 ${report.checked} 个目录 · 试听 ${report.clips} 首（本来就比整曲短，不算问题）` +
+              `${report.staleMeta ? ` · 旧版记录 ${report.staleMeta} 首（下次播放会重取）` : ''}` +
+              ` · ${report.deep ? '已算 sha1' : '未算 sha1（--deep 才查内容）'} · 用时 ${(report.elapsedMs / 1000).toFixed(1)}s`
+            if (!report.issues.length) {
+              print(`${green('✓')} ${opts.fix ? '修完没剩下问题' : '没发现问题'}`)
+              print(dim(meta))
+              if (report.repaired || report.removedDirs) {
+                print(dim(`已修 ${report.repaired} 条记录，清掉 ${report.removedDirs} 个目录`))
               }
-              heading('发现的问题', `${issues.length} 条`)
-              printTable(
-                ['trackId', '问题'],
-                issues.map((issue) => [issue.trackId, issue.issue]),
-              )
-              if (!opts.fix) print(dim('加 --fix 顺手清掉坏条目'))
-            },
-            { issues, fixed: opts.fix === true },
-          )
-          if (issues.length) process.exitCode = 1
+              return
+            }
+            const { errors, warnings, infos } = report.summary
+            heading('发现的问题', `${report.issues.length} 条 · 错误 ${errors} / 提醒 ${warnings} / 提示 ${infos}`)
+            printTable(
+              ['级别', '曲目', '问题'],
+              report.issues.map((issue) => [
+                label[issue.severity],
+                issue.name || issue.trackId,
+                issue.issue + (issue.name ? dim(` · ${issue.trackId}`) : ''),
+              ]),
+            )
+            print(dim(meta))
+            if (report.repaired || report.removedDirs) {
+              print(dim(`已修 ${report.repaired} 条记录，清掉 ${report.removedDirs} 个目录`))
+            }
+            if (!opts.fix) {
+              print(dim('加 --fix 修复记录（文件在就一个字节不动；只有缺音频的目录才删）'))
+            }
+          }, report)
+          if (report.summary.errors) process.exitCode = 1
           return
         }
 

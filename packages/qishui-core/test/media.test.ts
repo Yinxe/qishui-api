@@ -262,18 +262,195 @@ describe('media：计数 / 校验 / 清理', () => {
     await core.media.recordPlay(TRACK)
     await core.media.recordPlay(TRACK)
     const stats = await core.media.stats()
-    expect(stats).toMatchObject({ tracks: 1, audioBytes: 2048, withLyrics: 1, totalPlays: 2 })
+    expect(stats).toMatchObject({ tracks: 1, clips: 0, audioBytes: 2048, withLyrics: 1, totalPlays: 2 })
   })
 
-  it('verify 报出大小不符；fix:true 清掉坏条目', async () => {
-    const meta = await core.media.ensure(TRACK)
+  it('stats 按真实文件拆分：音频/封面/歌词/meta 之和等于总占用，残留单独算', async () => {
+    await core.media.ensure(TRACK)
+    const one = await core.media.stats()
+    expect(one.diskBytes).toBe(one.audioBytes + one.coverBytes + one.lyricsBytes + one.metaBytes + one.residueBytes)
+    expect(one).toMatchObject({ tracks: 1, clips: 0, pendingParts: 0, orphanDirs: 0, incomplete: 0 })
+    expect(one.coverBytes).toBeGreaterThan(0)
+    expect(one.lyricsBytes).toBeGreaterThan(0)
+    expect(one.metaBytes).toBeGreaterThan(0)
+
+    // 没下完的分片 + 一个没有 meta 的孤儿目录：都只进残留，不算到音频/封面里
+    fs.writeFileSync(path.join(core.media.dirOf(TRACK), 'audio.m4a.part'), Buffer.alloc(1000, 1))
+    const orphan = path.join(core.paths.mediaDir, 'orphan-1')
+    fs.mkdirSync(orphan)
+    fs.writeFileSync(path.join(orphan, 'junk.bin'), Buffer.alloc(10, 1))
+    const two = await core.media.stats()
+    expect(two.audioBytes).toBe(one.audioBytes)
+    expect(two.residueBytes).toBe(one.residueBytes + 1010)
+    expect(two.pendingParts).toBe(1)
+    expect(two.orphanDirs).toBe(1)
+    expect(two.diskBytes).toBe(one.diskBytes + 1010)
+  })
+
+  it('verify：文件比记录短只提醒、不动文件（下次播放自己重下）', async () => {
+    await core.media.ensure(TRACK)
     fs.writeFileSync(audioPath(), mock.audioBytes.subarray(0, 10))
-    const issues = await core.media.verify()
-    expect(issues.some((i) => i.trackId === TRACK && /大小不符/.test(i.issue))).toBe(true)
+    const report = await core.media.verify()
+    const issue = report.issues.find((i) => i.trackId === TRACK)
+    expect(issue).toMatchObject({ kind: 'drift', severity: 'warn', fixable: false })
+    expect(issue?.issue).toContain('比记录短')
+
     const fixed = await core.media.verify({ fix: true })
-    expect(fixed.length).toBeGreaterThan(0)
+    expect(fixed.repaired).toBe(0)
+    expect(fixed.removedDirs).toBe(0)
+    // 不删、也不把 10 字节写成「完整」：peek 仍判不中，下次播放会重下
+    expect(fs.existsSync(audioPath())).toBe(true)
+    expect(await core.media.has(TRACK)).toBe(false)
+  })
+
+  it('verify：试听片段换了窗口不算坏，fix 只把记录改成磁盘上的实际字节', async () => {
+    const clipHome = makeTempDir('qishui-media-clip-verify-')
+    try {
+      const clip = createMockUpstream({ clip: { startSec: 3, durationSec: 5 } })
+      const clipCore = await createQishui({ dataDir: clipHome, device: MOCK_DEVICE, fetchImpl: clip.fetchImpl })
+      try {
+        await clipCore.media.ensure(TRACK)
+        const file = path.join(clipCore.media.dirOf(TRACK), 'audio.m4a')
+        fs.writeFileSync(file, clip.audioBytes.subarray(0, 1000))
+        const report = await clipCore.media.verify()
+        const issue = report.issues.find((i) => i.trackId === TRACK)
+        expect(report.clips).toBe(1)
+        expect(issue).toMatchObject({ kind: 'drift', severity: 'info', clip: true, fixable: true })
+        expect(report.summary.errors).toBe(0)
+
+        const fixed = await clipCore.media.verify({ fix: true })
+        expect(fixed.repaired).toBe(1)
+        expect(fixed.issues.filter((i) => i.trackId === TRACK)).toHaveLength(0)
+        const meta = JSON.parse(fs.readFileSync(path.join(clipCore.media.dirOf(TRACK), 'meta.json'), 'utf8'))
+        expect(meta.audio.bytes).toBe(1000)
+        expect(meta.clip).toBe(true) // 仍然是片段，下次播放还要向上游复核
+        expect(fs.existsSync(file)).toBe(true)
+      } finally {
+        clipCore.dispose()
+      }
+    } finally {
+      rmDir(clipHome)
+    }
+  })
+
+  it('verify：文件比记录长（像换成了整首）fix 更新记录，不删音频', async () => {
+    await core.media.ensure(TRACK)
+    fs.appendFileSync(audioPath(), Buffer.alloc(500, 7))
+    const report = await core.media.verify()
+    const issue = report.issues.find((i) => i.trackId === TRACK)
+    expect(issue).toMatchObject({ kind: 'drift', severity: 'warn', fixable: true })
+    // 大小变了但内容不是「坏」：deep 也不该按 sha1 判死（那只是另一份文件）
+    expect((await core.media.verify({ deep: true })).summary.errors).toBe(0)
+
+    const fixed = await core.media.verify({ fix: true })
+    expect(fixed.repaired).toBe(1)
+    expect(fixed.removedDirs).toBe(0)
+    expect(fixed.issues.filter((i) => i.trackId === TRACK)).toHaveLength(0)
+    const meta = JSON.parse(fs.readFileSync(path.join(core.media.dirOf(TRACK), 'meta.json'), 'utf8'))
+    expect(meta.audio.bytes).toBe(2548)
+    // 没算 sha1 的修复要把旧指纹清掉，否则下次 deep 会把这份文件当成「内容被换过」
+    expect(meta.audio.sha1).toBeUndefined()
+    expect((await core.media.verify({ deep: true })).summary.errors).toBe(0)
+    expect(await core.media.has(TRACK)).toBe(true)
+
+    // 再 deep 修一次就把 sha1 补上，之后深度校验干净
+    await core.media.verify({ fix: true, deep: true })
+    expect((await core.media.verify({ deep: true })).issues.filter((i) => i.trackId === TRACK)).toHaveLength(0)
+  })
+
+  it('verify：meta 没记音频长度不算「比记录长」，fix 补上', async () => {
+    await core.media.ensure(TRACK)
+    const file = path.join(core.media.dirOf(TRACK), 'meta.json')
+    const meta = JSON.parse(fs.readFileSync(file, 'utf8'))
+    delete meta.audio.bytes
+    fs.writeFileSync(file, JSON.stringify(meta))
+
+    const report = await core.media.verify()
+    const issue = report.issues.find((i) => i.trackId === TRACK)
+    expect(issue).toMatchObject({ kind: 'drift', severity: 'info', fixable: true })
+    expect(issue?.issue).toContain('没记音频长度')
+
+    await core.media.verify({ fix: true })
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).audio.bytes).toBe(2048)
+  })
+
+  it('verify：音频缺失才是 error，fix 删目录；歌词/封面缺失只去掉失效引用', async () => {
+    await core.media.ensure(TRACK)
+    fs.rmSync(path.join(core.media.dirOf(TRACK), 'lyrics.json'))
+    fs.rmSync(path.join(core.media.dirOf(TRACK), 'cover.jpg'))
+    const report = await core.media.verify()
+    const kinds = report.issues.filter((i) => i.trackId === TRACK).map((i) => i.kind)
+    expect(kinds).toContain('missing')
+    expect(report.summary.errors).toBe(0)
+
+    const repaired = await core.media.verify({ fix: true })
+    expect(repaired.issues.filter((i) => i.trackId === TRACK)).toHaveLength(0)
+    const meta = JSON.parse(fs.readFileSync(path.join(core.media.dirOf(TRACK), 'meta.json'), 'utf8'))
+    expect(meta.lyrics).toBeUndefined()
+    expect(meta.cover).toBeUndefined()
+    expect((await core.media.stats()).withLyrics).toBe(0)
+    expect(fs.existsSync(audioPath())).toBe(true)
+
+    // 音频真没了：error，fix 删目录（留着也播不了）
+    fs.rmSync(audioPath())
+    const gone = await core.media.verify()
+    expect(gone.issues.find((i) => i.trackId === TRACK)).toMatchObject({ kind: 'broken', severity: 'error' })
+    expect((await core.media.verify({ fix: true })).removedDirs).toBe(1)
     expect(fs.existsSync(core.media.dirOf(TRACK))).toBe(false)
-    expect(meta.trackId).toBe(TRACK)
+  })
+
+  it('verify deep：大小对得上但指纹不同 → 只重记指纹，不删文件', async () => {
+    await core.media.ensure(TRACK)
+    const bytes = fs.readFileSync(audioPath())
+    bytes[0] = bytes[0] === 0 ? 1 : 0
+    fs.writeFileSync(audioPath(), bytes)
+    // 不 deep 时只看大小，发现不了
+    expect((await core.media.verify()).issues.filter((i) => i.trackId === TRACK)).toHaveLength(0)
+    const deep = await core.media.verify({ deep: true })
+    expect(deep.deep).toBe(true)
+    expect(deep.issues.find((i) => i.trackId === TRACK)).toMatchObject({
+      kind: 'drift',
+      severity: 'warn',
+      fixable: true,
+    })
+    expect(deep.summary.errors).toBe(0)
+
+    const fixed = await core.media.verify({ fix: true, deep: true })
+    expect(fixed.repaired).toBe(1)
+    expect(fixed.removedDirs).toBe(0)
+    expect(fs.existsSync(audioPath())).toBe(true)
+    // 指纹重记之后深度校验干净（文件一个字节没动）
+    expect((await core.media.verify({ deep: true })).issues.filter((i) => i.trackId === TRACK)).toHaveLength(0)
+  })
+
+  it('verify deep：老版本 meta 的指纹不可信，不按它判坏（下次播放会整条重取）', async () => {
+    await core.media.ensure(TRACK)
+    const file = path.join(core.media.dirOf(TRACK), 'meta.json')
+    const meta = JSON.parse(fs.readFileSync(file, 'utf8'))
+    meta.v = 2
+    meta.audio.sha1 = '0'.repeat(40)
+    fs.writeFileSync(file, JSON.stringify(meta))
+
+    const deep = await core.media.verify({ deep: true })
+    expect(deep.issues.filter((i) => i.trackId === TRACK)).toHaveLength(0)
+    expect(deep.staleMeta).toBe(1)
+  })
+
+  it('verify：孤儿目录报 info，fix 清掉；.part 只提示不删', async () => {
+    await core.media.ensure(TRACK)
+    fs.writeFileSync(path.join(core.media.dirOf(TRACK), 'audio.m4a.part'), Buffer.alloc(10, 1))
+    const orphan = path.join(core.paths.mediaDir, 'orphan-2')
+    fs.mkdirSync(orphan)
+    const report = await core.media.verify()
+    expect(report.issues.filter((i) => i.kind === 'residue')).toHaveLength(2)
+    expect(report.summary.errors).toBe(0)
+
+    const fixed = await core.media.verify({ fix: true })
+    expect(fixed.issues.filter((i) => i.trackId === 'orphan-2')).toHaveLength(0)
+    // `.part` 不可修、也不删，仍然留在报告里
+    expect(fixed.issues.some((i) => i.trackId === TRACK && /\.part/.test(i.issue))).toBe(true)
+    expect(fs.existsSync(orphan)).toBe(false)
+    expect(fs.existsSync(path.join(core.media.dirOf(TRACK), 'audio.m4a.part'))).toBe(true)
   })
 
   it('evict 单首、prune(maxAgeMs:0) 剔全部、clear 清目录', async () => {

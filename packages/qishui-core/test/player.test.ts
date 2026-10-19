@@ -385,3 +385,32 @@ describe('player：失败路径（skipOnError）', () => {
     }
   })
 })
+
+describe('player：收听时长收尾（journal 里那句「听完」不再是摆设）', () => {
+  it('自然播完 → completed 为真、playedMs 就是可播时长', async () => {
+    await core.player.play(T1)
+    core.player.setDuration(30) // 把可播时长压到 30ms：时钟一两拍就到曲终
+    await sleep(80)
+    expect(core.player.status).toBe('stopped')
+    expect(core.plays()[0]).toMatchObject({ trackId: T1, playedMs: 30, completed: true })
+  })
+
+  it('中途切歌：上一首停在切走时的位置、不算听完；正在听的这首还没收尾', async () => {
+    await core.player.play([T1, T2])
+    core.player.seek(5_000)
+    core.player.pause() // 冻住位置，断言才拿得到确切数字
+    await core.player.next()
+    await sleep(60) // 收尾是异步追加，等它落盘
+    const [now, before] = core.plays()
+    expect(now?.trackId).toBe(T2)
+    expect(now?.playedMs).toBeUndefined()
+    expect(before).toMatchObject({ trackId: T1, playedMs: 5_000, completed: false })
+  })
+
+  it('dispose 走同步收尾：退出路径不等微任务也落得住', async () => {
+    await core.player.play(T1)
+    core.player.seek(9_000)
+    core.player.dispose()
+    expect(core.plays()[0]).toMatchObject({ trackId: T1, playedMs: 9_000, completed: false })
+  })
+})

@@ -4,21 +4,42 @@
  * 原则与 CLI 的 `qishui cache` 一致：**默认只读**，清缓存一律过确认框；
  * 媒体（几 MB 一首的音频）要显式点「清空媒体缓存」才动 —— 别顺手把用户的歌删了。
  * 缓存分档表直接用 core 的 `CACHE_TIERS`/`KIND_SCOPE`，不另抄一份。
+ *
+ * 统计口径：一律是磁盘上的真实字节（core 的 `MediaStats` 已经按文件拆好），
+ * 页面只负责排版（文案在 `ui/cacheView.ts`，有单测）。校验同理：**试听片段不是坏文件**，
+ * 它比整曲短是正常的，报告里单独计数，不当问题列。
  */
 import { Box } from 'ink'
 import {
   CACHE_TIERS,
   CONFIG_DEFAULTS,
+  type EntityCacheStats,
   formatBytes,
   KIND_SCOPE,
   MEDIA_EVICT_POLICIES,
+  type MediaCapacity,
+  type MediaStats,
   mediaCapacityLabel,
   mediaEvictPolicyLabel,
   nextMediaCapacityTier,
   parseFeedMode,
+  type VerifyReport,
 } from 'qishui-core'
 import { useState } from 'react'
 import { useCore } from '../core/context.js'
+import {
+  breakdownNote,
+  capacityNote,
+  entityNote,
+  fixNote,
+  incompleteNote,
+  issueLabel,
+  issueNote,
+  mediaNote,
+  residueNote,
+  verifyDetail,
+  verifyHeadline,
+} from '../ui/cacheView.js'
 import { useUi } from '../ui/context.js'
 import { type Section, SectionView, useEntries } from '../ui/entries.js'
 import { listHeight } from '../ui/layout.js'
@@ -27,27 +48,9 @@ import { Loading, PageTitle } from '../ui/widgets.js'
 import { feedModeLabel } from './Listen.js'
 
 interface CacheOverview {
-  entities: { entries: number; bytes: number; hits: number; misses: number }
-  media: {
-    tracks: number
-    audioBytes: number
-    coverBytes: number
-    withLyrics: number
-    oldestAccessedAt?: number
-    totalPlays: number
-    /** `cache/tracks` 的真实磁盘占用 */
-    diskBytes: number
-  }
-  capacity: {
-    usedBytes: number
-    limitBytes: number
-    percent?: number
-    overLimit: boolean
-    policy: 'lru' | 'leastPlayed'
-    autoEvict: boolean
-    reclaimableTracks: number
-    reclaimableBytes: number
-  }
+  entities: EntityCacheStats
+  media: MediaStats
+  capacity: MediaCapacity
 }
 
 const REPEAT_ORDER = ['off', 'all', 'one'] as const
@@ -76,10 +79,14 @@ const CONFIG_LABELS: Record<string, string> = {
 
 const CONFIG_KEYS = Object.keys(CONFIG_DEFAULTS).filter((key) => key !== 'dataDir')
 
+/** 校验问题最多列这么多条（再多的让人先修一遍，别把设置页撑成日志） */
+const ISSUE_ROWS = 30
+
 export function SettingsScreen({ active }: { active: boolean }) {
   const { core } = useCore()
   const ui = useUi()
-  const [issues, setIssues] = useState<{ trackId: string; issue: string }[] | undefined>()
+  const [report, setReport] = useState<VerifyReport | undefined>()
+  const [verifying, setVerifying] = useState(false)
   const [configRevision, setConfigRevision] = useState(0)
 
   const stats = useAsync<CacheOverview>(
@@ -145,14 +152,55 @@ export function SettingsScreen({ active }: { active: boolean }) {
     })
   }
 
+  /**
+   * 校验：默认只读（只看大小/记录），`deep` 才算 sha1。
+   * 试听片段在报告里单独计数，不当问题——它们本来就比整曲短。
+   */
+  const runVerify = (deep: boolean): void => {
+    if (!core || verifying) return
+    setVerifying(true)
+    void (async () => {
+      try {
+        const result = await core.media.verify({ deep })
+        setReport(result)
+        const { errors, warnings, fixable } = result.summary
+        ui.toast(
+          result.issues.length === 0
+            ? `检查 ${result.checked} 个目录：没发现问题`
+            : `检查 ${result.checked} 个目录：错误 ${errors} · 提醒 ${warnings} · 可修 ${fixable}`,
+          errors > 0 ? 'error' : warnings > 0 ? 'info' : 'success',
+        )
+      } catch (err) {
+        ui.toast(err instanceof Error ? err.message : String(err), 'error')
+      } finally {
+        setVerifying(false)
+      }
+    })()
+  }
+
+  /** 修复：只改记录，文件在就一个字节不动（只有缺音频/空文件的目录才删） */
+  const fixIssues = (): void => {
+    if (!core) return
+    const fixable = report?.summary.fixable ?? 0
+    confirm(
+      fixable > 0 ? `修复 ${fixable} 项校验问题？` : '再跑一次校验并修复？',
+      '只改记录（补字节数/sha1、去掉失效的歌词/封面引用、清孤儿目录）；只有音频缺失/为空的目录会被删掉，下次播放重下。文件在就一个字节不动',
+      async () => {
+        const result = await core.media.verify({ fix: true, deep: report?.deep === true })
+        setReport(result)
+        ui.toast(`已修 ${result.repaired} 条记录，清掉 ${result.removedDirs} 个目录`, 'success')
+      },
+    )
+  }
+
   const sections: Section[] = []
   sections.push({
     title: '存储位置',
     entries: [
       { key: 'root', label: '数据目录', note: paths?.root, disabled: true },
-      { key: 'config', label: '配置', note: paths?.configFile, disabled: true },
+      { key: 'config', label: '配置文件', note: paths?.configFile, disabled: true },
       { key: 'accounts', label: '账号会话', note: paths?.accountsDir, disabled: true },
-      { key: 'media', label: '媒体缓存', note: paths?.mediaDir, disabled: true },
+      { key: 'media-dir', label: '媒体目录', note: paths?.mediaDir, disabled: true },
       { key: 'history', label: '播放历史', note: core?.history.scopeFile, disabled: true },
     ],
   })
@@ -164,26 +212,50 @@ export function SettingsScreen({ active }: { active: boolean }) {
       {
         key: 'entities',
         label: '实体元数据',
-        note: overview
-          ? `${overview.entities.entries} 项 · ${formatBytes(overview.entities.bytes)} · 命中 ${overview.entities.hits} / 未中 ${overview.entities.misses}`
-          : stats.status === 'loading'
-            ? '读取中…'
-            : stats.error,
+        note: overview ? entityNote(overview.entities) : stats.status === 'loading' ? '读取中…' : stats.error,
         disabled: true,
       },
       {
         key: 'media',
-        label: '媒体（音频/封面/歌词）',
-        note: overview
-          ? `${overview.media.tracks} 首 · ${formatBytes(overview.media.audioBytes)} 音频 + ${formatBytes(overview.media.coverBytes)} 封面 · ${overview.media.withLyrics} 首有歌词`
-          : undefined,
+        label: '媒体缓存',
+        note: overview ? mediaNote(overview.media) : undefined,
+        disabled: true,
+      },
+      {
+        key: 'breakdown',
+        label: '占用明细',
+        note: overview ? breakdownNote(overview.media) : undefined,
+        disabled: true,
+      },
+      {
+        key: 'residue',
+        label: '残留',
+        note: overview ? residueNote(overview.media) : undefined,
+        disabled: true,
+      },
+      {
+        key: 'incomplete',
+        label: '待重下',
+        note: overview ? incompleteNote(overview.media) : undefined,
         disabled: true,
       },
       {
         key: 'capacity',
         label: '容量',
-        note: overview ? capacityText(overview) : undefined,
+        note: overview ? capacityNote(overview.capacity) : undefined,
         disabled: true,
+      },
+    ],
+  })
+
+  sections.push({
+    title: '校验与维护',
+    entries: [
+      {
+        key: 'refresh-stats',
+        label: '刷新统计',
+        note: 'R',
+        onEnter: () => stats.reload(),
       },
       {
         key: 'evict-media',
@@ -209,11 +281,31 @@ export function SettingsScreen({ active }: { active: boolean }) {
           ),
       },
       {
-        key: 'refresh-stats',
-        label: '刷新统计',
-        note: 'R',
-        onEnter: () => stats.reload(),
+        key: 'verify-media',
+        label: '校验媒体文件',
+        note: '查大小与记录，不动文件；试听片段不算坏',
+        onEnter: () => runVerify(false),
       },
+      {
+        key: 'verify-deep',
+        label: '深度校验（sha1）',
+        note: overview
+          ? `算内容指纹（只算新版记录）· ${formatBytes(overview.media.diskBytes)} 要几秒`
+          : '算内容指纹，慢一些',
+        onEnter: () => runVerify(true),
+      },
+      {
+        key: 'fix-media',
+        label: '修复校验问题',
+        note: fixNote(report),
+        onEnter: fixIssues,
+      },
+    ],
+  })
+
+  sections.push({
+    title: '清理',
+    entries: [
       {
         key: 'prune-entities',
         label: '清理过期元数据',
@@ -222,24 +314,6 @@ export function SettingsScreen({ active }: { active: boolean }) {
             await core?.clearCache()
             ui.toast('已清理过期元数据', 'success')
           }),
-      },
-      {
-        key: 'verify-media',
-        label: '校验媒体文件',
-        onEnter: () => {
-          void (async () => {
-            try {
-              const found = (await core?.media.verify()) ?? []
-              setIssues(found)
-              ui.toast(
-                found.length ? `发现 ${found.length} 个问题` : '媒体文件完好',
-                found.length ? 'error' : 'success',
-              )
-            } catch (err) {
-              ui.toast(err instanceof Error ? err.message : String(err), 'error')
-            }
-          })()
-        },
       },
       {
         key: 'clear-entities',
@@ -260,7 +334,7 @@ export function SettingsScreen({ active }: { active: boolean }) {
             '本地音频/封面/歌词会被删除（可再下载），正在播的那首不动，歌单不受影响',
             async () => {
               await core?.clearCache({ all: true, media: true })
-              setIssues(undefined)
+              setReport(undefined)
               ui.toast('已清空媒体缓存', 'success')
             },
           ),
@@ -268,15 +342,31 @@ export function SettingsScreen({ active }: { active: boolean }) {
     ],
   })
 
-  if (issues && issues.length > 0) {
+  if (report) {
+    const shown = report.issues.slice(0, ISSUE_ROWS)
+    const more = report.issues.length - shown.length
     sections.push({
-      title: `校验问题（${issues.length}）`,
-      entries: issues.slice(0, 20).map((issue, index) => ({
-        key: `issue:${index}:${issue.trackId}`,
-        label: issue.issue,
-        note: issue.trackId,
-        disabled: true,
-      })),
+      title: report.issues.length ? `校验结果（${report.issues.length} 条）` : '校验结果',
+      entries: [
+        { key: 'verify-headline', label: '概览', note: verifyHeadline(report), disabled: true },
+        { key: 'verify-detail', label: '说明', note: verifyDetail(report), disabled: true },
+        ...shown.map((issue, index) => ({
+          key: `issue:${index}:${issue.trackId}:${issue.kind}`,
+          label: issueLabel(issue),
+          note: issueNote(issue),
+          disabled: true,
+        })),
+        ...(more > 0
+          ? [
+              {
+                key: 'issue-more',
+                label: `还有 ${more} 条`,
+                note: '先修一遍（只改记录），再跑一次校验',
+                disabled: true,
+              },
+            ]
+          : []),
+      ],
     })
   }
 
@@ -326,6 +416,7 @@ export function SettingsScreen({ active }: { active: boolean }) {
     <Box flexDirection="column" flexGrow={1}>
       <PageTitle title="设置与缓存" subtitle="数据目录 / 缓存统计与清理 / 配置" />
       {stats.status === 'loading' ? <Loading label="读取缓存统计" /> : null}
+      {verifying ? <Loading label="校验媒体文件（读记录 / 算 sha1）" /> : null}
       <SectionView sections={sections} cursor={cursor} height={height} onCursor={setCursor} />
     </Box>
   )
@@ -346,15 +437,4 @@ function formatConfigValue(key: string, value: unknown): string {
   if (typeof value === 'number' && /Bytes$/.test(key)) return formatBytes(value)
   if (typeof value === 'number' && /Ms$/.test(key)) return `${value} ms`
   return JSON.stringify(value)
-}
-
-/** 缓存的「已用 / 上限」一句话：不限制就直说，超了把超出量也写出来 */
-function capacityText(overview: CacheOverview): string {
-  const { usedBytes, limitBytes, percent, overLimit } = overview.capacity
-  const limit =
-    limitBytes === 0
-      ? '不限制'
-      : `${mediaCapacityLabel(limitBytes) === '自定义' ? formatBytes(limitBytes) : mediaCapacityLabel(limitBytes)}（${percent ?? 0}%）`
-  const base = `已用 ${formatBytes(usedBytes)} / ${limit}`
-  return overLimit ? `${base} · 超 ${formatBytes(usedBytes - limitBytes)}` : base
 }

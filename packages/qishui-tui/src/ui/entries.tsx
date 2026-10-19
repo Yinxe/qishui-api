@@ -23,11 +23,14 @@ export interface Section {
 interface Line {
   type: 'header' | 'gap' | 'entry'
   text?: string
+  /** 条目右侧的补充说明（不可选中的纯信息行也要显示——设置页的统计数字全在 note 上） */
+  note?: string
   /** 指向 entries 数组下标；undefined = 不可选中 */
   entryIndex?: number
 }
 
-function flatten(sections: Section[]): { lines: Line[]; entries: Entry[] } {
+/** 摊平成「行」：`entryIndex` 只给可选中项，`note` 原样带上（不可选中项也有 note） */
+export function flattenSections(sections: Section[]): { lines: Line[]; entries: Entry[] } {
   const lines: Line[] = []
   const entries: Entry[] = []
   sections.forEach((section, sectionIndex) => {
@@ -36,7 +39,7 @@ function flatten(sections: Section[]): { lines: Line[]; entries: Entry[] } {
     for (const entry of section.entries) {
       const entryIndex = entry.disabled ? undefined : entries.length
       if (!entry.disabled) entries.push(entry)
-      lines.push({ type: 'entry', entryIndex, text: entry.label })
+      lines.push({ type: 'entry', entryIndex, text: entry.label, note: entry.note })
     }
   })
   return { lines, entries }
@@ -73,7 +76,7 @@ export function SectionView({
   /** 给了才接鼠标（滚轮挪游标、点条目选中 / 点在已选条目上 = Enter） */
   onCursor?: (n: number) => void
 }) {
-  const { lines, entries } = flatten(sections)
+  const { lines, entries } = flattenSections(sections)
   let cursorLine = 0
   for (let i = 0; i < lines.length; i++) {
     if (lines[i].type === 'entry' && lines[i].entryIndex === cursor) {
@@ -135,8 +138,7 @@ export function SectionView({
         }
         const index = line.entryIndex ?? -1
         const selected = index === cursor
-        const note = index >= 0 ? entries[index]?.note : undefined
-        return <Row key={`e-${lineIndex}`} selected={selected} label={line.text ?? ''} note={note} />
+        return <Row key={`e-${lineIndex}`} selected={selected} label={line.text ?? ''} note={line.note} />
       })}
     </Box>
   )

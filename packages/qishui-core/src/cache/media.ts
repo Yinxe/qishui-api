@@ -10,7 +10,7 @@ import { coerceTrack } from '../parse.js'
 import type { CorePaths } from '../paths.js'
 import { Lyrics } from '../player/lyrics.js'
 import type { TrackData } from '../types.js'
-import { dirStats, ensureDir, fileSize, hashFile, pathExists, readJson, removeQuiet, writeJsonAtomic } from '../util.js'
+import { ensureDir, fileSize, hashFile, pathExists, readJson, removeQuiet, writeJsonAtomic } from '../util.js'
 
 /** 已落盘的音频文件描述（`file` 是相对曲目目录的名字） */
 export interface CachedAudio {
@@ -88,19 +88,44 @@ export interface ResolveOptions extends EnsureOptions {
   download?: boolean
 }
 
+/**
+ * 媒体缓存统计。
+ *
+ * **口径**：`diskBytes` 与下面几项拆分的都是 `cache/tracks` 下**文件的真实字节**（`stat` 出来的），
+ * 不是 meta 自报的 `audio.bytes`。所以 `diskBytes === audioBytes + coverBytes + lyricsBytes + metaBytes + residueBytes`
+ * 恒成立——界面上「总共 1.9GB」与「音频 1.6GB + 封面 …」不会互相打架。
+ */
 export interface MediaStats {
+  /** 有有效 meta 的曲目数 */
   tracks: number
+  /** 其中**只是试听片段**的（文件短是正常的，别按整曲体积去比） */
+  clips: number
+  /** 音频文件真实字节 */
   audioBytes: number
+  /** 封面文件真实字节 */
   coverBytes: number
+  /** 歌词文件真实字节 */
+  lyricsBytes: number
+  /** `meta.json` 本身占的字节 */
+  metaBytes: number
+  /** 有歌词**且文件还在**的曲目数 */
   withLyrics: number
   /** 最久没被访问的一条的时间 */
   oldestAccessedAt?: number
   totalPlays: number
-  /**
-   * `cache/tracks` 的**真实磁盘占用**：含 `meta.json`/`lyrics.json`、没下完的 `.part`、
-   * 以及 meta 丢失的孤儿目录。上面那几项是 meta 自报的数，两者不等是正常的（残留物）。
-   */
+  /** `cache/tracks` 的**真实磁盘占用**（含歌词/封面/meta/`.part`/孤儿目录） */
   diskBytes: number
+  /**
+   * 归不到上面任何一项的字节：没下完的 `.part`、meta 丢失的孤儿目录、认不出的杂文件。
+   * `diskBytes - (audioBytes + coverBytes + lyricsBytes + metaBytes)`，恒等于它。
+   */
+  residueBytes: number
+  /** 残留 `.part` 文件个数（下次 `ensure` 会续传，不是坏文件） */
+  pendingParts: number
+  /** 没有（或读不出）meta 的孤儿目录个数 */
+  orphanDirs: number
+  /** 音频缺失/为空/大小与记录不符的曲目数（试听片段除外）——下次播放会重新下载 */
+  incomplete: number
 }
 
 /** 容量账：`prune` 剔谁、`capacity` 显示什么，都出自同一份数字 */
@@ -122,9 +147,87 @@ export interface MediaCapacity {
   reclaimableBytes: number
 }
 
+/** 单次扫描里一首曲目目录的账（`scan()` 用；统计/容量/剔除共用一份，避免两套口径） */
+interface ScannedTrack {
+  id: string
+  meta: CachedMediaMeta
+  /** 只是试听片段（`clip` 或老 meta 的 `playableRange`） */
+  clip: boolean
+  /** 歌词文件确实在盘上 */
+  hasLyrics: boolean
+  /** 音频文件真实字节（缺失时 undefined） */
+  audioSize?: number
+  coverSize: number
+  lyricsSize: number
+  metaSize: number
+  /** 整个目录的真实字节（含 `.part` 等残留） */
+  dirBytes: number
+  /** 音频在、非空、大小与记录一致（= `peek()` 会命中） */
+  complete: boolean
+}
+
+interface MediaScan {
+  items: ScannedTrack[]
+  metas: CachedMediaMeta[]
+  /** 曲目 id → 目录真实字节 */
+  bytesOf: Map<string, number>
+  diskBytes: number
+  audioBytes: number
+  coverBytes: number
+  lyricsBytes: number
+  metaBytes: number
+  residueBytes: number
+  pendingParts: number
+  orphanDirs: number
+  incomplete: number
+  clips: number
+}
+
+/** 校验发现的单条问题。`kind` 决定「能不能直接播」与「`fix` 会怎么处理」。 */
+export type VerifyIssueKind =
+  /** 音频没了/空的：这份缓存不能播，`fix` 删目录，下次播放重下 */
+  | 'broken'
+  /** 音频还在但与记录对不上（换过版本/片段窗口变了/被截断）：多数能修 */
+  | 'drift'
+  /** 歌词或封面文件缺失：不影响播放，`fix` 去掉失效引用 */
+  | 'missing'
+  /** 孤儿目录、残留 `.part` 这类打扫项 */
+  | 'residue'
+
+export type VerifySeverity = 'error' | 'warn' | 'info'
+
 export interface VerifyIssue {
   trackId: string
+  /** 一句给人看的中文 */
   issue: string
+  kind: VerifyIssueKind
+  /** error = 播不了；warn = 能播但记录不对；info = 只是打扫提示 */
+  severity: VerifySeverity
+  /** 这首只是试听片段（短是正常的，不是整曲残缺） */
+  clip: boolean
+  /** 曲名（有 meta 就带上，界面直接显示） */
+  name?: string
+  /** `fix: true` 会不会处理它 */
+  fixable: boolean
+}
+
+/** `verify()` 的完整报告：问题列表 + 概览数字（界面要显示「检查了多少、几首试听」） */
+export interface VerifyReport {
+  /** 扫过的曲目目录数（含孤儿目录） */
+  checked: number
+  /** 其中试听片段数 */
+  clips: number
+  /** meta 还是老版本（下次播放会自动重取）的条数 */
+  staleMeta: number
+  /** 这次是否算了 sha1 */
+  deep: boolean
+  elapsedMs: number
+  issues: VerifyIssue[]
+  /** `fix: true` 时改写了几条 meta（补字节数/sha1/去掉失效引用） */
+  repaired: number
+  /** `fix: true` 时删掉几个目录（音频没了/被截断/孤儿） */
+  removedDirs: number
+  summary: { errors: number; warnings: number; infos: number; fixable: number }
 }
 
 const MIME_EXT: Record<string, string> = {
@@ -192,23 +295,38 @@ export class MediaCache {
     }
   }
 
-  /** 落盘缓存总量与命中信息 */
+  /**
+   * 落盘缓存的总量与拆分。
+   *
+   * 每一项都按**文件真实字节**统计（不是 meta 自报）：这样「总占用」与「音频/封面/歌词/记录」
+   * 能对得上，`residueBytes` 就是差值——`.part`、孤儿目录、认不出的杂文件全落在这里。
+   */
   async stats(): Promise<MediaStats> {
-    const { metas: all, diskBytes } = await this.scan()
-    let audioBytes = 0
-    let coverBytes = 0
+    const scan = await this.scan()
     let withLyrics = 0
     let oldest: number | undefined
     let totalPlays = 0
-    for (const meta of all) {
-      // readMeta 只保证 `audio.file` 在，老/手改的 meta 可能没 `bytes`——不兜 0 会把整统计加成 NaN
-      audioBytes += meta.audio.bytes ?? 0
-      coverBytes += meta.cover?.bytes ?? 0
-      if (meta.lyrics) withLyrics++
-      totalPlays += meta.plays ?? 0
-      if (oldest === undefined || meta.accessedAt < oldest) oldest = meta.accessedAt
+    for (const item of scan.items) {
+      if (item.hasLyrics) withLyrics++
+      totalPlays += item.meta.plays ?? 0
+      if (oldest === undefined || item.meta.accessedAt < oldest) oldest = item.meta.accessedAt
     }
-    return { tracks: all.length, audioBytes, coverBytes, withLyrics, oldestAccessedAt: oldest, totalPlays, diskBytes }
+    return {
+      tracks: scan.metas.length,
+      clips: scan.clips,
+      audioBytes: scan.audioBytes,
+      coverBytes: scan.coverBytes,
+      lyricsBytes: scan.lyricsBytes,
+      metaBytes: scan.metaBytes,
+      withLyrics,
+      oldestAccessedAt: oldest,
+      totalPlays,
+      diskBytes: scan.diskBytes,
+      residueBytes: scan.residueBytes,
+      pendingParts: scan.pendingParts,
+      orphanDirs: scan.orphanDirs,
+      incomplete: scan.incomplete,
+    }
   }
 
   /**
@@ -216,24 +334,23 @@ export class MediaCache {
    * 上限 `0`（不限制）时 `overLimit` 恒 false、`percent` 不给。
    */
   async capacity(): Promise<MediaCapacity> {
-    const { metas, diskBytes } = await this.scan()
+    const scan = await this.scan()
     const limitBytes = this.config.maxMediaBytes
     const policy = this.config.mediaEvictPolicy
-    const sizes = await this.sizesOf(metas)
-    const over = limitBytes > 0 ? diskBytes - limitBytes : 0
+    const over = limitBytes > 0 ? scan.diskBytes - limitBytes : 0
     let reclaimableTracks = 0
     let reclaimableBytes = 0
     if (over > 0) {
-      for (const meta of this.order(metas, policy)) {
+      for (const meta of this.order(scan.metas, policy)) {
         if (reclaimableBytes >= over) break
-        reclaimableBytes += sizes.get(meta.trackId) ?? 0
+        reclaimableBytes += scan.bytesOf.get(meta.trackId) ?? 0
         reclaimableTracks++
       }
     }
     return {
-      usedBytes: diskBytes,
+      usedBytes: scan.diskBytes,
       limitBytes,
-      percent: limitBytes > 0 ? Math.round((diskBytes / limitBytes) * 100) : undefined,
+      percent: limitBytes > 0 ? Math.round((scan.diskBytes / limitBytes) * 100) : undefined,
       overLimit: over > 0,
       policy,
       autoEvict: this.config.mediaAutoEvict,
@@ -242,17 +359,86 @@ export class MediaCache {
     }
   }
 
-  /** 一次遍历出「有 meta 的曲目」+「真实磁盘字节」：显示与剔除共用，免得两套账 */
-  private async scan(): Promise<{ metas: CachedMediaMeta[]; diskBytes: number }> {
-    const { bytes } = await dirStats(this.paths.mediaDir)
-    return { metas: await this.list(), diskBytes: bytes }
-  }
+  /**
+   * 一次遍历出「每首曲目目录里到底有哪些文件」：统计、容量、剔除全用这一份，免得两套账。
+   * 只读磁盘，不发请求。
+   */
+  private async scan(): Promise<MediaScan> {
+    const scan: MediaScan = {
+      items: [],
+      metas: [],
+      bytesOf: new Map(),
+      diskBytes: 0,
+      audioBytes: 0,
+      coverBytes: 0,
+      lyricsBytes: 0,
+      metaBytes: 0,
+      residueBytes: 0,
+      pendingParts: 0,
+      orphanDirs: 0,
+      incomplete: 0,
+      clips: 0,
+    }
+    let entries: fs.Dirent[]
+    try {
+      entries = await fsp.readdir(this.paths.mediaDir, { withFileTypes: true })
+    } catch {
+      return scan
+    }
+    for (const entry of entries) {
+      const full = path.join(this.paths.mediaDir, entry.name)
+      if (!entry.isDirectory()) {
+        // 媒体根下直接躺着的文件（误放的 `.part` 之类）：只算残留
+        const size = (await fileSize(full)) ?? 0
+        scan.diskBytes += size
+        scan.residueBytes += size
+        if (entry.name.endsWith('.part')) scan.pendingParts++
+        continue
+      }
+      const files = await walkFiles(full)
+      let dirBytes = 0
+      for (const size of files.values()) dirBytes += size
+      scan.diskBytes += dirBytes
+      scan.bytesOf.set(entry.name, dirBytes)
+      for (const name of files.keys()) if (name.endsWith('.part')) scan.pendingParts++
 
-  /** 每首曲目目录的真实字节（含歌词/封面/meta 与残留 `.part`） */
-  private async sizesOf(metas: CachedMediaMeta[]): Promise<Map<string, number>> {
-    const out = new Map<string, number>()
-    for (const meta of metas) out.set(meta.trackId, (await dirStats(this.dirOf(meta.trackId))).bytes)
-    return out
+      const meta = await this.readMeta(entry.name)
+      if (!meta) {
+        scan.orphanDirs++
+        scan.residueBytes += dirBytes
+        continue
+      }
+      const audioSize = files.get(meta.audio.file)
+      const coverSize = meta.cover ? (files.get(meta.cover.file) ?? 0) : 0
+      const lyricsSize = meta.lyrics ? (files.get(meta.lyrics.file) ?? 0) : 0
+      const metaSize = files.get('meta.json') ?? 0
+      const clip = isClip(meta)
+      // 音频缺失/为空/与记录不符：peek 不算命中，下次播放会重下。试听片段本来就不算「完整」，
+      // 它每次播放都要向上游复核（见 `ensure`），不并进「待重下」这个数里
+      const complete = audioSize !== undefined && audioSize > 0 && (audioSize === (meta.audio.bytes ?? -1) || clip)
+      scan.items.push({
+        id: entry.name,
+        meta,
+        clip,
+        hasLyrics: Boolean(meta.lyrics && files.has(meta.lyrics.file)),
+        audioSize,
+        coverSize,
+        lyricsSize,
+        metaSize,
+        dirBytes,
+        complete,
+      })
+      scan.metas.push(meta)
+      scan.audioBytes += audioSize ?? 0
+      scan.coverBytes += coverSize
+      scan.lyricsBytes += lyricsSize
+      scan.metaBytes += metaSize
+      if (clip) scan.clips++
+      if (!complete) scan.incomplete++
+      // 扣掉认得出来的文件，剩下的才是残留（`.part`、陌生文件）
+      scan.residueBytes += Math.max(0, dirBytes - (audioSize ?? 0) - coverSize - lyricsSize - metaSize)
+    }
+    return scan
   }
 
   /**
@@ -464,12 +650,14 @@ export class MediaCache {
 
   /** 清空媒体缓存目录（用户下决心要腾地方时才用；比 prune 更彻底） */
   async clear(): Promise<{ removed: number; freedBytes: number }> {
-    const all = await this.list()
-    const freedBytes = all.reduce((sum, meta) => sum + meta.audio.bytes + (meta.cover?.bytes ?? 0), 0)
+    // 释放量按真实磁盘字节算（与 `capacity()` 同一个口径），别只数音频+封面把歌词/残留漏掉
+    const scan = await this.scan()
+    const removed = scan.metas.length
+    const freedBytes = scan.diskBytes
     this.touched.clear()
     await removeQuiet(this.paths.mediaDir)
-    if (all.length) this.logger(`[media] 清空缓存 ${all.length} 首，释放 ${formatBytes(freedBytes)}`)
-    return { removed: all.length, freedBytes }
+    if (removed) this.logger(`[media] 清空缓存 ${removed} 首，释放 ${formatBytes(freedBytes)}`)
+    return { removed, freedBytes }
   }
 
   /**
@@ -478,16 +666,17 @@ export class MediaCache {
    * - `maxAgeMs` 先无脑剔长期没听的（不受策略影响，过期就是过期）；
    * - `keep` 里的曲目**无论如何不动**——刚 `ensure()` 完的那首 `plays` 还是 0，`leastPlayed` 下它排第一，
    *   不保护就会「下完立刻把自己删了」；正在播的那首同理；
-   * - 体积走 `dirStats` 真实字节，与 `capacity()` 显示的占用同一个口径。
+   * - 体积走扫描出来的真实字节，与 `capacity()` 显示的占用同一个口径。
    */
   async prune(
     opts: { maxBytes?: number; maxAgeMs?: number; policy?: MediaEvictPolicy; keep?: Iterable<string> } = {},
   ): Promise<{ removed: number; freedBytes: number; policy: MediaEvictPolicy }> {
     const policy = opts.policy ?? this.config.mediaEvictPolicy
-    const { metas: all, diskBytes } = await this.scan()
+    const scan = await this.scan()
+    const all = scan.metas
     const maxBytes = opts.maxBytes ?? this.config.maxMediaBytes
     const keep = new Set(opts.keep ?? [])
-    const sizes = await this.sizesOf(all)
+    const sizes = scan.bytesOf
     const now = Date.now()
     let removed = 0
     let freedBytes = 0
@@ -511,7 +700,7 @@ export class MediaCache {
 
     if (maxBytes > 0) {
       // `stale` 那批已经从盘上没了，从真实占用里扣掉再比上限
-      let total = diskBytes - freedBytes
+      let total = scan.diskBytes - freedBytes
       for (const meta of rest) {
         if (total <= maxBytes) break
         await drop(meta)
@@ -524,46 +713,196 @@ export class MediaCache {
     return { removed, freedBytes, policy }
   }
 
-  /** 完整性复查：meta 与文件对不上、大小不符、残留 .part 都报出来；fix=true 顺手清掉坏条目 */
-  async verify(opts: { fix?: boolean } = {}): Promise<VerifyIssue[]> {
-    const issues: VerifyIssue[] = []
+  /**
+   * 完整性复查。**默认只读**：`fix: true` 才动文件，而且只动「确实救不了」的。
+   *
+   * 分类口径（对着试听片段这个老坑来的）：
+   *  - **试听片段**（`meta.clip`，或老 meta 的 `playableRange`）本来就比整曲短，不能按整曲体积判坏；
+   *    它与记录对不上多半是上游换了片段窗口，报 info，`fix` 只把记录改成磁盘上的实际字节；
+   *  - 非片段但文件比记录**长**：像是换成了整首/换了版本，能播，报 warn，`fix` 更新记录；
+   *  - 非片段且文件比记录**短**：可能是没下完，也可能是换了编码——分不清就不动，报 warn；
+   *    `peek()` 已判不中，下次播放会重下，`fix` 也不碰它（免得把半截文件写成「完整」）；
+   *  - 音频缺失/为空：error，`fix` 删目录（这是唯一会删东西的一类；文件在就一个字节不动）；
+   *  - 歌词/封面缺失：不影响播放，warn，`fix` 去掉失效引用（界面不再谎称它有）；
+   *  - `deep` 才算 sha1（只算 v3 记录；老记录的指纹不可信，且下次播放会整条重取）：大小对得上但指纹不同
+   *    = 并发下载/换过版本，warn，`fix` 重记指纹；
+   *  - 孤儿目录、`.part`：info；`.part` 不删，下次 `ensure` 还要续传。
+   */
+  async verify(
+    opts: { fix?: boolean; deep?: boolean; onProgress?: (done: number, total: number) => void } = {},
+  ): Promise<VerifyReport> {
+    const started = Date.now()
+    const deep = opts.deep === true
+    const report: VerifyReport = {
+      checked: 0,
+      clips: 0,
+      staleMeta: 0,
+      deep,
+      elapsedMs: 0,
+      issues: [],
+      repaired: 0,
+      removedDirs: 0,
+      summary: { errors: 0, warnings: 0, infos: 0, fixable: 0 },
+    }
     let ids: string[] = []
     try {
       ids = await fsp.readdir(this.paths.mediaDir)
     } catch {
-      return issues
+      return report
     }
-    for (const id of ids) {
+    // fix 之后返回的报告只留「还没解决」的：删掉的目录整条抹掉，改过记录的只抹掉可修项
+    const removedIds = new Set<string>()
+    const repairedIds = new Set<string>()
+    for (const [index, id] of ids.entries()) {
       const dir = this.paths.trackDir(id)
       const meta = await this.readMeta(id)
+      report.checked++
+      opts.onProgress?.(index + 1, ids.length)
       if (!meta) {
-        issues.push({ trackId: id, issue: 'meta.json 缺失或损坏（目录残留）' })
-        if (opts.fix) await removeQuiet(dir)
+        report.issues.push({
+          trackId: id,
+          kind: 'residue',
+          severity: 'info',
+          clip: false,
+          fixable: true,
+          issue: 'meta.json 缺失或损坏（目录残留）',
+        })
+        if (opts.fix) {
+          await removeQuiet(dir)
+          report.removedDirs++
+          removedIds.add(id)
+        }
         continue
       }
+      const clip = isClip(meta)
+      const name = meta.track?.name || undefined
+      if (clip) report.clips++
+      if (meta.v < META_VERSION) report.staleMeta++
       const audioPath = path.join(dir, meta.audio.file)
       const size = await fileSize(audioPath)
-      if (size === undefined) issues.push({ trackId: id, issue: `音频文件缺失：${meta.audio.file}` })
-      else if (size !== meta.audio.bytes)
-        issues.push({ trackId: id, issue: `音频大小不符：${size} ≠ ${meta.audio.bytes}` })
-      if (meta.lyrics && !(await pathExists(path.join(dir, meta.lyrics.file)))) {
-        issues.push({ trackId: id, issue: `歌词文件缺失：${meta.lyrics.file}` })
+      // 老/手改的 meta 可能没写 `bytes`：那是「记录缺失」，不是「文件比记录长」
+      const recorded =
+        typeof meta.audio.bytes === 'number' && Number.isFinite(meta.audio.bytes) && meta.audio.bytes > 0
+          ? meta.audio.bytes
+          : undefined
+      let removeDir = false
+      let repair = false
+      const add = (kind: VerifyIssueKind, severity: VerifySeverity, fixable: boolean, issue: string): void => {
+        report.issues.push({ trackId: id, issue, kind, severity, clip, name, fixable })
       }
-      if (meta.cover && !(await pathExists(path.join(dir, meta.cover.file)))) {
-        issues.push({ trackId: id, issue: `封面文件缺失：${meta.cover.file}` })
+
+      if (size === undefined) {
+        add('broken', 'error', true, `音频文件缺失：${meta.audio.file}`)
+        removeDir = true
+      } else if (size === 0) {
+        add('broken', 'error', true, '音频文件是空的（0 字节）')
+        removeDir = true
+      } else if (recorded === undefined) {
+        add('drift', 'info', true, `meta 没记音频长度（磁盘上 ${formatBytes(size)}，可补记）`)
+        repair = true
+      } else if (size < recorded && !clip) {
+        // 短了可能是没下完/被截断，也可能是上游换了编码——分不清就不动它：
+        // `peek()` 已经判不中，下次播放自然会重下；改记录反而会把半截文件当成完整。
+        add(
+          'drift',
+          'warn',
+          false,
+          `音频比记录短：${formatBytes(size)} < ${formatBytes(recorded)}（可能没下完，下次播放会重下）`,
+        )
+      } else if (size !== recorded) {
+        add(
+          'drift',
+          clip ? 'info' : 'warn',
+          true,
+          clip
+            ? `试听片段与记录不一致（${formatBytes(size)} / ${formatBytes(recorded)}，片段窗口可能变了，文件可用）`
+            : `音频比记录长：${formatBytes(size)} > ${formatBytes(recorded)}（可能已换成整首，文件可用）`,
+        )
+        repair = true
       }
-      if (await pathExists(`${audioPath}.part`)) {
-        issues.push({ trackId: id, issue: '残留未完成的 .part（下次 ensure 会续传）' })
-      }
-      if (opts.fix) {
-        const broken = issues.some((i) => i.trackId === id && /缺失|不符|损坏/.test(i.issue))
-        if (broken) {
-          await removeQuiet(dir)
-          this.logger(`[media] 清除损坏缓存 ${id}`)
+
+      let sha1: string | undefined
+      // 只对当前版本（v3）的指纹做内容比对：老 meta 的 sha1 是旧下载逻辑记的（断点续传只算过后半段），
+      // 本来就不代表整个文件；它们下次播放会整条重取，拿旧指纹判「内容坏了」只会制造假警报。
+      if (deep && size !== undefined && size > 0 && !removeDir && meta.v >= META_VERSION) {
+        sha1 = await hashFile(audioPath)
+        // 大小都对不上时 sha1 必然对不上（那是另一份文件），别把「换了版本」误报成「内容损坏」
+        if (size === recorded) {
+          if (!meta.audio.sha1) {
+            add('drift', 'info', true, 'meta 没记 sha1（可补记）')
+            repair = true
+          } else if (sha1 !== meta.audio.sha1) {
+            // 大小一致而指纹不同：可能是两个进程并发下同一首（后写的盖了文件、meta 记的是半截时的指纹），
+            // 也可能是换了编码。文件本身能播，就不按「损坏」删——`fix` 把指纹改成磁盘上这一份。
+            add('drift', 'warn', true, '内容指纹与记录不符（可能并发下载/换过版本；大小一致，文件可播）')
+            repair = true
+          }
         }
       }
+
+      const lyricsPath = meta.lyrics ? path.join(dir, meta.lyrics.file) : undefined
+      if (meta.lyrics && lyricsPath && !(await pathExists(lyricsPath))) {
+        add('missing', 'warn', true, `歌词文件缺失：${meta.lyrics.file}`)
+        repair = true
+      }
+      const coverPath = meta.cover ? path.join(dir, meta.cover.file) : undefined
+      if (meta.cover && coverPath && !(await pathExists(coverPath))) {
+        add('missing', 'warn', true, `封面文件缺失：${meta.cover.file}`)
+        repair = true
+      }
+      if (await pathExists(`${audioPath}.part`)) {
+        add('residue', 'info', false, '残留未完成的 .part（下次 ensure 会续传）')
+      }
+
+      if (!opts.fix) continue
+      if (removeDir) {
+        await removeQuiet(dir)
+        report.removedDirs++
+        removedIds.add(id)
+        this.logger(`[media] 清除损坏缓存 ${id}`)
+        continue
+      }
+      if (!repair) continue
+      // 只改记录：把磁盘上真实有的东西写回去，音频本身一个字节都不动
+      let changed = false
+      if (size !== undefined && meta.audio.bytes !== size) {
+        meta.audio.bytes = size
+        // 没算 sha1 就别留着对不上新文件的旧指纹：下次 deep 校验会把它当成「内容被换过」而删掉
+        if (!deep) meta.audio.sha1 = undefined
+        changed = true
+      }
+      if (deep && sha1 && meta.audio.sha1 !== sha1) {
+        meta.audio.sha1 = sha1
+        changed = true
+      }
+      if (meta.lyrics && lyricsPath && !(await pathExists(lyricsPath))) {
+        meta.lyrics = undefined
+        changed = true
+      }
+      if (meta.cover && coverPath && !(await pathExists(coverPath))) {
+        meta.cover = undefined
+        changed = true
+      }
+      if (changed) {
+        await writeJsonAtomic(this.metaFile(id), meta)
+        report.repaired++
+        repairedIds.add(id)
+      }
     }
-    return issues
+
+    if (removedIds.size || repairedIds.size) {
+      report.issues = report.issues.filter(
+        (issue) => !removedIds.has(issue.trackId) && !(issue.fixable && repairedIds.has(issue.trackId)),
+      )
+    }
+    report.elapsedMs = Date.now() - started
+    for (const issue of report.issues) {
+      if (issue.severity === 'error') report.summary.errors++
+      else if (issue.severity === 'warn') report.summary.warnings++
+      else report.summary.infos++
+      if (issue.fixable) report.summary.fixable++
+    }
+    return report
   }
 
   /* ------------------------------------------------------------ 内部 */
@@ -761,6 +1100,32 @@ function clipOf(share: ShareMedia): { startMs: number; durationMs: number } | un
   if (typeof durationMs !== 'number' || durationMs <= 0) return undefined
   if (share.duration_ms != null && durationMs >= share.duration_ms - 1000) return undefined
   return { startMs: share.offset_start_ms ?? 0, durationMs }
+}
+
+/** 这份缓存是不是**只是试听片段**：v3 看 `clip`，v1/v2 只能看老 meta 里的 `playableRange` */
+function isClip(meta: CachedMediaMeta): boolean {
+  return meta.clip === true || meta.track?.playableRange != null
+}
+
+/** 递归列出目录下的文件（相对路径 → 字节）；读不了就返回空表，不抛 */
+async function walkFiles(dir: string, prefix = ''): Promise<Map<string, number>> {
+  const out = new Map<string, number>()
+  let entries: fs.Dirent[]
+  try {
+    entries = await fsp.readdir(dir, { withFileTypes: true })
+  } catch {
+    return out
+  }
+  for (const entry of entries) {
+    const rel = prefix ? `${prefix}/${entry.name}` : entry.name
+    const full = path.join(dir, entry.name)
+    if (entry.isDirectory()) {
+      for (const [key, size] of await walkFiles(full, rel)) out.set(key, size)
+    } else if (entry.isFile()) {
+      out.set(rel, (await fileSize(full)) ?? 0)
+    }
+  }
+  return out
 }
 
 export function formatBytes(bytes: number): string {

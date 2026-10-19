@@ -18,7 +18,7 @@ import path from 'node:path'
  * │       ├── audio.m4a             音频本体（下载中为 .part）
  * │       ├── lyrics.json           KRC 结构化歌词
  * │       └── cover.jpg             封面
- * ├── journal/plays.jsonl         未登录/迁移前的播放历史（append-only，一行一次）
+ * ├── journal/plays.jsonl         未登录/迁移前的播放历史（append-only：一行起播 + 若干行收尾补丁）
  * ├── journal/<uid>/plays.jsonl   各账号的播放历史
  * ├── local/library.json          本地库：本地喜欢 + 本地歌单 + 音乐文件夹（跨账号共享，不出网）
  * ├── queues.json                 播放队列书架（换号即作废，见 `player/queues.ts` 的 `reset`）
