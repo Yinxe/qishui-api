@@ -39,9 +39,12 @@ export {
   getImageUrl,
   getShareMedia,
   getShareMeta,
+  getTrackDetail,
+  getTrackMedia,
   type ImageResource,
   parseShareLink,
   QishuiError,
+  type QualityEntitlement,
   RiskControlError,
   resolveShareLink,
   type ShareItem,
@@ -50,6 +53,8 @@ export {
   type ShareMeta,
   StatusCode,
   shareLinkToMeta,
+  type TrackDetail,
+  type TrackQuality,
   TransportError,
 } from 'qishui-api'
 export {
@@ -59,6 +64,7 @@ export {
   type EnsureOptions,
   formatBytes,
   MediaCache,
+  type MediaCapacity,
   type MediaStats,
   type PlaySource,
   type ResolveOptions,
@@ -83,6 +89,12 @@ export {
   type LoadConfigInput,
   type LoadedConfig,
   loadConfig,
+  MEDIA_CAPACITY_TIERS,
+  MEDIA_EVICT_POLICIES,
+  type MediaEvictPolicy,
+  mediaCapacityLabel,
+  mediaEvictPolicyLabel,
+  nextMediaCapacityTier,
   type RepeatMode,
   saveConfig,
 } from './config.js'
@@ -173,13 +185,14 @@ export {
 } from './player/player.js'
 export { PlayQueue, type PlayQueueOptions } from './player/queue.js'
 export {
+  MAX_QUEUES,
   type OpenQueueOptions,
   QueueBook,
   type QueueInfo,
   type QueueKind,
   RECOMMEND_MAX_FAILURES,
   RECOMMEND_REFILL_AT,
-  RECOMMEND_WINDOW_MAX,
+  recommendQueueId,
 } from './player/queues.js'
 /* ------------------------------------------------------------ 服务与它们的输入输出类型 */
 export { AccountService, type CommerceSummary } from './services/account.js'

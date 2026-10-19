@@ -5,7 +5,29 @@
 
 ## Unreleased
 
+### Corrected（实测推翻了先前的判断）
+
+- **`1000062` 不是「上游客户端完整性校验」，是一道 query 参数门**：`/luna/h5/track_v2` 只要带 `device_platform=web`，**普通浏览器 UA、无 cookie、无签名、不注册设备就匿名放行**；空 UA、`LunaPC/*` UA 不带该参数照样回 1000062。于是曲目详情/多档音质/歌词/试听区间**不需要爬分享页**
+  - 最小参数集实测：`track_id` 必需（缺 → `1000004 ERR_INVALID_PARAM`）、`device_platform=web` 必需；`aid=386088`、`media_type=track` 可选；`vid` 不接受（只传 vid 当参数 → `ERR_INVALID_PARAM`）
+  - pc 口不是差这个参数：`POST /luna/pc/track_v2?device_platform=web` 仍是 `200 + 0 字节`
+  - 同批改写的旧结论：`catalog.ts` 的 `GetTrackV2`/`GetMediaPlayer`/`GetVideoV2`/`GetTrack`/`GetH5Track`/`GetH5TrackV2`/`GetTrackPlayerInfo`、`docs/APP_ENDPOINTS.md`（§1 新增 h5 轮、§3.5.1、§5「别耗时间」、§6）、`docs/MAINTENANCE.md` §4/§5、本包与 core/cli/tui 的 README
+  - **未实测、只登记为推测**：有 VIP 会话时 pc 口 `GetTrackV2` 可能放行，但那类文件**可能加密**；`label_info` 声明的 `lossless`/`hi_res`/`spatial` 匿名从来不给地址。文档里明确标成假设，不作为结论
+
 ### Added
+
+- **`src/web/h5Track.ts`：`getTrackDetail()` / `getTrackMedia()`**（曲目详情 + 可播档位 + KRC 歌词 + 权益矩阵，一发 `/luna/h5/track_v2` 拿全）
+  - `TrackDetail`：`qualities[]`（实际取得到地址的档，含 `url`/`backup_url`/`bytes`/`bitrate`/`duration_ms`/`codec_type`/`container`）、`declared_qualities`（`bit_rates` 声明的，不代表取得到）、`entitlements`（`label_info.quality_map`：哪档要 VIP / 要单买）、`clip` / `clip_start_ms` / `clip_duration_ms`、`expires_at`、`lyrics`
+  - `track_player.video_model` **是个 JSON 字符串**，要 `JSON.parse` 才有 `video_duration` + `video_list[]`；「整曲还是试听段」以 `video_duration` 对 `track.duration` 判（容差 2s，取不到长度按片段处理），`audition_info` 只在它指向同一个 vid 时才可信（整曲可播的曲也带 `audition_info`，指的是另一段）
+  - `getTrackMedia()` 把同一份数据归一到 `getShareMedia()` 的返回型（`ShareMedia`），默认取码率最高档、可 `{ quality }` 指定；调用方据此做「h5 失败回落 SSR」
+  - 不经 `createClient()`（那会先打一次 device_register），默认匿名发；`{ cookie }` 可选附上
+  - 实测与分享页 SSR 对比 5 首：**音频字节数完全一致**、试听区间对得上；整曲可播的条目 h5 还多给 `medium`/`highest` 档
+- **`src/web/lyrics.ts`：`parseKrc()`**——KRC 原文（`[行起,行时长]<词偏移,词长,升调>字…`，词时间**相对行首**）解成 `ShareLyrics`；署名行（整句一个词且占满行）标 `type: 'lrc'`，`MAX_SAFE_INTEGER` 哨兵归一为 `undefined`。与 SSR 已结构化的歌词逐行对拍一致
+- **`src/web/cdn.ts`**：`expiresAtOf()`（签名地址路径第二段 16 进制 = 过期时刻）与 `mimeOf()` 从 `sharePage.ts` 抽出，h5 与 SSR 两条路共用
+- `sharePage.ts` 导出 `BROWSER_USER_AGENT`（桌面 Chrome 串），h5 口用同一个 UA
+- `track.GetTrackV2Request` 增加可选字段 `device_platform`（进 query 与 body 两处），并注明它是 h5 那批接口的放行开关
+- 本包单测接入 vitest（`pnpm test`）：`test/h5-track.test.ts` 10 条（参数只有 `track_id`+`device_platform`、默认不带 cookie、`1000062` 透传、空/非 JSON/HTTP 500/空 id 报错、整曲 vs 片段判定、无长度信息按片段处理、权益矩阵 vs 声明档位、`expires_at`、没有 `track` 时报错）+ `test/lyrics.test.ts` 7 条。上游可达性仍只由 `test/run.ts` 实测台负责
+
+### Fixed
 
 - **扫码登录交出上游官方二维码图片**：`QrLogin` 增加 `qrPng`（`get_qrcode` 的 `data.qrcode`，`data:image/png;base64,…`）。上游这张图编的是它自己的 `qrcode_index_url`、自带静区（4 模块白边），是官方 PC 客户端显示的那张；终端 ASCII 识别慢时，上层可以把它落成文件给人扫。上游没给就是 `undefined`，不硬编
 - **分享页试听片段信息**：`ShareMedia` 增加 `offset_start_ms` / `offset_duration_ms`（来自 SSR 的 `offsetStart` / `offsetDuration`，秒→ms）。整曲可播时缺省；`duration_ms` 仍是**整曲**时长。实测（`演员`）：整曲 261.3s，分享页给的音频其实是 208.9s 起、长 52.3s 的片段。消费方据此算播放进度、按起点偏歌词

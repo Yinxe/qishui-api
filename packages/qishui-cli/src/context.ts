@@ -116,7 +116,8 @@ export function describeError(err: unknown): { message: string; hint?: string } 
     const hints: Record<number, string> = {
       1000016: '先跑 `qishui login`',
       1000004: '参数被上游拒了：确认 id 与 scene/type 是否配套（见 docs/APP_ENDPOINTS.md）',
-      1000062: '上游按客户端完整性校验拒答，换 path/参数也没用（见文档「别耗时间」清单）',
+      1000062:
+        '版本门：上游按 query `device_platform` 拒答（库发的是 windows）。曲目地址走 h5 口不受影响，其余见文档「别耗时间」清单',
       101: '重复操作（例如重复举报）',
       3056: '该曲目评论区未开放',
     }

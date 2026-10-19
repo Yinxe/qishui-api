@@ -212,6 +212,57 @@ function makeKit(opts: { ui: UiValue; core?: QishuiCore; afterWrite?: () => void
   return { loggedIn, act, locked, item, write, sheet, popup, task, playAll, likedItem, loginItem }
 }
 
+/** 播放器手里的 `TrackData` 就地拼一个菜单/按钮共用的实体 */
+export function trackLikeOf(data: TrackData): TrackLike {
+  return { id: data.id, data, liked: data.state?.isCollected }
+}
+
+/**
+ * 「现在算不算已喜欢」（按钮文案用，**不发请求**）：磁盘文件读本地库，云端曲目先看水印、
+ * 退到内存里那份收藏清单；两头都没有就按水印缺省（false）。
+ */
+export function trackLiked(core: QishuiCore | undefined, track: TrackLike): boolean {
+  if (track.data.localPath) return Boolean(core?.local.isTrackLiked(track))
+  return core ? Boolean(likedFromPage(core, track.id, track.liked)) : Boolean(track.liked)
+}
+
+/**
+ * [喜欢] 按钮（听歌页 / 底部播放条）的动作：与菜单里那条 `我的喜欢（切换）` **同一条路**——
+ * 磁盘文件走本地库（不需要登录），云端先看水印/内存清单、两头都没有才真读一次 `isLiked`，
+ * 成功后就地翻 `TrackData` 的水印再 `bump()` 重读（不等重读按钮文案也得跟着真相位）。
+ * 与菜单版的差别只有：没有弹层要关、失败自己接住toast。
+ */
+export async function toggleTrackLike(opts: { ui: UiValue; core?: QishuiCore; track: TrackLike }): Promise<void> {
+  const { ui, core, track } = opts
+  if (!core) {
+    ui.toast('core 还没就绪，稍后再试', 'error')
+    return
+  }
+  const name = track.data.name
+  try {
+    if (track.data.localPath) {
+      const now = await core.local.toggleLike(track)
+      ui.toast(now ? `已加入本地喜欢：${name}` : `已移出本地喜欢：${name}`, now ? 'success' : 'info')
+      track.data.state = { ...track.data.state, isCollected: now }
+      ui.bump()
+      return
+    }
+    if (!core.loggedIn) {
+      ui.toast('登录之后才有「我的喜欢」（侧边栏底部扫码）', 'info')
+      return
+    }
+    const known = likedFromPage(core, track.id, track.liked)
+    const nowLiked = !(known ?? (await core.library.isLiked(track.id)))
+    if (nowLiked) await core.library.like(track.id)
+    else await core.library.unlike(track.id)
+    ui.toast(nowLiked ? `已加入「我的喜欢」：${name}` : `已取消喜欢：${name}`, nowLiked ? 'success' : 'info')
+    track.data.state = { ...track.data.state, isCollected: nowLiked }
+    ui.bump()
+  } catch (err) {
+    ui.toast(err instanceof Error ? err.message : String(err), 'error')
+  }
+}
+
 /**
  * 一首曲目的「本体操作」（详情 / 喜欢 / 评论 / 加入歌单 / 相似歌曲 / 不感兴趣 / 举报）。
  *

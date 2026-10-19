@@ -160,11 +160,12 @@ qishui --help
 
 | 命令 | 说明 |
 |---|---|
-| `cache stats` | 元数据条数/命中 + 媒体占用/播放计数 |
+| `cache stats` | 元数据条数/命中 + 媒体占用/播放计数 + **容量账**（已用/上限/占比/满溢策略/自动淘汰；超限时给「按此策略可释放 X（N 首）」） |
 | `cache policy` | 打**缓存分档表**（哪些数据缓存、缓存多久；见 core README §6.1） |
 | `cache list` | 已缓存曲目（体积/播放数/最近访问） |
 | `cache verify [--fix]` | 校验 `meta.json`/文件长度（`--fix` 清坏条目） |
-| `cache prune [--media] [--max-size 2GB] [--max-age 30]` | 按上限/年龄淘汰 |
+| `cache prune [--media] [--max-size 2GB] [--max-age 30] [--by lru\|leastPlayed]` | 按上限/年龄淘汰；`--by` 覆盖 `config.mediaEvictPolicy`，不加 `--media` 时音频一根手指都不碰（只提示超了多少） |
+| `config set maxMediaBytes 3G` | 容量档位：认 `3G`/`3GB`/`1536MB`/`0`/`不限制`（`0` = 不限制），回显给档位名 |
 | `cache clear [--media] [--yes]` | 清缓存（**默认只清元数据**，不动音频） |
 | `cache path` / `where` | 数据目录、配置、设备身份/账号会话、媒体、当前账号历史文件的位置 |
 | `config show` / `config path` / `config get <key>` / `config set <key> <value>` | 读写 `~/.qishui/config.json` |
@@ -256,9 +257,9 @@ mpv / script(1) 不在本机只跳过对应分节（`describe.skipIf`）。上�
 
 ## 8. 已知边界
 
-- **VIP 行为未验**：本机会话非会员，VIP 音质/下载类端点是否放行没有结论；`--no-cache` 走分享页拿到的地址可能就是普通音质。详见 [`../qishui-core/README.md §11`](../qishui-core/README.md) 与 [`../qishui-api/docs/APP_ENDPOINTS.md`](../qishui-api/docs/APP_ENDPOINTS.md)。
-- **试听片段**：部分曲目分享页给的地址只是片段（`TrackData.playableRange`）；列表不再显示 `试听` 标记，看 `track` 详情的「试听」区间行或 `track --json` 的 `startMs`/`durationMs`。
+- **VIP 行为未验**：本机会话非会员，VIP 音质/下载类端点是否放行没有结论；`--no-cache` 拿到的地址（h5 `/luna/h5/track_v2` 或分享页兜底）就是匿名能给的那档，`label_info` 里声明的 `lossless`/`hi_res`/`spatial` 匿名从来不给地址。详见 [`../qishui-core/README.md §11`](../qishui-core/README.md) 与 [`../qishui-api/docs/APP_ENDPOINTS.md`](../qishui-api/docs/APP_ENDPOINTS.md)。
+- **试听片段**：部分曲目上游给的地址只是片段（`TrackData.playableRange`）；列表不再显示 `试听` 标记，看 `track` 详情的「试听」区间行或 `track --json` 的 `startMs`/`durationMs`。
 - **上游「最近播放」写回不落地**：`recent` 可能回空；「听过什么」的真相源是本地 `history`。
 - **风控**：`user`/粉丝/关注类接口连打会出验证码，CLI 只单次取用、不做遍历。
 - **搜索里「用户」拿不到**：`search --type user`（或 `all`）没有用户结果 —— 上游 `/luna/search/user` 匿名与带会话都只回 `status_info`、没有 `result_groups`；旧的 h5 `Search2023` 已弃用不再用。属**未验证 / 上游不返回**（歌手/专辑/歌单都正常）。
-- **`ugc_video`/`video` 不当播放目标**：分享页对它们是视频地址，本 CLI 只播音频。
+- **`ugc_video`/`video` 不当播放目标**：分享页对它们是视频地址（h5 侧没有对应的视频端点），本 CLI 只播音频。

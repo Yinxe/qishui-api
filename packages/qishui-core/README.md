@@ -199,8 +199,11 @@ core.ts            QishuiCore 门面 + createQishui()
 | `parse(input)` | 纯字符串解析（不联网）：分享链接 / 裸 ID → `{kind, id}` |
 | `resolve(input)` | 短链 → 真链接（只读 3xx 的 Location） |
 | `meta(input, {relatedCount})` | 标题/歌手/封面/可播性 + 相关曲目（走 web 分享页） |
-| `media(input, {coverWidth})` | **可播地址**（`play_url` + `expires_at`）+ KRC 歌词 + 封面（走 web 分享页 SSR） |
+| `media(input, {coverWidth})` | **可播地址**（`play_url` + `expires_at`）+ KRC 歌词 + 封面（h5 `/luna/h5/track_v2` 优先，失败回落分享页 SSR；`ugc_video` 只有 SSR 那条路） |
 | `track(input)` / `kind(input)` | 直接拿 `Track` 实体 / 条目类型 |
+
+门面还有一条便捷入口 **`qishui.trackDetail(id | Track)`**：一发 `/luna/h5/track_v2`（匿名、不带会话）拿「标题/专辑/整曲时长 + **各档音质与体积** + `label_info` 权益矩阵（哪档要 VIP/单买）+ KRC 歌词 + 这次是整曲还是试听段」。
+回答「这首哪档要会员」「现在拿到的是不是全曲」用它；要拿去播的地址仍走 `player.play()` / `media.resolve()`（那条会落缓存）。
 
 ### 3.10 `local` —— 本地库（不出网的那一半音乐）
 
@@ -282,7 +285,7 @@ qishui.player.lyricState()                 // 当前歌词行 + 下一行（渲�
 qishui.player.dispose()
 ```
 
-试听片段口径：分享页给的音频常常只是片段，`PlaySource.durationMs` 是**片段**长度、`clipStartMs` 是它在整曲里的起点；`Player.durationMs` 依次取「`setDuration()` 外部真实时长 > 播放源时长 > 曲目元数据」，`lyricState()` 会自动加 `clipStartMs`，所以歌词按整曲时间轴对齐、进度条按片段长度走。频繁切歌时慢解析回来的旧曲目会被丢弃（`startCurrent` 的 loadToken），不会串台。
+试听片段口径：上游（h5 与分享页都一样）给的音频常常只是片段，`PlaySource.durationMs` 是**片段**长度、`clipStartMs` 是它在整曲里的起点；`Player.durationMs` 依次取「`setDuration()` 外部真实时长 > 播放源时长 > 曲目元数据」，`lyricState()` 会自动加 `clipStartMs`，所以歌词按整曲时间轴对齐、进度条按片段长度走。频繁切歌时慢解析回来的旧曲目会被丢弃（`startCurrent` 的 loadToken），不会串台。
 
 口径（有意为之）：
 
@@ -302,10 +305,11 @@ qishui.queues.active        // 在播那一份（没有就是 undefined）
 
 // 打开并起播（有 id 的按 id 复用，没有就新建）
 await qishui.queues.open({ kind: 'recommend', feed: { kind: 'preference', mode: 'default' }, title: '推荐 · 推荐' })
+await qishui.queues.open({ kind: 'recommend', feed, title, refresh: true })   // 「再来一批」：整台重来（见下表）
 await qishui.queues.open({ kind: 'playlist', id: 'playlist:7627…', title: '歌单 · 晴天合集', load: () => playlist.allTracks() })
 await qishui.queues.open({ kind: 'temporary', items: tracks, startTrackId })   // 整队替换上一批
 await qishui.queues.activate('liked')        // 切到另一份（接着它上次那一首）
-qishui.queues.stopRefill()                   // 停掉推荐队列的自动续批
+await qishui.queues.loadMore()               // 主动要下一批（只认在播的推荐队列）：返回加进去的首数
 qishui.queues.reset()                        // 换号时清空（useAccount 内部已调）
 
 qishui.events.on('queues-changed', () => render(qishui.queues.list()))
@@ -314,7 +318,7 @@ qishui.events.on('queue-note', ({ message, kind }) => toast(message, kind))    /
 
 | kind | 谁用 | 曲目 | 策略 |
 |---|---|---|---|
-| `recommend` | 听歌模式（场景 / 推荐 / 熟悉 / 新鲜） | 上游每批约 6 首 | **滑动窗口**：每前进一首踢掉「上上个」；剩 ≤ `RECOMMEND_REFILL_AT`(2) 首补一批，长度钳在 `RECOMMEND_WINDOW_MAX`(8)；顺序播；队列播完自动重启续批，连续 `RECOMMEND_MAX_FAILURES`(2) 批失败停；**循环固定「关」**（单曲循环会让播放头停在原地、续批永远不触发） |
+| `recommend` | 听歌模式（场景 / 推荐 / 熟悉 / 新鲜） | 上游每批约 6 首 | **只往后追加**：听过的不删、跳播也不动已经排好的那些，所以每首在队列里的序号从头到尾不变（界面按固定 10 行的窗口来回滚着看这条流）；剩 ≤ `RECOMMEND_REFILL_AT`(2) 首自动补**一整批**（上游给几首收几首，不截断，队列长一点没关系），队尾见底时上层还能 `loadMore()` 主动要下一批；顺序播；队列播完自动重启续批（补回来的批只挂队尾，播放器还停在原地才自动接播），连续 `RECOMMEND_MAX_FAILURES`(2) 批失败停；**循环固定「关」**（单曲循环会让播放头停在原地、续批永远不触发）；**`open({ refresh: true })` = 「再来一批」= 整台重来**——先 `player.clear()`（停掉在播那首、作废进度时钟与还在路上的那次解析，`idle` 会让上层停掉外置播放器），播放列表整队换成新一批、**从第一首起播**，`resumeId` 一并清掉。只有 `refresh` 这条路会重置；`↓` 到队尾与「剩 ≤2 首」的自动续批仍是只往队尾追加，不动在播那首 |
 | `playlist` | 每张歌单（含本地歌单） | 整张 | 顺序播，切走再切回接着上次那一首 |
 | `liked` | 我喜欢的音乐 / 本地喜欢 | 全部 | 随机 |
 | `temporary` | 搜索 / 榜单 / 专辑 / 艺人 / 首页块 | 这一次点播的那一批 | 顺序播，**每次 `open` 整队替换** |
@@ -322,8 +326,17 @@ qishui.events.on('queue-note', ({ message, kind }) => toast(message, kind))    /
 新队列的默认循环取 `config.defaultRepeat`（设置页的「默认循环模式」），推荐队列除外——它固定「关」，切回来时若记着「单曲」也会被降回「关」（见上表）。
 
 实现要点：切走时 `park()` 把当前队列停放到书架里，切回 `activate()` 时用 `player.playList(items, start)` 恢复；
-书架自己改播放器队列的那几步走 `applying` 守卫，不会被误当成用户操作再触发滚窗/续批；
-`refillGen` 序号作废在途取数（切队列 / 停续批之后慢回来的那批直接丢）。
+书架自己改播放器队列的那几步走 `applying` 守卫，不会被误当成用户操作再触发续批；
+`refillGen` 序号作废在途取数（切队列之后慢回来的那批直接丢），`refillPending` 保证一批在路上时不会插两队。
+
+**队列只长不缩**：推荐队列没有「听过的删掉」这一步，一场听下来几百首是预期的（内存与 `queues.json` 都按这个体积走，
+`TrackData.raw` 已剥掉，一首几百字节）。要收掉整条流就在「播放队列」页把那份队列收起（或换号作废整架）。
+
+**持久化**：书架每次变化后 300ms 防抖原子写 `<dataDir>/queues.json`（先写 tmp 再 rename），`dispose()` 退出前 `flush()` 收尾；
+构造期 `hydrate()` 恢复每份队列的曲目、播到第几首、随机/续批状态——推荐队列连档位（`feed` 是可序列化的 `FeedModeRef`）一起回来。
+恢复期**不取网**（`loaded` 照抄落盘值），也**不记「上次在播哪份」**——播放器重启后是空的，接哪一份由上层定。
+两个边界：`load` 闭包没法序列化（歌单/喜欢没取完的那部分要由上层重新打开）；`TrackData.raw` 原始响应快照剥掉不写。
+换号 `reset()` 整份作废，并把空书架落盘。
 
 `Lyrics`（KRC，行级 + 逐字）也只做时间轴查询：`lines` / `lineAt(ms)` / `wordAt(ms)` / `view(ms)`，滚动动画与卡拉OK 高亮是上层的事。
 
@@ -346,6 +359,7 @@ qishui.events.on('queue-note', ({ message, kind }) => toast(message, kind))    /
 ├── journal/plays.jsonl         未登录/迁移前的播放历史（append-only）
 ├── journal/<uid>/plays.jsonl   各账号的播放历史
 ├── local/library.json          本地库：本地喜欢 + 本地歌单 + 曲目快照 + 音乐文件夹（跨账号共享，不出网）
+├── queues.json                 播放队列书架：每份队列的曲目/播到第几首/随机/续批状态（变化后 300ms 防抖原子写，启动恢复；换号作废；`TrackData.raw` 不写盘）
 └── logs/                       预留（core 默认只往 logger 打）
 ```
 
@@ -360,7 +374,9 @@ qishui.events.on('queue-note', ({ message, kind }) => toast(message, kind))    /
 | `entityTtlMs` | `30min` | 元数据缓存的兜底 TTL；实际各服务都显式传档位（见 §6.1），这键基本用不到（0 = 不缓存） |
 | `coverWidth` | `400` | 封面 CDN 拼串宽度 |
 | `autoCacheMedia` | `true` | 播放时把音频/歌词/封面落盘 |
-| `maxMediaBytes` | `2GiB` | 媒体缓存上限，超了按最久未访问剔除 |
+| `maxMediaBytes` | `2GiB` | 媒体缓存上限，按 `cache/tracks` 的**真实磁盘占用**算；`0` = 不限制。档位表 `MEDIA_CAPACITY_TIERS`（2/3/4/5/10G + 不限制），`mediaCapacityLabel()` 给档位名（非档位值回 `自定义`），`nextMediaCapacityTier()` 给 UI 循环用。手改的非档位值（如 `1536MB`）照样生效 |
+| `mediaEvictPolicy` | `'lru'` | 满溢时剔谁：`lru` = 最久没碰的先走（`accessedAt`）；`leastPlayed` = 播过次数最少的先走（`plays`，同次数再比时间）。词表 `mediaEvictPolicyLabel()` |
+| `mediaAutoEvict` | `false` | 音频落盘后要不要**自动**剔到上限。默认关：删文件得人显式触发（`cache prune --media` / TUI 的「按上限清理媒体」）；关着时上限只用来算「超了多少、能释放多少」，不动手 |
 | `reportPlayback` | `false` | 是否把播放上报给上游（**默认关**，见 §7） |
 | `defaultRepeat` / `defaultShuffle` | `off` / `false` | 播放器默认 |
 | `feedMode` | `''`（没选过） | 本机记住的**听歌模式**，一个值：`preference:<mode>`（`default`/`familiar`/`fresh`）或 `scene:<scene_mode_id>`（纯数字，如 `30`=日语）。配 `parseFeedMode()`/`formatFeedMode()` 读写（认不出的值一律当没选过，不猜；`scene:` 后面不是纯数字也算认不出——雪花 id 是电台队列，不是场景）。上游没有「保存听歌模式」的写接口，所以这只是本地偏好，不声称是上游状态 |
@@ -369,9 +385,16 @@ qishui.events.on('queue-note', ({ message, kind }) => toast(message, kind))    /
 **媒体缓存的关键行为**（`MediaCache`）：
 
 - `peek(id)` / `has(id)`：**纯读盘，零网络**（所以「命中缓存不再发 url 请求」是硬保证，单测里有断言）。
-- `ensure(track)`：完整命中直接返回；缺音频/歌词/封面才去拉一次分享页补齐。
+- `ensure(track)`：完整命中直接返回；缺音频/歌词/封面才去取址补齐（先 h5 `/luna/h5/track_v2`，它失败再落分享页 SSR，两边各为什么不通会一起写进错误里）。
 - 音频下载用 `.part` + `Range: bytes=N-` **断点续传**（回 200 就重下），下完用 `content-range` 的总长核对再 rename。
-- `stats()` / `list()` / `verify({fix})` / `prune({maxBytes, maxAgeMs})` / `clear()` / `evict(id)`。
+- `stats()` / `list()` / `verify({fix})` / `prune({maxBytes, maxAgeMs, policy, keep})` / `clear()` / `evict(id)`。
+- `capacity()`：**这一条只算不删**——真实占用 `usedBytes`、生效上限 `limitBytes`、`percent`（不限制时不给）、
+  `overLimit`，再加「按当前策略清到上限要剔几首、能释放多少」（`reclaimableTracks` / `reclaimableBytes`）。
+  CLI 的 `cache stats` 与 TUI 设置页显示的就是这一份。
+- `stats().diskBytes` / `capacity().usedBytes` 是 `dirStats(cache/tracks)` 的真实字节，含 `meta.json`、歌词、
+  封面、没下完的 `.part` 与 meta 丢失的孤儿目录；`prune()` 剔谁也算同一个口径，所以「看到 1.2GB」和「剔完释放 1.2GB」不会两套账。
+- `prune({ keep })`：列进来的曲目**无论如何不动**。`ensure()` 自动淘汰时把刚下的那首传进去（它 `plays` 还是 0，
+  `leastPlayed` 下排第一，不保护就会「下完立刻把自己删了」）；`clearCache()` 也保住 `player.current`。
 - **媒体文件不过期**（`sourceExpiresAt` 只是溯源信息）；元数据缓存按下面的分档走。
 
 ### 6.1 缓存分档：哪些数据缓存、缓存多久
@@ -409,7 +432,7 @@ TTL 档位之外，每个 kind 还有一档 **scope**（同样只在 `policy.ts`
 | `viewer` | `cache/entities/_acct/<观看者 uid>/<kind>/` | 主体公共但**带我态字段**的元数据：`track` `playlist-detail` `album-detail` `chart` `user`…（是否已收藏/会员档位随人变） |
 | `public` | `cache/entities/<kind>/`（共享） | 与账号无关的：`search` `discover-home` `feed-song-tab` `radio-tracks`… |
 
-- 未登录（无激活账号）时 account/viewer 类也落共享位（内存 key 前缀 `~`），登录后自动改走 `_acct/<uid>/`，**两号互不可见**；媒体缓存（`cache/tracks/`，匿名分享页来源、无账号态）始终跨号共享。
+- 未登录（无激活账号）时 account/viewer 类也落共享位（内存 key 前缀 `~`），登录后自动改走 `_acct/<uid>/`，**两号互不可见**；媒体缓存（`cache/tracks/`，取址走匿名的 h5/分享页、无账号态）始终跨号共享。
 - 切号 = `cache.clearMemory()` + 盘上本就分层，不需要清对方数据；`logout --purge` / `reset` 才用 `invalidateAccount(uid)` 删 `_acct/<uid>` 整目录。
 
 ## 7. 写入安全（重要）
@@ -482,14 +505,15 @@ try {
 | `MediaUnavailableError` | 这个条目拿不到媒体（版权/VIP 限制、下架、校验不过）—— **不是「接口不可用」** |
 | `CacheError` | 本地数据目录读写失败 |
 
-> 历史：曾有一个 `UnsupportedError` 用来「提前判死」播放地址类接口，**已删除**。理由：那是拿本库的策略当接口结论，而且实测证明分享页那条路能拿到地址。现在 core 与 api 都**照发请求、上游回什么记什么**，拿不到的属于「未验证 / 这个条目不可播」，不是「不可用」。
+> 历史：曾有一个 `UnsupportedError` 用来「提前判死」播放地址类接口，**已删除**。理由：那是拿本库的策略当接口结论，而且实测证明分享页那条路能拿到地址（2026-10-19 再补一刀：h5 曲目口 `/luna/h5/track_v2` 匿名也能拿，还多给档位与权益）。现在 core 与 api 都**照发请求、上游回什么记什么**，拿不到的属于「未验证 / 这个条目不可播」，不是「不可用」。
 
 ## 10. 维护与检查
 
 ```ts
 await qishui.cacheStats()        // 元数据条数/命中数 + 媒体占用/播放计数
 await qishui.media.verify()      // 校验文件（缺了/长度不符/坏 JSON）→ issues[]（{fix:true} 顺手修）
-await qishui.media.prune()       // 按 maxMediaBytes / maxAgeMs 清理
+await qishui.media.capacity()    // 只算不删：真实占用/上限/占比/是否超限 + 按当前策略能释放几首多少字节
+await qishui.media.prune()       // 按 maxMediaBytes 剔到上限内，谁先走看 mediaEvictPolicy（keep 保住不动）
 await qishui.cache.prune()       // 清过期元数据
 await qishui.clearCache({ media: true, all: true })   // 全清（慎用，媒体是几 MB 一个）
 qishui.plays(50) / qishui.playStats()                  // 本地播放历史 / 统计
@@ -505,8 +529,12 @@ qishui.dispose()                 // 停播放器时钟、关掉句柄
 
 ## 11. 已知边界（没验的就说没验）
 
-- **会员（VIP）行为未验**：本机会话是 `is_vip: false`。VIP 音质/下载类端点、`GetTrackV2`/`GetMediaPlayer`/`MGetMediaV2`/`GetTrack`/`GetH5Track`/`GetH5TrackV2`/`GetTrackPlayerInfo` 这批 `1000062` 接口是否对会员放行、播放地址对会员是否不同，都还没结论。拿到会员会话后重跑 `packages/qishui-api/test/run.ts` 即可（已结论的会自动 SKIP）。
+- **会员（VIP）行为未验**：本机会话是 `is_vip: false`。VIP 音质/下载类端点、`GetTrackV2`/`GetMediaPlayer`/`MGetMediaV2`/`GetTrack`/`GetH5Track`/`GetTrackPlayerInfo` 这批 `1000062`（**库客户端口径**：common 参数发 `device_platform=windows`）接口是否对会员放行、播放地址对会员是否不同，都还没结论。拿到会员会话后重跑 `packages/qishui-api/test/run.ts` 即可（已结论的会自动 SKIP）。
+  - **`GetH5TrackV2` 已从这批里翻案**：它不需要会员、也不需要会话，只要 query 带 `device_platform=web`（`/luna/h5/track_v2`，见 api 包 `docs/APP_ENDPOINTS.md` §3.5.1）。core 的取址链路现在就默认走它。
+  - **有 VIP 时 pc 口大概能用，但文件可能加密 —— 这是推测，未实测**：`label_info` 声明的 `lossless`/`hi_res`/`spatial` 匿名从来不给地址，会员态能否取到、取到的是不是裸 m4a（h5 给的实测是裸的、能整段落盘播）都没验过。**这条别当结论写进代码或文档里**，`qishui-api/docs/APP_ENDPOINTS.md` §6 记的是同一个假设。
+  - **core 现在取址一律匿名发**（`mediaOf` / `trackDetail` 都不带 cookie）：这是刻意的——会员态没验过，不能假设「带会话总不会更坏」。要试会员口径得先给 `getTrackDetail` 传 `cookie`。
 - **`QueryTokenStatus`（GET v1）上游 HTTP 500**：同 token 走 POST v2 正常，疑似该 GET 路由已下线。
 - **风控**：`GetUserInfo` / `GetFollowerList` / `GetFollowingList` 连打两次就可能触发 captcha。core 给这些读接口 5 分钟缓存，**不要遍历粉丝列表**。
 - **响应叶子类型**：`qishui-api` 的 `entity/*` 是纯类型声明，编译期被擦除，所以响应叶子是 `any`；core 的 `parse.ts` 用「形状识别 + 递归捞实体」兜漂移，字段名以真实响应为准。
+- **h5 那批字段没有 IDL 依据**：`/luna/h5/track_v2` 的 `track` / `track_player.video_model`（**JSON 字符串**）/ `lyric` 只能靠实测钉，上游改版即失效 —— core 在这种情况下会自动回落到分享页 SSR，不会整体挂掉。
 - **`GetRecentPlayedMedia` / `AppendRecentlyPlayedMedia`**：写回 `status_code=0` 但读回来仍是空（写通道通、读回不落地）。所以「听过什么」的真相源是本地 `journal/plays.jsonl`。

@@ -1,5 +1,6 @@
 import {
   getShareMedia,
+  getTrackMedia,
   parseShareLink,
   resolveShareLink,
   type ShareItem,
@@ -42,20 +43,32 @@ export class LinkService {
 
   /** 可播地址（track / ugc_video 才有），不落盘 */
   async media(input: string | ShareItem, opts: { coverWidth?: number } = {}): Promise<ShareMedia> {
-    return await getShareMedia(input, {
-      fetchImpl: this.core.fetchImpl,
-      cover_width: opts.coverWidth ?? this.core.config.coverWidth,
-    })
+    return await this.shareOrH5(input, { coverWidth: opts.coverWidth ?? this.core.config.coverWidth })
   }
 
   /**
-   * 链接 → Track 实体（走分享页，拿得到时长/封面/vid）。
+   * track 走 h5 曲目接口、`ugc_video` 走分享页 SSR（视频没有 h5 对应接口，`/luna/h5/video*` 全 404）。
+   * h5 失败不回落 —— 这里要能看见它为什么拿不到；要回落兜底的取址在 `core.media` 那条链路里。
+   */
+  private async shareOrH5(input: string | ShareItem, opts: { coverWidth?: number }): Promise<ShareMedia> {
+    const item = typeof input === 'string' ? await this.resolve(input) : input
+    if (item.kind === 'track') {
+      return await getTrackMedia(item.id, {
+        fetchImpl: this.core.fetchImpl,
+        cover_width: opts.coverWidth,
+      })
+    }
+    return await getShareMedia(item, { fetchImpl: this.core.fetchImpl, cover_width: opts.coverWidth })
+  }
+
+  /**
+   * 链接 → Track 实体（拿得到时长/封面/vid）。
    * 想拿完整实体（album/artists/label_info）用 `core.catalog.track()`；
    * 这个用在「只有一条分享链接」的场景。
    */
   async track(input: string | ShareItem): Promise<Track> {
     const item = await this.resolve(input)
-    const meta = await getShareMedia(item, { fetchImpl: this.core.fetchImpl, cover_width: this.core.config.coverWidth })
+    const meta = await this.shareOrH5(item, { coverWidth: this.core.config.coverWidth })
     const data: TrackData = {
       id: item.id,
       name: meta.title ?? '',

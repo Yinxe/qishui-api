@@ -36,7 +36,7 @@
 | 账号 | `MeProfile` `MeStats` `PrivacySetting` | `account.me/stats/privacy` | 登录 |
 | 会员/商业化 | `Membership` `MembershipOffer` `CommerceSummary` | `account.membership/upsell/commerce/digitalAlbums` | 配置✅ / 我的态登录 |
 | 分享链接 | `ShareMeta` `ShareMedia` `TrackRef` | `link.meta/media/track` | ✅ |
-| 播放 | `PlaySource` `PlayerState` `PlayQueueState` | `player.*` `track.source()` | ✅（地址走 web 分享页） |
+| 播放 | `PlaySource` `PlayerState` `PlayQueueState` | `player.*` `track.source()` | ✅（地址走 h5 `/luna/h5/track_v2`，失败回落分享页 SSR） |
 | 歌词 | `Lyrics` `LyricLine` `LyricWord` | `track.lyrics()` `player.lyricState()` | ✅ |
 | 本地 | `CachedMediaMeta` `MediaStats` `PlayRecord` `PlayStats` | `cache.*` `history.*` | 本地 |
 | 本地库（喜欢/歌单/文件夹） | `LocalPlaylist` `LocalLibraryFile` `LocalFolder` `LocalStats` `ScanResult` | `local.*`（`likes` / `playlists` / `folders` / `scan` / `history`） | 本地（不出网，匿名可用） |
@@ -61,7 +61,7 @@
 | `mediaType` | string? | `"track"` |
 | `stats` | `{collected?,comment?,shared?}` | 收藏/评论/分享计数 |
 | `vip` | `{onlyVipPlayable?,onlyVipDownload?,vipOnlyQualities?,isOriginal?,qualityMap?}` | 来自 `label_info`，权益标记 |
-| `playableRange` | `{startMs?,durationMs?}` | 只放开一段（试听）时的可播区间；`media.resolve()` 现在会把分享页的 `offsetStart`/`offsetDuration` 也写进这里，`PlaySource.clipStartMs` 与 `durationMs` 取自它 |
+| `playableRange` | `{startMs?,durationMs?}` | 只放开一段（试听）时的可播区间；`media.resolve()` 会把取址拿到的 `offset_start_ms`/`offset_duration_ms` 写进这里（h5 的 `preview.start`+档位长度，或分享页的 `offsetStart`/`offsetDuration`），`PlaySource.clipStartMs` 与 `durationMs` 取自它 |
 
 `.raw` 里还实测可见（未归一化，需要时自取）：`preview{vid,bit_rates}`、`audition_info{vid,start_time_ms,duration_ms}`（试听片段）、`chorus{start,duration}`（副歌）、`karaoke{supported}`、`lang_codes`、`tags`、`colors`（播放页配色）、`pclines`（版权行）。
 **可做 UI**：列表行（曲名/歌手/时长/收藏态）、详情页（权益标签、试听区间、副歌跳转）、播放页配色主题。
@@ -267,6 +267,6 @@
 | `GetRecentPlayedMedia` | 上报写通道通、**读回不落地**；最近播放以本地 `history` 为准 |
 | 热搜 `GetSearchBlock` | PC 恒空 |
 | `GetFeaturedContents` | 实测无数据 |
-| `GetTrackV2`/`GetMediaPlayer` 等播放地址端点 | 匿名与登录都拒答（`1000062`/空响应）；地址走 web 分享页 |
+| `GetTrackV2`/`GetMediaPlayer` 等 goapi 播放地址端点 | **库客户端口径**（`device_platform=windows`）下匿名与登录都拒答（`1000062`/空响应）；地址走 h5 `/luna/h5/track_v2`（带 `device_platform=web`，匿名可用）或分享页 SSR。`GetH5TrackV2` 已从这条翻案 |
 | `FlowSearch` | HTTP 404，线上不存在 |
 | 关注列表 `GetFollowingList`、用户资料 | 反复请求触发 captcha，做「翻页浏览」要收敛频次 |

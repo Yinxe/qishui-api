@@ -29,7 +29,7 @@ export interface UserSectionOptions {
 }
 
 /**
- * 一位用户的「能做什么」：纯函数，离线可测（与 `ui/rowActions.ts`、`buildListenSections` 同一路数）。
+ * 一位用户的「能做什么」：纯函数，离线可测（与 `ui/rowActions.ts`、`buildModeOptions` 同一路数）。
  * 读类项匿名也能用（公开歌单 / 关注 / 粉丝），写类项未登录置灰。
  */
 export function buildUserSections(opts: UserSectionOptions): Section[] {

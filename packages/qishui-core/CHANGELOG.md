@@ -4,7 +4,74 @@
 
 ## Unreleased
 
+### Added
+
+- **媒体缓存的容量维度终于成账：档位上限 + 真实占用 + 满溢策略（+ 一个默认关的自动淘汰）**
+  - **为什么**：`maxMediaBytes` 从前只在 `prune()` 里被读一次，而 `prune()` 没有任何自动触发点——上限形同虚设，缓存一路涨；界面也看不到「用了多少 / 还剩多少」；`prune` 剔谁只看 `accessedAt`，一直在记的 `plays` 从没参与决策
+  - **做法**：`config.ts` 加 `MEDIA_CAPACITY_TIERS`（2/3/4/5/10G + 不限制，`0` = 不限制）、`mediaCapacityLabel()`/`nextMediaCapacityTier()`/`mediaEvictPolicyLabel()` 三个词表（CLI 与 TUI 共用，不各自抄表），新配置项 `mediaEvictPolicy: 'lru' | 'leastPlayed'`、`mediaAutoEvict`（默认 `false`）；`MediaCache` 加 `capacity()`（**只算不删**：真实占用/占比/是否超限/按当前策略能释放几首多少字节），`stats()` 加 `diskBytes`
+  - **口径**：占用与剔除都用 `dirStats()` 的真实磁盘字节（含歌词/封面/残留 `.part`），显示 1.2GB 就不会剔出另一个数
+  - **边界**：`loadConfig` 只收口这三项（坏容量回默认、枚举回 `lru`、非布尔回 `false`）——**0 是「不限制」不是无效值**，必须原样留下；负数/`NaN` 会被 `maxBytes > 0` 静默当成不限制，所以挡在门口
+  - **`prune({ policy, keep })`**：`leastPlayed` 按 `plays` 升序（同次数再比时间，否则并列时剔谁看运气）；`keep` 里的曲目不动——刚 `ensure()` 完的那首 `plays` 还是 0，不保护就会「下完立刻把自己删了」。`ensure()` 末尾在 `mediaAutoEvict` 开时才自动剔，失败只打一行日志，不影响本次播放；`clearCache({media:true})` 保住 `player.current`
+
+- **`media.cachedCover(trackId)`：把已经落在盘上的封面字节给出去**（`cache/media.ts`）
+  - **为什么**：TUI 的封面每次重画都重新从 CDN 拉，可 `~/.qishui/cache/tracks/<id>/cover.jpg` 早就有了（`ensure()` 顺手落的）——core 没把它露出来，界面就看不见
+  - **做法**：直接 `readJson(metaFile(id))` 取 `meta.cover.file` 再 `readFile`，**不经 `readMeta()`**——那个要求 `meta.audio.file` 存在才算「这条缓存有效」，而只有封面、没下音频的条目照样该画得出来
+  - **边界**：全程不发网络；文件不在 / meta 坏 / 没 `cover` 一律 `undefined`（静默，让调用方回源）；专辑/艺人/用户没有媒体缓存条目，不在这一条的范围里
+  - 离线单测 `test/media.test.ts` 补一条：没 `ensure` 过是 `undefined`，落盘后拿到字节且**零请求**
+
+### Added
+
+- **队列书架落盘：`<dataDir>/queues.json`，重启后每份队列还在、还记着上次播到第几首**（`player/queues.ts` 的 `QueueBook` + `paths.queuesFile`）
+  - **写法**：书架每次变化（打开 / 切换 / 续批追加 / 收起）后 **300ms 防抖**原子写（先写 tmp 再 rename），`dispose()` 退出前 `flush()` 收尾；纯同步 IO，不引新依赖
+  - **恢复**：构造期 `hydrate()` 读盘（坏 JSON / 版本不对 → 整本当空的，不崩），每份队列恢复曲目、`index`、随机与续批状态；**推荐队列连档位一起回来**（`feed` 是可序列化的 `FeedModeRef`），恢复期不取网、`loaded` 照抄落盘值。**不恢复「上次在播哪份」**——播放器重启后是空的，让界面自己决定接哪一份（TUI 启动即起播因此变成「接着上次那一首」）
+  - **边界（都写进注释）**：`load` 闭包没法序列化——歌单/喜欢没取完的那部分要重新从列表页点开；`TrackData.raw` 原始响应快照**剥掉不写**（占地方且恢复后也用不到）；换号 `reset()` 整份作废并把空书架落盘（别让下一个号看见上一个号的队列）
+  - 离线单测 `test/queues.test.ts` 补 4 条：防抖写不落退出后才到（等 350ms 重开实例看得见）、重启恢复每份的位置（切回去接着播、推荐队列恢复后**不重新取批**）、盘上没有 `raw` 残迹、`reset()` 后重启是空的
+
+### Added
+
+- **取址改成 h5 优先、分享页兜底**（`cache/media.ts` 的 `mediaOf()`，原 `sharePage()`）
+  - **问题**：`/luna/pc/track_v2` 那批 goapi 口匿名全拒，于是曲目地址一直只从分享页 SSR 拿——一次 HTML 抓取、只给一档、字段名还没 IDL 依据
+  - **做法**：先 `getTrackMedia()`（`/luna/h5/track_v2` + `device_platform=web`，实测与 SSR 是**同一份音频**，还多给档位与权益），它失败再落 `getShareMedia()`；两条都不给地址才抛 `MediaUnavailableError`，消息里**两条各为什么失败都写出来**（`h5 …；分享页 …`），不藏其中一边
+  - `services/link.ts`：`media()` / `track()` 认到 `track` 就走 h5（这里**不做静默回落**，不通就照实报），`ugc_video` 仍走 SSR——h5 侧没有对应的视频端点（`/luna/h5/video*` 实测 404）
+  - **新增 `core.trackDetail(id | Track)`**（`core.ts`）：一发请求拿「详情 + 各档音质与体积 + `label_info` 权益矩阵 + KRC 歌词 + 整曲/试听判定」，包入口转出 `getTrackDetail`/`getTrackMedia`/`TrackDetail`/`TrackQuality`/`QualityEntitlement`
+  - **会员口径仍未验**：这两条都**匿名发、不带会话**（`getTrackDetail` 支持 `{ cookie }`，但 core 不默认附）。有 VIP 时 pc 口可能放行、**文件可能加密**——这是推测，`README.md` §11 与 api 包 `docs/APP_ENDPOINTS.md` §6 都标成假设，不是结论
+  - mock 上游（`test/support/mockUpstream.ts`）加 `/luna/h5/track_v2` 路由：按 `device_platform` 决定放行还是回 `1000062`，`h5: false` 可让它回空 body 逼出 SSR 回落；`preview.start` 用**毫秒**（上游就是毫秒）
+  - 离线单测：`test/trackDetail.test.ts` 5 条（单请求拿全、权益矩阵 vs 实际给到的档、试听区间、`link.media()` 走 h5 且不回落）、`test/media.test.ts` 补「h5 拒答时回落分享页」「两条都不通时错误里两条都写」并改首拉请求数断言（h5 + 音频 + 封面 = 3 次，零 `www.qishui.com`）、`test/player.test.ts` 切歌竞态的慢请求钩子改挂到 `/luna/h5/track_v2`
+
+### Changed
+
+- **推荐队列改成「只往后追加」：听过的不删、每首的序号从头到尾不变**（`player/queues.ts` 的 `QueueBook`）
+  - **为什么**：滑动窗口再怎么谨慎也是「一边播一边删前面」——`roll()` 只在自然前进时踢一首，可界面拿到的是快照行号，队列随时在变（补批往尾挂、踢历史往前挪），点一行就有「播成隔壁那首」的窗口；而推荐是一条越听越长的流，「第 5 行」本来也不该每秒钟指向不同的歌
+  - **现在**：`roll()` 整个删掉，`onPlayerQueue` 只做「记下播放头位置 + 该续批就续批」；队列**只长不缩**，同一首的序号从进队到落盘都不变。看历史靠界面那侧的固定窗口滚动（TUI 听歌页右栏），core 不管裁剪
+  - **代价**：一条推荐流听久了会上百首，`queues.json` 也跟着大（曲目 `raw` 快照本来就剥掉不写）；要清掉只能换号 `reset()` 或界面收起队列，core 不再自动瘦身
+  - **API**：`queues.stopRefill()` 删掉（「停止续播」这颗按钮整体下架），换成 **`await queues.loadMore(): number`** —— 队尾见底时界面主动要下一批，返回补进来的首数；非推荐队列 / 没在播的队列给 0 且不发请求，在途时再要也是 0。`refill()` 改收 `{ restart, force }` 并返回首数（`force` 跳过「剩 ≤2 才补」的门槛）
+  - 剩 ≤ `RECOMMEND_REFILL_AT`(2) 首的**自动续批照旧**（`loadMore` 是叠加的手动触发，不是替代）；唯一还会停的仍是「连续 `RECOMMEND_MAX_FAILURES`(2) 批取不到」，停掉后 `QueueInfo.refilling` 变 `false`，界面据此提示「把当前模式再选一次就重新来一批」
+  - 离线单测 `test/queues.test.ts`：原来钉「踢历史」的那几条改钉**只长不缩**（连按 12 次 `next()` 后队首仍是 `b1`、播放头每前进一步正好落在新的一号上、每批都整批 6 首、全程无重复且累计条数 = `feed.calls()×6`）；跳播那条改成「前面那段一首不动」；`stopRefill` 那条换成「每档各有一条流：切到别的档不影响这一档的续批」；新增 3 条钉 `loadMore`（队尾手动补一批并返回首数 / 在途时再要拿 0 / 歌单与临时队列返回 0 且零请求）
+
 ### Fixed
+
+- **「再来一批」= 整台重来：新一批只装这批、从第一首起播**（`player/queues.ts` 的 `QueueBook.open()` + 新增 `resetPlayer()`/`liveOf()`）
+  - **症状**：点 `[再来一批]` 刷出全新的 6 首之后 ① 不是从第一首开始，而是从中间某首；② 更凶的是「刚下载完就切下一首、又立马切第三首」，连着跳过好几首
+  - **根因一（从中间开始）**：落盘是 300ms 防抖的，这一次写正好落在「取新一批」的 `await` 中间；老写法写盘前先 `park(activeId)`，把**播放器里还是旧批次**的曲目与 `resumeId` 反向写回书架 entry。推荐流本就会重复推同一首（实测 `queues.json` 里同一 id 出现在第 5 和第 17 行）→ 那个旧 `resumeId` 在新批次里找得着，就从那一首开始播
+  - **现在**：`writeNow()` 只读不写书架（新增 `liveOf()` 取播放器当前形态），并用新增的 `liveId` 核对「播放器里装的到底是不是这一份」——换队列时 `activeId` 先变、曲目还在 `await` 里，那段时间不许把旧队列的位置记到新队列头上；`fill()` 也显式清掉 `resumeId`（新一批从头开始，上一批停在哪儿跟这批没关系）
+  - **根因二（连着跳）**：`open({ refresh: true })` 过去只换书架里的批次，**播放器还在放上一首**（`startCurrent` 挂在 `resolve` 上、下载那几秒可以挂很久），新一批是「盖」在还在响的旧曲上换的，上一首的退出/收尾会连着把新一批的头两三首推过去
+  - **现在**：refresh 分支先 `resetPlayer()` —— `player.clear()` 一并作废进度时钟、当前播放源和**还在路上的那一次解析**（`loadToken`），回到 `idle` 让上层（TUI 的 `sink.stop()`）停掉还在响的 mpv，新一批再从第一首干净起播；`applying` 挡在中间，免得「队列被清空」被 `onPlayerQueue` 当成「见底了，去补一批」
+  - 换模式（`refresh` 为假但这一档还没取过批）仍是原语义：不 reset，取到就直接播。`↓` 到队尾和「剩 ≤2 首」的自动续批也照旧是**只往队尾追加**，不影响在播那首
+  - 离线单测 `test/queues.test.ts` 补 2 条：整台重来（播放列表只剩新一批 6 首、`queue.index` 是 0、换批前先过一遍 `idle` 最后回到 `playing`）、慢批次期间那次防抖落盘不会把旧批次的位置复活
+
+- **点队列尾部那一首：播的就是它，不删别人、也不被新歌顶掉**（`player/queues.ts` 的 `QueueBook` + 新增 `player.ts` 的 `Player.playQueueTrack(id)`）
+  - **症状**：① 点队列靠后的一行经常「没反应」或播成隔壁那首；② 点尾部那首之后，前面一排**还没听过**的推荐整排消失，界面像被新补的一批顶掉了
+  - **根因一（删歌 + 行号前移）**：`roll()` 无差别按 `index-1` 从队首删 —— 它假设「播放头前面的歌都听过了」。跳播（点第 9 行）、甚至 `setRepeat`/`setShuffle` 重发 `queue` 事件时这个假设都不成立，于是把还没听的推荐当历史踢掉；队列一前移，界面快照里的行号就对不上活队列，`jumpTo` 越界就静默返回（点了没反应）
+  - **现在**：这条从源头没了——`roll()` 已整体删除，推荐队列只往后追加（见上面「Changed」）；界面点行也改走 `playQueueTrack(id)`（按曲目 id 定位，行号挪了也播你点的那首；找不着返回 `false`，由调用方给提示，不再静默）
+  - **根因二（被新歌顶掉）**：见底续批 `refill(entry, true)` 的批次回来时**无条件** `player.next()`。这批在途的功夫里你点了队列里的一首，回来那一下正好把它跳过去
+  - **现在**：只有「播放器仍是 `stopped` 且播放头还在原地」才自动接播，否则新批只挂到队尾
+  - 离线单测 `test/queues.test.ts` 补 2 条：点尾部那首之后前面的曲目一首不丢、当前仍是点的那首；补批在途时点歌，批次回来只追加到队尾（`b3` 不再被顶成 `c1`）
+
+- **推荐续批不再截断批次**（`player/queues.ts` 的 `QueueBook.refill()`）
+  - **症状**：界面上「又补了一批 4 首」——上游一批明明是 6 首，缺的 2 首凭空没了
+  - **根因**：续批把批次 `slice(0, room)` 钳进 `RECOMMEND_WINDOW_MAX`(8) 的窗口，队列当时 4 首就只装 4 首，**多出来的推荐直接丢掉**（推荐是随机流，丢了就再也取不到同一首）
+  - **现在**：剩 ≤ `RECOMMEND_REFILL_AT`(2) 首就**整批收下**，给几首收几首，队列长一点无所谓；`RECOMMEND_WINDOW_MAX` 一并删掉（包入口不再导出）
+  - 离线单测：`test/queues.test.ts` 那条窗口断言改成「每批都整批收下 + 上游给过的每一首都进过队列」（按 `queue-note` 收每次补的条数、并累计播放序里出现过的 id）
 
 - **推荐队列不再默认开「单曲循环」**（`player/queues.ts` 的 `QueueBook`）
   - 推荐队列是一条**自动续批的流**：单曲循环会让播放头停在原地，`onPlayerQueue` / `onPlayerEnded` 的续批永远不触发 —— 一首歌无限重播，队列再也走不动
@@ -14,13 +81,17 @@
 
 ### Added
 
-- **`core.queues`（`player/queues.ts` 的 `QueueBook`）：按来源分的多份播放队列 + 推荐队列的滑动窗口续批**
+- **队列书架上限 `MAX_QUEUES = 10`（`player/queues.ts` 的 `QueueBook`）+ `recommendQueueId(ref)`**
+  - 每张歌单、每档听歌模式各占一份队列，听久了会攒出几十份；现在 `open()` 之后若超过 10 份就**收起最久没用过的那份**（`Entry.usedAt` 记最近使用时间、`activate` 时刷新；在播的那份永不淘汰），收起的给一条 `queue-note` 提示、不静默丢。`list()` 按「最近用过」倒序
+  - `recommendQueueId(ref)`（包入口导出）：把听歌模式（`preference:<mode>` / `scene:<id>`）翻成那份推荐队列的固定 id，界面据此查「这一档上次听到哪」（`QueueInfo` 的 `count` / `current`）
+  - 离线单测 `test/queues.test.ts` 补 2 条：超过 10 份时收起最久没用的、在播那份不被淘汰
+- **`core.queues`（`player/queues.ts` 的 `QueueBook`）：按来源分的多份播放队列 + 推荐队列的自动续批**
   - **问题**：`Player` 只有一条队列，界面上「换一批推荐 / 点一张歌单 / 搜一首歌」都是整队覆盖 —— 推荐流一旦被覆盖就回不去了，只能从头再取
-  - **做法**：`Player` 仍然只有一条「在播队列」，`QueueBook` 在它上面管**多份**（`recommend` / `playlist` / `liked` / `temporary`），每份记自己的曲目、播到第几首、shuffle 偏好；切走时 `park()` 停放、切回 `activate()` 接着上次那一首，不重新取数。`applying` 守卫让「书架自己改播放器队列」不被误当成用户操作再触发滚窗/续批；`refillGen` 作废在途取数
-  - **四种策略**：`recommend` = 滑动窗口（前进一首踢掉「上上个」、剩 ≤2 首补一批、窗口钳在 2~8 首、顺序播）+ 队列播完自动重启续批、连续 2 批失败停；`playlist` = 整张顺序播、每张一份（`playlist:<id>` / 本地 `local-playlist:<id>`）；`liked` = 随机；`temporary` = 每次 `open` 整队替换（所有浏览型结果共用一份 `temporary`）
+  - **做法**：`Player` 仍然只有一条「在播队列」，`QueueBook` 在它上面管**多份**（`recommend` / `playlist` / `liked` / `temporary`），每份记自己的曲目、播到第几首、shuffle 偏好；切走时 `park()` 停放、切回 `activate()` 接着上次那一首，不重新取数。`applying` 守卫让「书架自己改播放器队列」不被误当成用户操作再触发续批；`refillGen` 作废在途取数
+  - **四种策略**：`recommend` = **只往后追加**（听过的不删、序号不变；剩 ≤2 首补**一整批**、顺序播）+ 队列播完自动重启续批、连续 2 批失败停；`playlist` = 整张顺序播、每张一份（`playlist:<id>` / 本地 `local-playlist:<id>`）；`liked` = 随机；`temporary` = 每次 `open` 整队替换（所有浏览型结果共用一份 `temporary`）
   - **事件**：`queues-changed`（书架/索引变化，界面据此重画）、`queue-note`（续批失败、队列没取到曲目这类要说的话）；`useAccount()` 换号时 `queues.reset()` 整份清空
-  - **接口**：`open(opts)` / `activate(id, startTrackId?)` / `remove(id)` / `list()` / `info()` / `stopRefill()` / `reset()`，外加常量 `RECOMMEND_WINDOW_MAX=8` / `RECOMMEND_REFILL_AT=2` / `RECOMMEND_MAX_FAILURES=2`（包入口导出）
-  - 离线单测 `test/queues.test.ts` 10 条：临时队列整队替换且顺序播、歌单切走再切回不重取、重新打开在播的那张歌单不跳回第一首、喜欢随机、推荐窗口 ≤8 且索引不倒退、只有在播那份推荐队列标「自动续批」、推荐恢复不重取、连续 2 批失败停续批、换号清空
+  - **接口**：`open(opts)` / `activate(id, startTrackId?)` / `remove(id)` / `list()` / `info()` / `loadMore()` / `reset()`，外加常量 `RECOMMEND_REFILL_AT=2` / `RECOMMEND_MAX_FAILURES=2`（包入口导出）
+  - 离线单测 `test/queues.test.ts` 10 条：临时队列整队替换且顺序播、歌单切走再切回不重取、重新打开在播的那张歌单不跳回第一首、喜欢随机、推荐续批整批收下且索引不倒退、只有在播那份推荐队列标「自动续批」、推荐恢复不重取、连续 2 批失败停续批、换号清空
 - **推荐请求的种子 `played_media`：口径对齐官方 App（反编译 `reaSodaMusic`）**
   - 新增 `buildPlayedMedia(core, opts)`（`src/playedMedia.ts`，包入口导出）：**待播队列**（当前曲目之后、逆序，`played_mills: -1` —— App 对「还没播」就这么标）→ **云端最近播放**（`GetRecentPlayedTracks`，账号级、跨设备，登录态才有）→ **本地 `journal/plays.jsonl`** 里云端没有的按时间新→旧补上；按 `media_id` 去重后截断到 **30 条**（`PLAYED_MEDIA_MAX`，与 App 的 `MAX_COUNT` 同一个值）。`includeQueue`/`includeCloud`/`includeLocal`/`limit` 可分别关。云端没有「听了多久」，本地同曲记录有就补 `played_mills`、没有就不填（不编 0）。未登录/云端失败只剩本地那半，不抛错、不阻断推荐
   - `feedSongTab()` 默认带 `played_media`（`withPlayedMedia: false` 关），并按 App 的字段集补齐 `is_did_first_request` / `did_first_use_time` / `feed_counts.mix_session_count`，偏好档也按 App 塞进 `feed_preference: {preference_mode}`（顶层 `preference_mode` 降级为兼容字段）。`did_first_use_time` 我们没有 App 那个落盘值，用**本机最早一条播放记录的时刻**当代理（`PlayHistory.firstAt()`，新增），没有历史就取当前时刻；`is_did_first_request` = 进程内第一次请求且本机还没有播放记录

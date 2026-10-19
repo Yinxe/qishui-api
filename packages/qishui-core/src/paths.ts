@@ -21,6 +21,7 @@ import path from 'node:path'
  * ├── journal/plays.jsonl         未登录/迁移前的播放历史（append-only，一行一次）
  * ├── journal/<uid>/plays.jsonl   各账号的播放历史
  * ├── local/library.json          本地库：本地喜欢 + 本地歌单 + 音乐文件夹（跨账号共享，不出网）
+ * ├── queues.json                 播放队列书架（换号即作废，见 `player/queues.ts` 的 `reset`）
  * └── logs/                       预留（core 默认只往 stdout/logger 打）
  * ```
  *
@@ -44,6 +45,8 @@ export interface CorePaths {
   localDir: string
   /** 本地库文件：本地喜欢 / 本地歌单 / 音乐文件夹 */
   localLibraryFile: string
+  /** 播放队列书架文件（一份设备的在听书架，换号会被 `QueueBook.reset()` 清掉） */
+  queuesFile: string
   /** 单曲媒体目录 */
   trackDir(trackId: string): string
   /** 元数据缓存文件；scope=uid 时落 `_acct/<uid>/` 子层 */
@@ -86,6 +89,7 @@ export function resolvePaths(dataDir?: string): CorePaths {
     logsDir: path.join(root, 'logs'),
     localDir,
     localLibraryFile: path.join(localDir, 'library.json'),
+    queuesFile: path.join(root, 'queues.json'),
     trackDir: (trackId: string) => path.join(mediaDir, safeSegment(trackId)),
     entityFile: (kind: string, id: string, scope?: string) =>
       scope

@@ -3,14 +3,14 @@ import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
-import { getShareMedia, type ShareLyrics, type ShareMedia } from 'qishui-api'
-import type { CoreConfig } from '../config.js'
+import { getShareMedia, getTrackMedia, type ShareLyrics, type ShareMedia } from 'qishui-api'
+import { type CoreConfig, type MediaEvictPolicy, mediaEvictPolicyLabel } from '../config.js'
 import { CacheError, CoreError, MediaUnavailableError } from '../errors.js'
 import { coerceTrack } from '../parse.js'
 import type { CorePaths } from '../paths.js'
 import { Lyrics } from '../player/lyrics.js'
 import type { TrackData } from '../types.js'
-import { ensureDir, fileSize, hashFile, pathExists, readJson, removeQuiet, writeJsonAtomic } from '../util.js'
+import { dirStats, ensureDir, fileSize, hashFile, pathExists, readJson, removeQuiet, writeJsonAtomic } from '../util.js'
 
 /** 已落盘的音频文件描述（`file` 是相对曲目目录的名字） */
 export interface CachedAudio {
@@ -90,6 +90,30 @@ export interface MediaStats {
   /** 最久没被访问的一条的时间 */
   oldestAccessedAt?: number
   totalPlays: number
+  /**
+   * `cache/tracks` 的**真实磁盘占用**：含 `meta.json`/`lyrics.json`、没下完的 `.part`、
+   * 以及 meta 丢失的孤儿目录。上面那几项是 meta 自报的数，两者不等是正常的（残留物）。
+   */
+  diskBytes: number
+}
+
+/** 容量账：`prune` 剔谁、`capacity` 显示什么，都出自同一份数字 */
+export interface MediaCapacity {
+  /** 真实占用（= `MediaStats.diskBytes`） */
+  usedBytes: number
+  /** 生效上限；`0` = 不限制 */
+  limitBytes: number
+  /** 占上限的百分比（四舍五入）；不限制时 undefined */
+  percent?: number
+  overLimit: boolean
+  /** 满溢时按哪个顺序剔（`config.mediaEvictPolicy`） */
+  policy: MediaEvictPolicy
+  /** 落盘后是否自动剔到上限（默认关：删文件要人显式触发） */
+  autoEvict: boolean
+  /** 按 `policy` 清到上限要剔几首 */
+  reclaimableTracks: number
+  /** 这几首能释放多少字节（**只算不删**） */
+  reclaimableBytes: number
 }
 
 export interface VerifyIssue {
@@ -144,9 +168,25 @@ export class MediaCache {
     return (await this.peek(trackId)) !== undefined
   }
 
+  /**
+   * 只读磁盘上的封面字节（没缓存就 undefined，绝不发请求）。
+   *
+   * 不走 `readMeta`：那条路要求 `meta.audio.file` 存在，而这里只关心封面在不在——音频被 prune 掉了、
+   * 封面还在的目录照样该出图。
+   */
+  async cachedCover(trackId: string): Promise<Buffer | undefined> {
+    const meta = await readJson<CachedMediaMeta>(this.metaFile(trackId))
+    if (!meta?.cover?.file) return undefined
+    try {
+      return await fsp.readFile(path.join(this.dirOf(trackId), meta.cover.file))
+    } catch {
+      return undefined
+    }
+  }
+
   /** 落盘缓存总量与命中信息 */
   async stats(): Promise<MediaStats> {
-    const all = await this.list()
+    const { metas: all, diskBytes } = await this.scan()
     let audioBytes = 0
     let coverBytes = 0
     let withLyrics = 0
@@ -159,7 +199,62 @@ export class MediaCache {
       totalPlays += meta.plays
       if (oldest === undefined || meta.accessedAt < oldest) oldest = meta.accessedAt
     }
-    return { tracks: all.length, audioBytes, coverBytes, withLyrics, oldestAccessedAt: oldest, totalPlays }
+    return { tracks: all.length, audioBytes, coverBytes, withLyrics, oldestAccessedAt: oldest, totalPlays, diskBytes }
+  }
+
+  /**
+   * 容量账：真实占用 vs 上限，再加「按当前策略清到上限能腾出多少」——**这一条只算不删**。
+   * 上限 `0`（不限制）时 `overLimit` 恒 false、`percent` 不给。
+   */
+  async capacity(): Promise<MediaCapacity> {
+    const { metas, diskBytes } = await this.scan()
+    const limitBytes = this.config.maxMediaBytes
+    const policy = this.config.mediaEvictPolicy
+    const sizes = await this.sizesOf(metas)
+    const over = limitBytes > 0 ? diskBytes - limitBytes : 0
+    let reclaimableTracks = 0
+    let reclaimableBytes = 0
+    if (over > 0) {
+      for (const meta of this.order(metas, policy)) {
+        if (reclaimableBytes >= over) break
+        reclaimableBytes += sizes.get(meta.trackId) ?? 0
+        reclaimableTracks++
+      }
+    }
+    return {
+      usedBytes: diskBytes,
+      limitBytes,
+      percent: limitBytes > 0 ? Math.round((diskBytes / limitBytes) * 100) : undefined,
+      overLimit: over > 0,
+      policy,
+      autoEvict: this.config.mediaAutoEvict,
+      reclaimableTracks,
+      reclaimableBytes,
+    }
+  }
+
+  /** 一次遍历出「有 meta 的曲目」+「真实磁盘字节」：显示与剔除共用，免得两套账 */
+  private async scan(): Promise<{ metas: CachedMediaMeta[]; diskBytes: number }> {
+    const { bytes } = await dirStats(this.paths.mediaDir)
+    return { metas: await this.list(), diskBytes: bytes }
+  }
+
+  /** 每首曲目目录的真实字节（含歌词/封面/meta 与残留 `.part`） */
+  private async sizesOf(metas: CachedMediaMeta[]): Promise<Map<string, number>> {
+    const out = new Map<string, number>()
+    for (const meta of metas) out.set(meta.trackId, (await dirStats(this.dirOf(meta.trackId))).bytes)
+    return out
+  }
+
+  /**
+   * 「最该走的排前面」：`leastPlayed` 先比播放次数、**同次数再比时间**（否则并列时剔谁看运气）；
+   * `lru` 只比时间。
+   */
+  private order(metas: CachedMediaMeta[], policy: MediaEvictPolicy): CachedMediaMeta[] {
+    const byAge = (a: CachedMediaMeta, b: CachedMediaMeta): number => a.accessedAt - b.accessedAt
+    const sorted = [...metas]
+    sorted.sort(policy === 'leastPlayed' ? (a, b) => a.plays - b.plays || byAge(a, b) : byAge)
+    return sorted
   }
 
   /** 列出所有已缓存曲目（扫目录，不发请求） */
@@ -194,11 +289,11 @@ export class MediaCache {
         this.logger(`[media] 命中缓存 ${id}（${formatBytes(hit.audio.bytes)}）`)
         return await this.touch(hit)
       }
-      // v1 命中：音频还在，只重拉分享页补试听片段信息（不重下音频）
+      // 命中 v1 老缓存：音频还在，只重取一次媒体补试听片段信息（不重下音频）
     }
 
     const previous = await this.readMeta(id)
-    const share = await this.sharePage(id, opts.signal)
+    const share = await this.mediaOf(id, opts.signal)
     await ensureDir(dir)
 
     const mime = share.mime_type
@@ -257,6 +352,15 @@ export class MediaCache {
       plays: previous?.plays ?? 0,
     }
     await writeJsonAtomic(path.join(dir, 'meta.json'), meta)
+    // 默认不自动剔（`mediaAutoEvict` 关着）：删音频得人显式触发。开了也只认「刚下的这一首」要保住，
+    // 且整段失败只打一行——播放源已经解析好了，不能被清理动作带崩。
+    if (this.config.mediaAutoEvict && this.config.maxMediaBytes > 0) {
+      try {
+        await this.prune({ maxBytes: this.config.maxMediaBytes, keep: [id] })
+      } catch (err) {
+        this.logger(`[media] 自动淘汰失败（不影响本次播放）：${(err as Error)?.message ?? err}`)
+      }
+    }
     return meta
   }
 
@@ -270,7 +374,7 @@ export class MediaCache {
     const useCache = opts.download !== false && this.config.autoCacheMedia
 
     if (!useCache) {
-      const share = await this.sharePage(track.id, opts.signal)
+      const share = await this.mediaOf(track.id, opts.signal)
       const clip = clipOf(share)
       return {
         track: mergeTrack(track, share),
@@ -345,36 +449,54 @@ export class MediaCache {
     return { removed: all.length, freedBytes }
   }
 
-  /** 超上限就按 accessedAt 从旧到新剔；maxAgeMs 用来剔长期没听的 */
-  async prune(opts: { maxBytes?: number; maxAgeMs?: number } = {}): Promise<{ removed: number; freedBytes: number }> {
-    const all = await this.list()
+  /**
+   * 清理：超上限就按 `policy`（缺省读 `config.mediaEvictPolicy`）从「最该走」的开始剔整首曲目目录。
+   *
+   * - `maxAgeMs` 先无脑剔长期没听的（不受策略影响，过期就是过期）；
+   * - `keep` 里的曲目**无论如何不动**——刚 `ensure()` 完的那首 `plays` 还是 0，`leastPlayed` 下它排第一，
+   *   不保护就会「下完立刻把自己删了」；正在播的那首同理；
+   * - 体积走 `dirStats` 真实字节，与 `capacity()` 显示的占用同一个口径。
+   */
+  async prune(
+    opts: { maxBytes?: number; maxAgeMs?: number; policy?: MediaEvictPolicy; keep?: Iterable<string> } = {},
+  ): Promise<{ removed: number; freedBytes: number; policy: MediaEvictPolicy }> {
+    const policy = opts.policy ?? this.config.mediaEvictPolicy
+    const { metas: all, diskBytes } = await this.scan()
     const maxBytes = opts.maxBytes ?? this.config.maxMediaBytes
+    const keep = new Set(opts.keep ?? [])
+    const sizes = await this.sizesOf(all)
     const now = Date.now()
     let removed = 0
     let freedBytes = 0
-    const sizeOf = (meta: CachedMediaMeta): number => meta.audio.bytes + (meta.cover?.bytes ?? 0)
 
-    const stale = all.filter((meta) => opts.maxAgeMs != null && now - meta.accessedAt > opts.maxAgeMs)
-    const rest = all.filter((meta) => !stale.includes(meta)).sort((a, b) => a.accessedAt - b.accessedAt)
+    const candidates = all.filter((meta) => !keep.has(meta.trackId))
+    const stale = candidates.filter((meta) => opts.maxAgeMs != null && now - meta.accessedAt > opts.maxAgeMs)
+    const rest = this.order(
+      candidates.filter((meta) => !stale.includes(meta)),
+      policy,
+    )
 
     const drop = async (meta: CachedMediaMeta): Promise<void> => {
       if (await this.evict(meta.trackId)) {
         removed++
-        freedBytes += sizeOf(meta)
+        freedBytes += sizes.get(meta.trackId) ?? 0
       }
     }
     for (const meta of stale) await drop(meta)
 
     if (maxBytes > 0) {
-      let total = rest.reduce((sum, meta) => sum + sizeOf(meta), 0)
+      // `stale` 那批已经从盘上没了，从真实占用里扣掉再比上限
+      let total = diskBytes - freedBytes
       for (const meta of rest) {
         if (total <= maxBytes) break
         await drop(meta)
-        total -= sizeOf(meta)
+        total -= sizes.get(meta.trackId) ?? 0
       }
     }
-    if (removed) this.logger(`[media] 清理 ${removed} 首，释放 ${formatBytes(freedBytes)}`)
-    return { removed, freedBytes }
+    if (removed) {
+      this.logger(`[media] 清理 ${removed} 首（${mediaEvictPolicyLabel(policy)}），释放 ${formatBytes(freedBytes)}`)
+    }
+    return { removed, freedBytes, policy }
   }
 
   /** 完整性复查：meta 与文件对不上、大小不符、残留 .part 都报出来；fix=true 顺手清掉坏条目 */
@@ -452,17 +574,32 @@ export class MediaCache {
     return meta
   }
 
-  private async sharePage(trackId: string, signal?: AbortSignal): Promise<ShareMedia> {
+  /**
+   * 曲目可播媒体：h5 接口优先，分享页 SSR 兜底。
+   * 两条路实测拿到的是同一份音频；h5 拿不到（改版/拒答/没给地址）才回落，行为不退化。
+   */
+  private async mediaOf(trackId: string, signal?: AbortSignal): Promise<ShareMedia> {
+    let h5Error: unknown
+    try {
+      return await getTrackMedia(trackId, {
+        fetchImpl: this.fetchImpl,
+        cover_width: this.config.coverWidth,
+        signal,
+      })
+    } catch (err) {
+      h5Error = err
+    }
     try {
       return await getShareMedia(trackId, {
         fetchImpl: this.fetchImpl,
         cover_width: this.config.coverWidth,
         signal,
       })
-    } catch (err) {
+    } catch (ssrError) {
+      const why = (e: unknown) => (e instanceof Error ? e.message : String(e))
       throw new MediaUnavailableError(
-        `拿不到可播地址（${trackId}）：${err instanceof Error ? err.message : String(err)}`,
-        err,
+        `拿不到可播地址（${trackId}）：h5 ${why(h5Error)}；分享页 ${why(ssrError)}`,
+        ssrError,
       )
     }
   }

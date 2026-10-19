@@ -45,11 +45,40 @@ function sidebarWidthFor(columns: number): number {
   return 0
 }
 
+/** 尺寸口径：管道/CI 里 stdout 没这两项，退回 80×24 */
+function sizeOf(stdout: { columns?: number; rows?: number }): { columns: number; rows: number } {
+  return { columns: stdout.columns ?? 80, rows: stdout.rows ?? 24 }
+}
+
+/**
+ * 终端尺寸跟着 SIGWINCH 走。
+ *
+ * ink 收到 resize 只做 `calculateLayout()` + 重绘，**不重渲染 React 树**（见 useFullscreenRows）。
+ * 各屏的窗口高度/列宽是在渲染期用 `stdout.rows`/`columns` 算进 JSX 的（列表窗口、歌词行数、
+ * 两栏宽度…），光让 yoga 重排改不了这些数：resize 后布局会停在前一档，直到别的事件（按键、
+ * 播放进度）碰巧触发一次重渲染。这里订阅 resize、把尺寸放进 state，让整棵树跟着重排一次。
+ */
+function useTerminalSize(): { columns: number; rows: number } {
+  const { stdout } = useStdout()
+  const [size, setSize] = useState(() => sizeOf(stdout))
+  useEffect(() => {
+    // 同一尺寸可能连报多次（终端会补发 SIGWINCH）：值没变就返回原对象，别白重排一帧
+    const sync = () =>
+      setSize((prev) => {
+        const next = sizeOf(stdout)
+        return prev.columns === next.columns && prev.rows === next.rows ? prev : next
+      })
+    stdout.on('resize', sync)
+    return () => {
+      stdout.off('resize', sync)
+    }
+  }, [stdout])
+  return size
+}
+
 export function UiProvider({ children }: { children: ReactNode }) {
   const { exit } = useApp()
-  const { stdout } = useStdout()
-  const columns = stdout.columns ?? 80
-  const rows = stdout.rows ?? 24
+  const { columns, rows } = useTerminalSize()
   // 启动就落在「听歌」：这一页是唯一会自己出声的页（core 一就绪就按记住的模式来一批，见 core/context.tsx），
   // 想先看别的页按 `1`/`2` 就行
   const [stack, setStack] = useState<Route[]>([{ kind: 'root', root: 'listen' }])

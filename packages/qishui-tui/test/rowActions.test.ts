@@ -8,7 +8,14 @@ import type { QishuiCore, TrackData } from 'qishui-core'
 import { beforeEach, expect, it, vi } from 'vitest'
 import type { UiValue } from '../dist/ui/context.js'
 import type { Entry } from '../dist/ui/entries.js'
-import { buildQueueTrackActions, buildRowActions, buildTrackActions } from '../dist/ui/rowActions.js'
+import {
+  buildQueueTrackActions,
+  buildRowActions,
+  buildTrackActions,
+  toggleTrackLike,
+  trackLiked,
+  trackLikeOf,
+} from '../dist/ui/rowActions.js'
 import type { ListRow } from '../dist/ui/useList.js'
 
 const T1 = '7068138081588611073'
@@ -489,4 +496,116 @@ it('播放页未登录：写类项照旧置灰并补「去登录」，队列的�
   expect(last.label).toBe('去登录（汽水音乐 App 扫码）')
   await last.onEnter?.()
   expect(overlays.map((o) => o.kind)).toEqual(['login'])
+})
+
+/**
+ * [喜欢] 按钮（听歌页两排操作按钮 + 底部播放条）：与菜单那条「我的喜欢（切换）」同一条路，
+ * 只是没有弹层要关。这里验 `trackLikeOf` / `trackLiked` / `toggleTrackLike` 三个共用件。
+ */
+interface LikeCoreOptions {
+  loggedIn?: boolean
+  liked?: string[]
+  isLiked?: () => Promise<boolean>
+  localLiked?: boolean
+}
+
+function makeLikeCore(opts: LikeCoreOptions = {}) {
+  const calls: string[] = []
+  const write = (label: string) => () => {
+    calls.push(label)
+    return Promise.resolve()
+  }
+  let localReads = 0
+  const core = {
+    loggedIn: opts.loggedIn ?? true,
+    cache: {
+      peek: (kind: string, id: string) =>
+        kind === 'liked-tracks' && id === 'list' && opts.liked
+          ? { tracks: opts.liked.map((trackId) => ({ id: trackId })) }
+          : undefined,
+    },
+    library: {
+      isLiked: () => (opts.isLiked ? opts.isLiked() : Promise.resolve(false)),
+      like: write(`like:${T1}`),
+      unlike: write(`unlike:${T1}`),
+    },
+    local: {
+      isTrackLiked: () => {
+        localReads++
+        return Boolean(opts.localLiked)
+      },
+      toggleLike: (t: { id: string }) => {
+        calls.push(`localToggle:${t.id}`)
+        return Promise.resolve(!opts.localLiked)
+      },
+    },
+  }
+  return { core: core as unknown as QishuiCore, calls, localReads: () => localReads }
+}
+
+function makeLikeUi() {
+  const toast = vi.fn()
+  const bump = vi.fn()
+  return { toast, bump, ui: { toast, bump } as unknown as UiValue }
+}
+
+it('trackLikeOf：从 TrackData 的 state.isCollected 拼出水印', () => {
+  const data = { ...trackData(T1), state: { isCollected: true } } as unknown as TrackData
+  const like = trackLikeOf(data)
+  expect(like.id).toBe(T1)
+  expect(like.liked).toBe(true)
+  expect(like.data).toBe(data)
+})
+
+it('trackLiked：先看水印、退到内存清单、都没有算 false；磁盘文件读本地库——全程不发请求', () => {
+  const { core, localReads } = makeLikeCore({ liked: [] })
+  const withMark = trackLikeOf({ ...trackData(T1), state: { isCollected: true } } as unknown as TrackData)
+  expect(trackLiked(core, withMark)).toBe(true) // 水印优先
+  const inList = trackLikeOf({ ...trackData(T2) } as unknown as TrackData)
+  expect(trackLiked(makeLikeCore({ liked: [T2] }).core, inList)).toBe(true) // 退到内存清单
+  const unknown = trackLikeOf(trackData(T1))
+  expect(trackLiked(core, unknown)).toBe(false) // 两头都没有 → 缺省 false
+  expect(localReads()).toBe(0) // 云端曲目不碰本地库
+
+  const local = trackLikeOf({ ...trackData(T1), localPath: '/m/a.mp3' } as unknown as TrackData)
+  const localCore = makeLikeCore({ localLiked: true })
+  expect(trackLiked(localCore.core, local)).toBe(true)
+  expect(localCore.localReads()).toBe(1)
+})
+
+it('toggleTrackLike（云端）：已喜欢走 unlike、未喜欢走 like，成功后翻水印 + bump', async () => {
+  // 内存清单说这首已喜欢 → 按一下应当取消
+  const liked = makeLikeCore({ liked: [T1] })
+  const likedTrack = trackLikeOf(trackData(T1))
+  const a = makeLikeUi()
+  await toggleTrackLike({ ui: a.ui, core: liked.core, track: likedTrack })
+  expect(liked.calls).toEqual([`unlike:${T1}`])
+  expect(likedTrack.data.state?.isCollected).toBe(false)
+  expect(a.bump).toHaveBeenCalledTimes(1)
+  expect(a.toast.mock.calls[0]?.[1]).toBe('info')
+
+  // 水印说已喜欢（来自实体）→ 取消；两头都没读过才真读一次 isLiked
+  const marked = makeLikeCore()
+  const markedTrack = trackLikeOf({ ...trackData(T1), state: { isCollected: true } } as unknown as TrackData)
+  const b = makeLikeUi()
+  await toggleTrackLike({ ui: b.ui, core: marked.core, track: markedTrack })
+  expect(marked.calls).toEqual([`unlike:${T1}`])
+  expect(markedTrack.data.state?.isCollected).toBe(false)
+})
+
+it('toggleTrackLike：未登录只提示不动写接口；本地文件走本地库、不需要登录', async () => {
+  const anon = makeLikeCore({ loggedIn: false })
+  const anonTrack = trackLikeOf(trackData(T1))
+  const a = makeLikeUi()
+  await toggleTrackLike({ ui: a.ui, core: anon.core, track: anonTrack })
+  expect(anon.calls).toEqual([])
+  expect(a.toast.mock.calls[0]?.[1]).toBe('info')
+
+  const local = makeLikeCore({ loggedIn: false, localLiked: false })
+  const localTrack = trackLikeOf({ ...trackData(T1), localPath: '/m/a.mp3' } as unknown as TrackData)
+  const b = makeLikeUi()
+  await toggleTrackLike({ ui: b.ui, core: local.core, track: localTrack })
+  expect(local.calls).toEqual([`localToggle:${T1}`])
+  expect(localTrack.data.state?.isCollected).toBe(true)
+  expect(b.toast.mock.calls[0]?.[1]).toBe('success')
 })

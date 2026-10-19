@@ -69,7 +69,13 @@ export function writeWav(file: string, seconds: number, freq: number): number {
  * 把一首曲目「当成已经在本地」：实体缓存（catalog.track 零网络）+ 媒体缓存（resolve peek 命中）。
  * 返回 [id, 名称]，直接喂 `play track:<id>`。
  */
-export function seedTrack(home: string, id: string, name: string, seconds: number): void {
+export function seedTrack(
+  home: string,
+  id: string,
+  name: string,
+  seconds: number,
+  extra: { plays?: number; accessedAt?: number } = {},
+): void {
   const data = {
     id,
     name,
@@ -93,8 +99,8 @@ export function seedTrack(home: string, id: string, name: string, seconds: numbe
     track: data,
     audio: { file: 'audio.wav', mime: 'audio_wav', bytes, fetchedAt: Date.now() },
     fetchedAt: Date.now(),
-    accessedAt: Date.now(),
-    plays: 0,
+    accessedAt: extra.accessedAt ?? Date.now(),
+    plays: extra.plays ?? 0,
   }
   fs.writeFileSync(path.join(mediaDir, 'meta.json'), JSON.stringify(meta, null, 2))
 }

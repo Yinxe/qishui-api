@@ -26,9 +26,10 @@ export const NAV_ITEMS: NavItem[] = [
   { root: 'search', label: '搜索', short: '搜', hint: '/' },
   { root: 'discover', label: '发现', short: '发', hint: '2' },
   { root: 'listen', label: '听歌', short: '听', hint: '3' },
-  { root: 'library', label: '我的', short: '我', hint: '4' },
-  { root: 'local', label: '本地', short: '本', hint: '5' },
-  { root: 'settings', label: '设置', short: '设', hint: '6' },
+  { root: 'queues', label: '播放队列', short: '队', hint: '4' },
+  { root: 'library', label: '我的', short: '我', hint: '5' },
+  { root: 'local', label: '本地', short: '本', hint: '6' },
+  { root: 'settings', label: '设置', short: '设', hint: '7' },
 ]
 
 /** 导航项逐个可选；底部账号状态行不算游标项（点它 = 进「我的」） */

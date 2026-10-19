@@ -25,7 +25,7 @@
 | 网关 | `https://api.qishui.com`，无公开版本、无兼容承诺 |
 | 公共参数 | 逐字复刻 `services/request/request.ts:getTTCommonParams()`；`version_name` 与 `version_code` **都是版本字符串 `3.7.0`**，不是整数 |
 | 端点表 | 320 个端点 / 74 个官方在用 / 3 个播放地址类上游拒答（库照发，不拦） |
-| 可达性实测 | `docs/APP_ENDPOINTS.md`（2026-10-17，四轮）。① 匿名 82 条：`ok_json=32 · login_required=38`（含 29 个写接口）`· ok_thin=4 · client_rejected=3 · biz_error=3 · error=1 · risk_control=1`；② 带会话（非会员账号）复测上轮未结论的 14 条：**6 条翻盘**、3 条回空、2 条 `biz_error`（后被写接口轮翻案）、2 条 `error`、1 条风控；③ 写接口轮 29 条（`test/write.ts`，全部可回滚）：**29 条全部 `status_code=0`**（4 条换参数/换 path 翻案），唯一仍不通的是非写接口 `QueryTokenStatus`（上游 v1 GET 路由 500）；收尾安全复查 11/11；④ 补测轮 8 条媒体类：`MGetMedia`/`MCheckTrack` 匿名 `ok_json`，`MGetMediaV2`/`GetTrack`/`GetH5Track`/`GetH5TrackV2`/`GetTrackPlayerInfo` 归入「客户端完整性校验拒答」 |
+| 可达性实测 | `docs/APP_ENDPOINTS.md`（2026-10-17 四轮 + 2026-10-19 h5 轮）。① 匿名 82 条：`ok_json=32 · login_required=38`（含 29 个写接口）`· ok_thin=4 · client_rejected=3 · biz_error=3 · error=1 · risk_control=1`；② 带会话（非会员账号）复测上轮未结论的 14 条：**6 条翻盘**、3 条回空、2 条 `biz_error`（后被写接口轮翻案）、2 条 `error`、1 条风控；③ 写接口轮 29 条（`test/write.ts`，全部可回滚）：**29 条全部 `status_code=0`**（4 条换参数/换 path 翻案），唯一仍不通的是非写接口 `QueryTokenStatus`（上游 v1 GET 路由 500）；收尾安全复查 11/11；④ 补测轮 8 条媒体类：`MGetMedia`/`MCheckTrack` 匿名 `ok_json`，`MGetMediaV2`/`GetTrack`/`GetH5Track`/`GetH5TrackV2`/`GetTrackPlayerInfo` 当时归入「客户端完整性校验拒答」——**这个归因 2026-10-19 被推翻**：门是 query `device_platform=web`，`GetH5TrackV2` 匿名可用（`getTrackDetail`/`getTrackMedia` 就是它），其余几条没逐条补过该参数 |
 
 **拿不到的部分**：`idl/*/entity/*.ts` 是纯类型声明（`interface`），编译期被完全擦除，`sourcesContent`
 里根本没有它们——74 个模块在产物中不存在，`src/idl/**` 里对应位置只能是 `export type X = any` 的 stub。
@@ -81,7 +81,7 @@
 | `ApiError code=1000004` | 参数缺失/类型不对 | 看 `docs/endpoints.md` 对应端点的字段表，再对新版 contract 源码 |
 | `QishuiError: IDL 中找不到端点 X` | `data.name` 与表不匹配，或重名端点要用带模块前缀的 key | 用 `ENDPOINT_DATA` 里的 `key`；跨模块重名走 `goapi_X` 这种前缀名 |
 | 登录后仍有一批 `biz_error code=1000004` | 样本参数是占位值/枚举不合法（商业化、评论枚举这类尤其） | 不是不可达；要单独验就自己配真参数手工跑 |
-| `ApiError code=1000062`（「应用版本有风险，请从应用商店下载正式版本」） | 上游对非官方客户端做完整性校验后拒答（实测见于播放地址类接口） | 不是参数问题，换参数/cookie/path 都不会变（**匿名与带会话实测都被拒**）。`ENDPOINT_DATA[].gated` 标了这类端点；**会员态是否放行尚未验证**，别把结论当终局，见 §5 |
+| `ApiError code=1000062`（「应用版本有风险，请从应用商店下载正式版本」） | **是一道 query 参数门，不是「客户端完整性校验」** —— `/luna/h5/track_v2` 后续实测翻了案：补 `device_platform=web` 就过（换 UA 没用） | 先怀疑请求里 `device_platform` 的取值（库的 common 参数默认 `windows`；`transport.ts` 是 `query` 覆盖 common，所以请求级传 `device_platform: 'web'` 能改）。`ENDPOINT_DATA[].gated` 标的是「库客户端口径下被拒」，不是终局；**会员态是否放行仍未验证**，见 §5 |
 | TS 类型大面积变红 | `src/idl/**` 是生成物，被手改了 | 这些文件是从官方分发包 sourcemap 整理出来的产物，手改过很难还原，改动前先留一份 |
 | 封面/头像 URL 回 400 `{"code":2004}` | 官方 CDN 模板串变了 | 对照新版 `utils/image.ts` 改 `src/web/image.ts`，见 §3 |
 | 请求字段在但值丢了 | POST 时 body 已有字段不再进 query（官方同款行为） | 这是 `apiCaller` 的规则，不是 bug |
@@ -90,17 +90,26 @@
 
 ## 5. 修不了的边界（别在这上面耗时间）
 
-- **goapi 播放地址**：`GetTrackV2` / `GetMediaPlayer` / `GetVideoV2` 依赖 native 层（`@luna/ttnet` Cronet + `bdticket`
-  设备证明，仅 Windows PE）产生的签名。**匿名与带会话实测都拒答**：pc 变体一律 `200 + 0 字节`，非 pc 变体回
+- **goapi 播放地址（pc 口）**：`GetTrackV2` / `GetMediaPlayer` / `GetVideoV2` 依赖 native 层（`@luna/ttnet` Cronet + `bdticket`
+  设备证明，仅 Windows PE）产生的签名。**库客户端口径下匿名与带会话实测都拒答**：pc 变体一律 `200 + 0 字节`，非 pc 变体回
   `status_code=1000062 应用版本有风险，请从应用商店下载正式版本`。本库的做法是**照常发请求、遵从上游**：
   上游怎么答就怎么答（早先自己抛 `UnsupportedError` 拦截请求已被删除——本库不代上游下结论），
   只在 `ENDPOINT_DATA[].gated` 上打标记。本库**不伪造 native attest**（那是绕门禁，不是协议研究）。
   注意这条结论**不含会员态**：本次账号非会员，会员是否放行还没验过，别当终局。
-- **可播地址只有 web 这一个入口**：`src/web/sharePage.ts` 读 `www.qishui.com/share/<kind>` 分享页的 SSR，
-  实测匿名可取 `audio_mp4` / `video_mp4`。这里此前写的「换入口也一样——不做」**是未实测的断言，已被推翻**：
-  被 gate 住的是 goapi 那三个接口的 native 设备证明，不是媒体本身。范围调整由 owner 于 2026-10-15 决定；
+  **1000062 的归因已订正**：它是 query 参数 `device_platform` 那道门（`/luna/h5/track_v2` 带 `device_platform=web` 匿名就通，
+  见 `docs/APP_ENDPOINTS.md` §3.5.1），不是 native 签名校验；pc 口补该参数仍是 0 字节，所以「pc 口要 native 签名」这个判断还在，
+  只是别再拿它解释非 pc 变体的 1000062。
+- **曲目取址现在有两个匿名入口**：默认 `src/web/h5Track.ts`（`getTrackDetail()` / `getTrackMedia()`，走 `/luna/h5/track_v2`，
+  给多档音质 + `label_info` 权益矩阵 + KRC 歌词）；`src/web/sharePage.ts` 读 `www.qishui.com/share/<kind>` 分享页 SSR 作兜底，
+  也是 `ugc_video` 的唯一路（h5 没有对应的视频端点，`/luna/h5/video_info`、`/luna/h5/ugc_video`、`/luna/h5/video` 实测 404）。
+  两条都只读公开页面/公开接口、不绕签名。这里此前写的「换入口也一样——不做」**是未实测的断言，已被推翻**：
+  被 gate 住的是 goapi 那几个接口的 native 设备证明，不是媒体本身。范围调整由 owner 于 2026-10-15 决定；
   平台对音频的授权口径没变（「在我们自己的页面/客户端里播」），所以**合规风险照旧由使用者承担**，
   批量抓取、镜像曲库、对外提供播放不在支持范围内。
+- **h5 payload 同样是脆契约**：`/luna/h5/track_v2` 的 `track` / `track_player` / `lyric` 没有 IDL 依据，
+  而且 `track_player.video_model` **是个 JSON 字符串**（要 `JSON.parse` 才有 `video_duration` + `video_list[]`）——
+  改版即失效，口径靠 `test/h5-track.test.ts` 的真实响应夹具钉住。它也吃「`device_platform=web` 这个参数名」这条约定，
+  上游哪天改成看 header 或真要签名，`getTrackDetail` 会抛 `QishuiError`，core 会自动回落到分享页 SSR（`cache/media.ts` 的 `mediaOf`）。
 - **SSR payload 是脆契约，没有 IDL 依据**：`_ROUTER_DATA` 里 `loaderData.track_page.audioWithLyricsOption`
   与 `loaderData.ugc_video_page.videoOptions` 的字段名只能靠实测钉住，上游改版即失效。
   维护时：① 别缓存 `play_url`，它是带签名的，`expires_at`（地址路径第二段 16 进制）约 24h 即 403；

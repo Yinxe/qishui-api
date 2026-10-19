@@ -2,7 +2,7 @@
 
 从 320 个端点（74 个官方在用）里挑出**做音乐 App 真正会用到的那批**，按能力分类，每条都过了一遍真实请求。
 
-**实测口径**（2026-10-17，三轮）
+**实测口径**（2026-10-17 三轮 + 10-18 复查轮 + 10-19 h5 轮，逐轮见 §1）
 
 - **匿名轮**：无会话，设备身份复用本机 `qishui-device.json`；每条端点只发**最小参数**，相邻请求间隔 1.2s 串行
 - **登录轮**：**汽水音乐 App 扫码**（`test/login.ts`，非抖音）落会话后重跑；只测上一轮没拿到数据的，**已有结论的一律跳过**（`test/run.ts` 的 SKIP，防风控）
@@ -57,22 +57,35 @@
 |---|---|
 | `ok_json` | `MGetMedia`（曲目版 + 混类型版）、`MCheckTrack` —— 见 §3.5，这两个是 core 的「按 id 批量取曲目详情 / 查可播状态」的底座 |
 | `empty_body` | `MGetMediaV2`（GET `/luna/media_v2` → `200+0字节`） |
-| `client_rejected` | `GetTrack`、`GetH5Track`、`GetH5TrackV2`、`GetTrackPlayerInfo` —— 一律 `1000062 应用版本有风险`（上游客户端完整性校验，非会员） |
+| `client_rejected` | `GetTrack`、`GetH5Track`、`GetH5TrackV2`、`GetTrackPlayerInfo` —— 一律 `1000062 应用版本有风险`（非会员）。**这条当时把 1000062 归因成「上游客户端完整性校验」，后续实测证明归因错了**：门是 query 参数 `device_platform=web`，见 §1 的关键修正 ④ |
 | 仍是 `error` | `FlowSearch` HTTP 404、`QueryTokenStatus` HTTP 500（两条上游侧问题，复查不变） |
 | 未重发 | 其余 80 条沿用结论（`ok_json`/`ok_thin`/`client_rejected` 默认不重发，防风控；`FORCE=1` 可重测）|
 
 
-**一句话结论**：匿名能搭起「可浏览、可搜索、可看详情/评论/歌单、可拿播放地址（走 web 分享页）」的骨架；
+**h5 口径轮（2026-10-19，只测 `/luna/h5/track_v2` 一条，5 个曲目样本）**
+
+| 结果 | 结论 |
+|---|---|
+| `ok_json` | `GET /luna/h5/track_v2?track_id=<id>&device_platform=web` —— **普通浏览器 UA、无 cookie、无签名、不注册设备，匿名就能拿到完整数据**：`track`（`label_info` 权益矩阵 / `bit_rates` 完整体积 / `audition_info`）+ `track_player`（`video_model` 多档地址）+ `lyric` + `expire_at`。最小必需参数只有 `track_id`（缺 → `1000004 ERR_INVALID_PARAM`）与 `device_platform=web`（缺 → `1000062`）；`aid=386088`、`media_type=track` 可选，`vid` 不接受 |
+| 仍是 `empty_body` | `POST /luna/pc/track_v2?device_platform=web` 依旧 `200 + 0 字节` —— **那条放行只对 h5 口有效，pc 口不是差这个参数** |
+
+**一句话结论**：匿名能搭起「可浏览、可搜索、可看详情/评论/歌单、可拿播放地址（曲目走 `/luna/h5/track_v2`、`ugc_video` 走 web 分享页）」的骨架；
 **个性化与写入都要会话，登录后确实都通**（登录轮 6 条翻盘 + 写接口轮 28/29）；
 真正拿不到的只剩**会员专属行为**（本账号 `is_vip:false`）和 `QueryTokenStatus` 那条已下线的 GET 路由。
 
-> 三处关键修正（都是「之前判死、其实是我没试对」）：
+> 四处关键修正（都是「之前判死、其实是我没试对」）：
 > ① **`Search` 与 `GetChartDetail`** —— `Search` 要走非 pc 变体且不能带 `debug_params`，
 > `GetChartDetail` 的 `chart_id` 要用榜单块的 `inner_block_id`（详见 §3.2 / §3.3）。
 > ② **`Report` / `GetReportReason`** —— 不是「上游 500 / 参数永远不对」，是 `report_type` 得给**字符串枚举**（`"track"`）
 > 且 path 用非 pc 的 `/luna/report`；`report_reason_code` 取 `GetReportReason` 返回的 `code`（详见 §3.12）。
 > ③ **不再替上游下结论**：播放地址那三个接口以前由本库自己抛 `UnsupportedError` 拦下（等于拿本库的策略当接口结论），
 > 已删除拦截 —— 现在**照发请求**，上游回什么就记什么（`1000062` / 空响应），只在 `ENDPOINT_DATA[].gated` 上留标记。
+> ④ **`1000062` 不是「客户端完整性校验」**：`/luna/h5/track_v2` 后续实测翻了案 —— 这道门是 query 参数
+> `device_platform=web`（换 UA 没用：空 UA、LunaPC UA 都照样回 1000062；带上这个参数、普通浏览器 UA 就通）。
+> 所以曲目详情/多档音质/歌词/试听区间**匿名就能直接从 API 层拿**，core 的取址链路已改成 h5 优先、分享页兜底。
+> 同批那几条（`GetTrack`/`GetH5Track`/`GetTrackPlayerInfo`/`GetMediaPlayer`）**没有逐条试过补这个参数**，
+> 旧结论只覆盖「库客户端口径（`device_platform=windows`）」，不是终局。
+
 
 ---
 
@@ -94,7 +107,7 @@
 | 按 id 批量补曲目详情 | `MGetMedia`（只认 `type:'track'`，实体里**没有播放地址**） | ✅ |
 | 相似歌曲 | `GetRelatedMedia`（6 首/次） | ✅ |
 | 曲目元数据（标题/歌手/封面/可播性） | `GetShareInfo` | ✅ |
-| 播放地址 + 歌词 | `GetShareInfo` 拿分享链接 → `getShareMedia()` 读 web 分享页 SSR | ✅ |
+| 播放地址 + 歌词 | 曲目 `getTrackMedia()`（`/luna/h5/track_v2`，见 §3.5.1）；`ugc_video` 与分享链接种类识别仍走 `GetShareInfo` → `getShareMedia()` 读 web 分享页 SSR | ✅ |
 | 播放前查权益 | `MCheckMedia`（批量 `media_list`）/ `MCheckTrack`（批量 `track_ids`）/ `GetMediaStats`（计数） | ✅ |
 | 评论 | `ListComments` / `ListReplies` | ✅ |
 | 别人主页 | `GetUserInfo` / `GetUserPlaylists` / `GetFollowerList` | ✅（`GetFollowingList` 易风控） |
@@ -235,18 +248,42 @@ blocks[1] type=discover_top_song_list
 | `MCheckTrack` | ✅ | `track_status[1]` | 按 `track_ids` 批量查曲目状态（2026-10 补测）：按 track 维度给权益/上下架判定，粒度比 `MCheckMedia` 细 |
 | `MCheckMedia` | ✅ | `media_status[1]` | 播放前查权益：`status`(枚举) + `label_info.quality_map`（哪档音质要 VIP/购买），批量传 `media_list` |
 | `GetMediaStats` | ✅ | `stats{count_collected,count_comment,count_shared}` | 收藏/评论/分享计数（注意 `media_type` 要传字符串 `'track'`） |
-| `GetTrackV2` / `GetMediaPlayer` / `GetVideoV2` / `MGetMediaV2` / `GetTrack` / `GetH5Track` / `GetH5TrackV2` / `GetTrackPlayerInfo` | ✗ | `client_rejected` / `empty_body` | goapi 播放地址与单曲直读口。**库照发请求、不拦**（早先那个自造的 `UnsupportedError` 已删）；匿名实测全拒答：pc 变体 `200+0字节`，非 pc 变体回 `1000062 应用版本有风险，请从应用商店下载正式版本`（2026-10 把 `MGetMediaV2`/`GetTrack`/`GetH5Track`/`GetH5TrackV2`/`GetTrackPlayerInfo` 也归到这一类）。**会员态是否放行仍未验证**（本次账号非会员）。可播地址走 web 分享页 |
+| `GetH5TrackV2`（补测后翻案） | ✅ | `track` + `track_player` + `lyric` + `expire_at` | **`/luna/h5/track_v2` 带 query `device_platform=web` 匿名就能拿到曲目全量**：`label_info` 权益矩阵、`bit_rates` 完整体积、`audition_info`、`track_player.video_model` 多档地址（同响应见 §3.5.1）。库侧实现是 `src/web/h5Track.ts` 的 `getTrackDetail()` / `getTrackMedia()` |
+| `GetTrackV2` / `GetMediaPlayer` / `GetVideoV2` / `MGetMediaV2` / `GetTrack` / `GetH5Track` / `GetTrackPlayerInfo` | ✗ | `client_rejected` / `empty_body` | goapi 播放地址与单曲直读口，**这里记的是「库客户端口径」（`device_platform=windows`）**。库照发请求、不拦（早先那个自造的 `UnsupportedError` 已删）；匿名实测全拒答：pc 变体 `200+0字节`，非 pc 变体回 `1000062 应用版本有风险，请从应用商店下载正式版本`（2026-10 把 `MGetMediaV2`/`GetTrack`/`GetH5Track`/`GetH5TrackV2`/`GetTrackPlayerInfo` 也归到这一类；`GetH5TrackV2` 后来翻案，见上）。这几条**没有逐条试过补 `device_platform=web`**，`POST /luna/pc/track_v2?device_platform=web` 试过、依旧 0 字节。**会员态是否放行仍未验证**（本次账号非会员）|
 
 
-> **播放地址走 web 分享页**（本项目已验证的那条路）：`GetShareInfo` → `system_share_link`
-> （`https://www.qishui.com/share/track?track_id=…`）→ `getShareMedia()` 读 SSR 里的
-> `audioWithLyricsOption.url`（`audio_mp4`），同时能拿到 **KRC 结构化歌词**（行级 + 逐字时间戳）。
-> 地址带签名，`expires_at` 约 24h，过期要重新解析，**不要缓存**。
+> ### 3.5.1 曲目取址的两条匿名路：h5 优先、分享页兜底
 >
-> **拿到的常是试听片段，不是整曲**：SSR 的 `audioWithLyricsOption.duration` 是**整曲**时长，
-> 但实际音频只有 `offsetDuration` 那么长、从 `offsetStart` 处开始（实测 `演员`：整曲 261.3s，
-> 音频 = 208.9s 起长 52.3s）。所以 `getShareMedia()` 另外给出 `offset_start_ms` / `offset_duration_ms`：
-> 播放进度按片段时长算，歌词时间轴是整曲的、要加上片段起点才对得上。
+> **① `/luna/h5/track_v2`（2026-10-19 实测，本项目现在的默认）**
+> ```
+> GET https://api.qishui.com/luna/h5/track_v2?track_id=<id>&device_platform=web
+> User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) … Chrome/126.0.0.0 Safari/537.36
+> ```
+> 无 cookie、无签名、不注册设备。`track_id` 与 `device_platform=web` 二者缺一：前者 `1000004 ERR_INVALID_PARAM`，
+> 后者 `1000062 应用版本有风险`。**版本门是这个 query 参数，不是 UA**（空 UA、LunaPC UA 都照回 1000062）；
+> `aid=386088`、`media_type=track` 传不传都行；`vid` 不接受（只认 `track_id`）。
+> 响应：`track`（`label_info` / `bit_rates` 完整体积 / `audition_info` / `preview`）、
+> `track_player.video_model`（**是个 JSON 字符串**，解开才有 `video_duration` + `video_list[].{main_url,backup_url,gear_des_key,video_meta}`）、
+> `track_player.url_player_info`、`lyric`（KRC 原文）、`expire_at`。
+>
+> **② web 分享页 SSR（`getShareMedia()`，兜底 + `ugc_video` 唯一路）**：`GetShareInfo` → `system_share_link`
+> （`https://www.qishui.com/share/track?track_id=…`）→ 读 SSR 里的 `audioWithLyricsOption.url`（`audio_mp4`）+ KRC 歌词。
+>
+> **两条路给的是同一份音频**：5 个样本实测字节数完全一致（如 487152 / 972356 / 972375 B），
+> 试听区间也对得上（h5 的 `preview.start` 是**毫秒**，实测等于 SSR 的 `offsetStart`×1000）。差别在信息量：
+> 整曲可播的条目 h5 会多给 `medium`/`highest` 档（实测 7631943484455995443 匿名拿到 **9391139 B @257 kbps、整曲 291.8s**），
+> 而 SSR 只给一档；反过来 `ugc_video` 只有 SSR 能解（`/luna/h5/video_info`、`/luna/h5/ugc_video`、`/luna/h5/video` 实测 404）。
+> 所以 core 是 **h5 先试、失败再落 SSR**，两条都不给地址就抛 `MediaUnavailableError` 并把两边各为什么失败都写进消息。
+>
+> **地址带签名**，`expires_at` 约 24h，过期要重新解析，**不要缓存地址**（缓存的是落盘的音频文件）。
+>
+> **拿到的常是试听片段，不是整曲**：`track.duration` 是**整曲**时长，`video_model.video_duration` 是**这个 URL 实际给的长度**，
+> 后者明显短于整曲（容差 2s）就是片段，从 `preview.start` 起播（实测 `演员`：整曲 261.3s，音频 = 208.9s 起长 52.3s）。
+> 所以 `getTrackMedia()` 与 `getShareMedia()` 都给出
+> `offset_start_ms` / `offset_duration_ms`：播放进度按片段时长算，歌词时间轴是整曲的、要加上片段起点才对得上。
+> （h5 的 `audition_info` 只在它的 `vid` 与 `video_model.video_id` 相同时才可信 —— 整曲可播的条目也带 `audition_info`，指向另一条预览 vid。）
+>
+> **`label_info` 里的 `lossless`/`spatial`/`hi_res` 匿名从来不出现在 `video_list`** —— 权益矩阵声明了档位，不等于这批地址给得出。
 
 ### 3.6 歌单 / 收藏
 
@@ -380,8 +417,10 @@ blocks[1] type=discover_top_song_list
 
 **② 播放一首歌（含歌词）**
 列表里的 track 已有 `id`/`name`/`artists`/`album`；只有 id 时先用 **`MGetMedia`**（`{scene, media:[{id,type:'track'}]}`）批量补详情 → `MCheckMedia` 查权益（VIP/无版权）→
-`GetShareInfo` 拿 `system_share_link` → `getShareMedia()` 取 `play_url` + KRC 歌词（逐字时间戳）→ 播放。
-`GetTrackV2`/`GetMediaPlayer` 可以照调（库不拦），但匿名与带会话实测上游都拒答（`1000062` / 空响应），别把主链路压在它上面。
+`getTrackMedia()`（`/luna/h5/track_v2?track_id=…&device_platform=web`）取 `video_model` 里的档位地址 + KRC 歌词（逐字时间戳）→ 播放；
+这条不通时回落到 `GetShareInfo` 拿 `system_share_link` → `getShareMedia()` 读分享页 SSR（`ugc_video` 只有 SSR 那条路）。
+`GetTrackV2`/`GetMediaPlayer` 可以照调（库不拦），但**库客户端口径**（`device_platform=windows`）下匿名与带会话实测都拒答（`1000062` / 空响应），别把主链路压在它上面。
+（h5 的曲目对象在 `json.track`，是**裸 track**，不裹 `entity.track_wrapper.track`；地址要自己解 `json.track_player.video_model` 那个 JSON 字符串。）
 （`qishui-core` 的 `catalog.tracks()` / `player.play()` 就是照这条链路实现的。）
 
 **③ 搜索**
@@ -413,7 +452,8 @@ blocks[1] type=discover_top_song_list
 
 | 端点 | 现象 | 原因 |
 |---|---|---|
-| `GetTrackV2` / `GetMediaPlayer` / `GetVideoV2` / `MGetMediaV2` / `GetTrack` / `GetH5Track` / `GetH5TrackV2` / `GetTrackPlayerInfo` | 匿名与**带会话**实测都拒答：pc 变体空响应、非 pc 变体回 `1000062 应用版本有风险` | 上游对客户端做完整性校验后拒答。本库只标记（`ENDPOINT_DATA[].gated`）、不拦请求，**会员态是否放行**尚未验证（本次账号非会员）。要在 API 层拿曲目详情用 `MGetMedia`（匿名可用，但没有播放地址），要播放地址走 web 分享页 |
+| `GetTrackV2` / `GetMediaPlayer` / `GetVideoV2` / `MGetMediaV2` / `GetTrack` / `GetH5Track` / `GetTrackPlayerInfo` | **库客户端口径**（`device_platform=windows`）下匿名与**带会话**实测都拒答：pc 变体空响应、非 pc 变体回 `1000062 应用版本有风险` | 1000062 那道门后续被翻案了：它不是「客户端完整性校验」，是缺 query `device_platform=web`（见 §3.5.1）。这几条**没有逐条试过补该参数**，所以「非 pc 口一律拒」只对当前口径成立；本库只标记（`ENDPOINT_DATA[].gated`）、不拦请求，**会员态是否放行**尚未验证（本次账号非会员）。曲目详情/地址匿名都有别的路：详情 `MGetMedia`（无地址）、地址 `getTrackMedia()`（h5 口）或分享页 SSR |
+| `GetH5TrackV2` | ~~别耗时间~~ **已翻案**：匿名可用 | 补 `device_platform=web` 就通，是本项目曲目取址的默认路（`src/web/h5Track.ts`）；见 §3.5.1 |
 | `FlowSearch` | HTTP 404 | `/luna/flow/search/<type>` 线上不存在 |
 | `GetSearchBlock` | `search_chart_block` 恒空 | 热搜是 h5/移动端的东西，PC 客户端源码里都不调它 |
 | `GetFeaturedContents` | 空响应（只回 status_info） | 推荐位没数据 |
@@ -438,12 +478,19 @@ blocks[1] type=discover_top_song_list
 - **写接口轮**：29 条实测**全部 `status_code=0`**（含 4 条换参数/换 path 翻案）；唯一不通的是**非写接口**的 `QueryTokenStatus`（上游 v1 GET 路由 500）。
   账号数据全程可回滚，收尾 11 项复查全过（详见 §3.12）。
 - **补测轮**：`MGetMedia` / `MCheckTrack` 匿名可用（曲目批量详情的底座）；`MGetMediaV2`/`GetTrack`/`GetH5Track`/`GetH5TrackV2`/`GetTrackPlayerInfo` 归入「客户端完整性校验拒答」那一类。
+- **2026-10-19 h5 轮**：`GetH5TrackV2` 从上面那条翻案 —— 门是 query `device_platform=web`，匿名可用（§3.5.1）；pc 口 `track_v2` 补该参数仍是 0 字节。
 
 **唯一没验的：会员（VIP）行为**。本次账号 `is_vip: false` / `vip_stage: "free"`，所以这些拿不到：
 
 - 上表那批 `1000062` / 空响应的端点是否对**会员**放行（匿名与登录态都不放行，会员态未验）；
 - VIP 音质 / 下载类端点的权益分支；
 - `GetMySubscription` 的会员态返回、`GetUpsell` 的会员价分支。
+
+> **关于 VIP 的两条推测（都还没实测，别当结论）**：
+> ① 有会员会话时 pc 口的 `GetTrackV2`（`/luna/pc/track_v2`）大概率也放行 —— 它拦的是客户端身份而不是参数，会员态是本仓库唯一没试过的变量；
+> ② 但那样拿到的文件**可能是加密的**（原生播放器的音频未必是能直接落盘播放的裸 m4a；h5 口给的 `main_url` 实测能整段下、`mime_type=audio_mp4`，是裸的）。
+> 这两条都要拿会员账号跑 `test/run.ts` 才能定；`label_info` 里 `lossless`/`hi_res`/`spatial` 匿名从来不给地址，会员态能否取到同样未知。
+> `lyric.hide_request_lyrics`（会员歌词是否走另一条请求）也未试。
 
 换一个**会员账号**带会话重跑 `test/run.ts`（已结论的会自动 SKIP，想强制重测加 `FORCE=1`）即可，别拿非会员的空结果当结论。
 

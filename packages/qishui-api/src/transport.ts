@@ -28,6 +28,9 @@ for (const e of ENDPOINT_DATA) if (!byName.has(e.name)) byName.set(e.name, e)
  * 关于 goapi 播放地址类接口（`def.gated`）：本库**照常发请求，不代上游下结论**。
  * 上游对匿名/非官方客户端可能回 `1000062 应用版本有风险` 或空响应（实测如此），那就是上游的答案；
  * 是否与登录态/会员有关尚未验证，所以 `gated` 只是元数据标记，不影响调用行为。
+ * `1000062` 那道门后来被证明是 **query 参数 `device_platform`**（`commonParams` 发的是 `windows`；
+ * `/luna/h5/track_v2` 带 `device_platform=web` 就匿名放行，见 `src/web/h5Track.ts`），不是「客户端完整性校验」。
+ * `query` 在 `commonParams()` 之后展开，所以请求级传 `device_platform` 能覆盖这个默认值。
  */
 export function createCaller(options: TransportOptions): IRequestCaller {
   const cookies = options.cookies ?? new CookieJar()

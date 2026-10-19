@@ -5,7 +5,16 @@
  * 媒体（几 MB 一个的音频）要显式 `--media` 才动 —— 别顺手把用户的歌删了。
  */
 import type { Command } from 'commander'
-import { CACHE_TIERS, CONFIG_DEFAULTS, formatBytes, KIND_SCOPE } from 'qishui-core'
+import {
+  CACHE_TIERS,
+  CONFIG_DEFAULTS,
+  formatBytes,
+  KIND_SCOPE,
+  MEDIA_EVICT_POLICIES,
+  type MediaEvictPolicy,
+  mediaCapacityLabel,
+  mediaEvictPolicyLabel,
+} from 'qishui-core'
 import { CliError, core } from '../context.js'
 import { ago } from '../format.js'
 import {
@@ -32,12 +41,44 @@ function formatTtl(ms: number): string {
   return `${Math.round(ms / 60_000)} 分钟`
 }
 
-/** `--max-size 512` / `--max-size 512MB` / `--max-size 2GB` 都收 */
+/** `--max-size 512` / `512MB` / `2GB` / `2G` 都收 */
 function parseBytes(value: string): number {
-  const match = /^(\d+(?:\.\d+)?)\s*(b|kb|mb|gb|tb)?$/i.exec(value.trim())
-  if (!match) throw new CliError(`认不出体积 ${value}`, '例：--max-size 512MB / --max-size 2GB')
-  const scale: Record<string, number> = { b: 1, kb: 1024, mb: 1024 ** 2, gb: 1024 ** 3, tb: 1024 ** 4 }
+  const match = /^(\d+(?:\.\d+)?)\s*(b|kb|mb|gb|tb|k|m|g|t)?$/i.exec(value.trim())
+  if (!match) throw new CliError(`认不出体积 ${value}`, '例：--max-size 512MB / --max-size 2GB / maxMediaBytes 2G')
+  const scale: Record<string, number> = {
+    b: 1,
+    k: 1024,
+    kb: 1024,
+    m: 1024 ** 2,
+    mb: 1024 ** 2,
+    g: 1024 ** 3,
+    gb: 1024 ** 3,
+    t: 1024 ** 4,
+    tb: 1024 ** 4,
+  }
   return Math.round(Number(match[1]) * scale[(match[2] ?? 'b').toLowerCase()])
+}
+
+/** 容量配置额外认「不设限」：`0` / `unlimited` / `不限制` */
+function parseCapacityBytes(value: string): number {
+  const text = value.trim().toLowerCase()
+  if (text === '0' || text === 'unlimited' || text === 'none' || value.trim() === '不限制') return 0
+  return parseBytes(value)
+}
+
+/** 体积类配置项的回显：档位给名字，非档位（如 1536MB）连字节一起说 */
+function formatCapacity(bytes: number): string {
+  const label = mediaCapacityLabel(bytes)
+  return label === '自定义' ? `自定义 ${formatBytes(bytes)}` : label
+}
+
+/** `--by` / `config set mediaEvictPolicy` 都先过这一关 */
+function parseEvictPolicy(value: string): MediaEvictPolicy {
+  const text = value.trim() as MediaEvictPolicy
+  if (!MEDIA_EVICT_POLICIES.includes(text)) {
+    throw new CliError(`不认识的淘汰策略 ${value}`, `可用：${MEDIA_EVICT_POLICIES.join(' / ')}`)
+  }
+  return text
 }
 
 export function registerMaintCommands(program: Command): void {
@@ -46,13 +87,21 @@ export function registerMaintCommands(program: Command): void {
     .description(`缓存维护：${CACHE_ACTIONS.join('|')}`)
     .option('--fix', 'verify 时顺手把坏掉的元数据文件清掉')
     .option('--media', 'clear/prune 时把音频文件也算上（默认只动元数据）')
-    .option('--max-size <size>', 'prune 的体积上限（如 2GB）')
+    .option('--max-size <size>', 'prune 的体积上限（如 2GB；0 = 全清到只剩 keep）')
     .option('--max-age <days>', 'prune 的年龄上限（天）')
+    .option('--by <policy>', `满溢时按哪个顺序剔（${MEDIA_EVICT_POLICIES.join('|')}），默认读 config`)
     .option('--yes', 'clear 不询问')
     .action(
       async (
         action: string,
-        opts: { fix?: boolean; media?: boolean; maxSize?: string; maxAge?: string; yes?: boolean },
+        opts: {
+          fix?: boolean
+          media?: boolean
+          maxSize?: string
+          maxAge?: string
+          by?: string
+          yes?: boolean
+        },
       ) => {
         if (!CACHE_ACTIONS.includes(action as CacheAction)) {
           throw new CliError(`不认识的动作 ${action}`, `可用：${CACHE_ACTIONS.join(' / ')}`)
@@ -77,6 +126,27 @@ export function registerMaintCommands(program: Command): void {
               ['累计播放', `${stats.media.totalPlays} 次`],
               ['最久没动', ago(Math.floor((stats.media.oldestAccessedAt ?? 0) / 1000))],
             ])
+            heading('容量', '按 cache/tracks 的真实磁盘占用算（含歌词/封面与残留 .part）')
+            const cap = stats.capacity
+            const rows: [string, string][] = [
+              ['已用', formatBytes(cap.usedBytes)],
+              [
+                '上限',
+                cap.limitBytes > 0
+                  ? `${formatCapacity(cap.limitBytes)}${cap.percent !== undefined ? ` · 已用 ${cap.percent}%` : ''}`
+                  : '不限制',
+              ],
+              ['满溢策略', `${mediaEvictPolicyLabel(cap.policy)}（${cap.policy}）`],
+              ['自动淘汰', cap.autoEvict ? '开' : '关（超了也只提醒，删文件要人显式触发）'],
+            ]
+            if (cap.overLimit) {
+              rows.push(['超上限', formatBytes(cap.usedBytes - cap.limitBytes)])
+              rows.push(['按此策略可释放', `${formatBytes(cap.reclaimableBytes)}（${cap.reclaimableTracks} 首）`])
+            }
+            printKeyValues(rows)
+            if (cap.overLimit) {
+              print(dim('清掉它们：qishui cache prune --media（保住正在播的那首；换顺序加 --by leastPlayed）'))
+            }
           }, stats)
           return
         }
@@ -168,17 +238,31 @@ export function registerMaintCommands(program: Command): void {
         if (action === 'prune') {
           const maxBytes = opts.maxSize ? parseBytes(opts.maxSize) : undefined
           const maxAgeMs = opts.maxAge ? Number(opts.maxAge) * 86_400_000 : undefined
+          const policy = opts.by ? parseEvictPolicy(opts.by) : instance.config.mediaEvictPolicy
           const entities = await instance.cache.prune({ maxBytes, maxAgeMs })
-          const media = opts.media ? await instance.media.prune({ maxBytes, maxAgeMs }) : undefined
+          // 正在播的那首不参与剔除（同进程里播的，或别的会话留着的那首）
+          const keep = instance.player.current?.id ? [instance.player.current.id] : []
+          const media = opts.media ? await instance.media.prune({ maxBytes, maxAgeMs, policy, keep }) : undefined
           emit(
             () => {
               heading('已淘汰')
+              const limitBytes = maxBytes ?? instance.config.maxMediaBytes
               printKeyValues([
                 ['元数据', `${entities.removed} 条 / ${formatBytes(entities.freedBytes)}`],
                 ['媒体', media ? `${media.removed} 首 / ${formatBytes(media.freedBytes)}` : dim('没动（加 --media）')],
-                ['生效上限', maxBytes !== undefined ? formatBytes(maxBytes) : '后台默认（2GiB）'],
+                ['生效上限', limitBytes > 0 ? formatCapacity(limitBytes) : '不限制'],
                 ['年龄上限', maxAgeMs ? `${opts.maxAge} 天` : '不过滤'],
+                ['淘汰顺序', media ? mediaEvictPolicyLabel(media.policy) : dim('这次没动媒体')],
               ])
+              if (!opts.media && stats.capacity.overLimit) {
+                print(
+                  dim(
+                    `媒体缓存已超上限（${formatBytes(stats.capacity.usedBytes)} / ${formatCapacity(
+                      stats.capacity.limitBytes,
+                    )}，可释放 ${formatBytes(stats.capacity.reclaimableBytes)}）——加 --media 才动音频文件`,
+                  ),
+                )
+              }
             },
             { entities, media },
           )
@@ -260,8 +344,11 @@ export function registerMaintCommands(program: Command): void {
         const sample = defaults[key]
         let parsed: unknown = value
         if (typeof sample === 'number') {
-          parsed = Number(value)
-          if (!Number.isFinite(parsed as number)) throw new CliError(`${key} 要给数字`)
+          // 体积类收 `2G` / `2GB` / `1536MB`，`maxMediaBytes` 再认 `0`/`不限制`；其余数字键按数字读
+          parsed = /Bytes$/.test(key) ? parseCapacityBytes(value) : Number(value)
+          if (!Number.isFinite(parsed as number)) throw new CliError(`${key} 要给数字`, '例：20000 / 2GB')
+        } else if (key === 'mediaEvictPolicy') {
+          parsed = parseEvictPolicy(value)
         } else if (typeof sample === 'boolean') {
           if (!['true', 'false', '1', '0', 'yes', 'no'].includes(value.toLowerCase())) {
             throw new CliError(`${key} 要给 true/false`)
@@ -270,7 +357,13 @@ export function registerMaintCommands(program: Command): void {
         }
         ;(instance.config as unknown as Record<string, unknown>)[key] = parsed
         await instance.saveConfig()
-        emit(() => print(`${green('已写入')} ${key} = ${JSON.stringify(parsed)}  ${dim(instance.paths.configFile)}`), {
+        const shown =
+          key === 'maxMediaBytes'
+            ? `${formatCapacity(parsed as number)}（${parsed}）`
+            : key === 'mediaEvictPolicy'
+              ? `${mediaEvictPolicyLabel(parsed as MediaEvictPolicy)}（${parsed}）`
+              : JSON.stringify(parsed)
+        emit(() => print(`${green('已写入')} ${key} = ${shown}  ${dim(instance.paths.configFile)}`), {
           key,
           value: parsed,
           path: instance.paths.configFile,

@@ -5,7 +5,7 @@
  * 创建失败（例如首次注册设备身份失败）也不崩，页面里给一句可读的错误。
  *
  * 这里还负责「播放队列书架」的接线：`core.queues` 管四种队列（推荐 / 我喜欢 / 每张歌单 / 临时）
- * 的切换与位置，推荐队列的滑动窗口与自动续批也在那边（core 层，不再是界面里的流状态机）；
+ * 的切换与位置，推荐队列的自动续批（只往队尾追加、听过的不删）也在那边（core 层，不再是界面里的流状态机）；
  * 本文件只把书架状态搬进 React，并把各屏的「播放」按来源路由到对应队列。
  */
 
@@ -18,6 +18,7 @@ import {
   type QishuiCore,
   type QueueInfo,
   type RepeatMode,
+  recommendQueueId,
   type TrackData,
 } from 'qishui-core'
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
@@ -85,11 +86,13 @@ export interface CoreValue {
   openQueue(queue: QueueSpec, opts?: { tracks?: TrackData[]; startTrackId?: string; refresh?: boolean }): Promise<void>
   /** 切到书架上已有的队列（各自记位置） */
   activateQueue(id: string): Promise<void>
+  /** 把某份队列从书架收起（在播的那份不给删：先切走）；书架随之刷新 */
+  removeQueue(id: string): void
   toggle(): Promise<void>
   playNext(): Promise<void>
   playPrevious(): Promise<void>
-  /** 直接播播放顺序里的第 n 位（`queue.items` 与 `queue.index` 都是这个空间） */
-  playQueueIndex(position: number): Promise<void>
+  /** 播队列里的某一首（按曲目 id：界面那一刻的行号可能已经过期（有人被移出队列），点谁就得播谁） */
+  playQueueTrack(trackId: string): Promise<void>
   /** 从队列里移除播放顺序第 n 位；移掉的正好是在播的那首就接着播新的当前 */
   removeQueueIndex(position: number): void
   seekMs(ms: number): void
@@ -102,14 +105,15 @@ export interface CoreValue {
   toggleShuffle(): void
   /** 本机记住的听歌模式；`undefined` = 没选过（`config.feedMode` 为空或解析不出） */
   feedMode?: FeedModeRef
-  /** 推荐队列在自动续批 = 这一批播完会自动接下一批 */
-  feedStreaming: boolean
   /** 选中一个听歌模式：记住它（落 `config.feedMode`）并立刻按它取一批起播 */
   selectFeedMode(ref: FeedModeRef): Promise<void>
   /** 按当前记住的模式重新来一批（整队替换） */
   playFeedBatch(): Promise<void>
-  /** 停掉推荐队列的自动续批；队列里已有的还是照样播完 */
-  stopFeedStream(): void
+  /**
+   * 主动要下一批（界面在队列末尾按 `↓`）：只给在播的**推荐**队列补，一批几首收几首挂队尾。
+   * 返回加进去的首数（0 = 这份不是推荐队列 / 没有档位可取 / 上一批还在路上）。
+   */
+  loadMoreFeed(): Promise<number>
 }
 
 const CoreContext = createContext<CoreValue | null>(null)
@@ -229,7 +233,11 @@ export function CoreProvider({ children }: { children: ReactNode }) {
     setFeedMode(ref)
     void (async () => {
       try {
-        await core.queues.open({ kind: 'recommend', feed: ref, title: recommendTitle(ref), refresh: true })
+        // 书架是持久化的：这一档上次听到一半就接着听（refresh 会把批次和位置清掉）；
+        // 没记住过、或记的是空架，才按新模式重新来一批
+        const remembered = core.queues.info(recommendQueueId(ref))
+        const refresh = !remembered || remembered.count === 0
+        await core.queues.open({ kind: 'recommend', feed: ref, title: recommendTitle(ref), refresh })
         syncQueues()
       } catch (err) {
         toast(err instanceof Error ? err.message : String(err), 'error')
@@ -255,7 +263,7 @@ export function CoreProvider({ children }: { children: ReactNode }) {
         const snapshot = queueOf(instance)
         setQueue(snapshot)
         setPlayer((prev) => ({ ...snapshotOf(instance), audioNote: prev.audioNote }))
-        // 推荐队列在这条路上滚窗口 / 续批（core 的 QueueBook 自己动手），这里只跟着重画书架
+        // 推荐队列在这条路上记下播放头 / 续批（core 的 QueueBook 自己动手），这里只跟着重画书架
         syncQueues()
       }),
       p.on('source', ({ source }) => {
@@ -268,7 +276,7 @@ export function CoreProvider({ children }: { children: ReactNode }) {
           if (request === sourceSeqRef.current) activeGenRef.current = generation
         })
       }),
-      // 书架变了（打开 / 切换 / 推荐队列滚窗口与续批）→ 重画队列弹层与播放页头部
+      // 书架变了（打开 / 切换 / 推荐队列补进来一批）→ 重画队列弹层与播放页头部
       instance.events.on('queues-changed', () => syncQueues()),
       // 队列自己要说的话（续批失败、停止自动续播）直接冒给 toast
       instance.events.on('queue-note', ({ message, kind }) => toast(message, kind)),
@@ -384,7 +392,6 @@ export function CoreProvider({ children }: { children: ReactNode }) {
       feedMode,
       queues,
       activeQueue: queues.find((item) => item.active),
-      feedStreaming: queues.find((item) => item.active)?.refilling ?? false,
       openQueue,
       async playTracks(tracks, startTrackId, queue) {
         if (tracks.length === 0) return
@@ -397,6 +404,11 @@ export function CoreProvider({ children }: { children: ReactNode }) {
         await q.queues.activate(id)
         syncQueues()
       },
+      removeQueue(id) {
+        // `Queues.remove` 自己发 `queues-changed`（这里再 sync 一次也无妨，幂等）
+        instance()?.queues.remove(id)
+        syncQueues()
+      },
       async selectFeedMode(ref) {
         const q = instance()
         if (!q) {
@@ -407,7 +419,12 @@ export function CoreProvider({ children }: { children: ReactNode }) {
         q.config.feedMode = formatFeedMode(ref)
         // 只是本机记住的偏好：上游没有「保存听歌模式」的写接口，下次启动还是它
         void q.saveConfig()
-        await q.queues.open({ kind: 'recommend', feed: ref, title: recommendTitle(ref), refresh: true })
+        // 每档听歌模式各有一条推荐队列：切到别的档 = 接着上次那一首听；
+        // 但「再选一次当前这一档」= 明确的「换一批」（和页面上那条「再来一批」同义）
+        const id = recommendQueueId(ref)
+        const remembered = q.queues.info(id)
+        const refresh = q.queues.active?.id === id || !remembered || remembered.count === 0
+        await q.queues.open({ kind: 'recommend', feed: ref, title: recommendTitle(ref), refresh })
         syncQueues()
       },
       async playFeedBatch() {
@@ -420,9 +437,12 @@ export function CoreProvider({ children }: { children: ReactNode }) {
         await q.queues.open({ kind: 'recommend', feed: feedMode, title: recommendTitle(feedMode), refresh: true })
         syncQueues()
       },
-      stopFeedStream() {
-        instance()?.queues.stopRefill()
+      async loadMoreFeed() {
+        const q = instance()
+        if (!q) return 0
+        const added = await q.queues.loadMore()
         syncQueues()
+        return added
       },
       async toggle() {
         await instance()?.player.toggle()
@@ -433,8 +453,11 @@ export function CoreProvider({ children }: { children: ReactNode }) {
       async playPrevious() {
         await instance()?.player.previous()
       },
-      async playQueueIndex(position) {
-        await instance()?.player.playIndex(position)
+      async playQueueTrack(trackId) {
+        const q = instance()
+        if (!q) return
+        // 找不着这首 = 它在你点下来之前已经不在队列里了（比如被「从队列移除」），给句准话，别静默
+        if (!(await q.player.playQueueTrack(trackId))) toast('这一首已经不在队列里了', 'info')
       },
       removeQueueIndex(position) {
         // 队列事件由 core 自己发（移完一次、接上播下一首再一次），这里不用手动同步快照

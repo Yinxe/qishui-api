@@ -1,7 +1,7 @@
 /** 页面路由 / 焦点 / 弹层 / 提示的类型（App 与各屏共用） */
 import type { SearchType } from 'qishui-core'
 
-export type RootKind = 'discover' | 'listen' | 'search' | 'library' | 'local' | 'settings'
+export type RootKind = 'discover' | 'listen' | 'queues' | 'search' | 'library' | 'local' | 'settings'
 
 /** 通用列表页的来源参数：一个 ListScreen 覆盖所有「曲目/条目列表」 */
 export type ListSource =
@@ -31,8 +31,6 @@ export type Route =
   | { kind: 'track'; id: string }
   | { kind: 'user'; id: string; nickname?: string }
   | { kind: 'settings' }
-  /** 播放页（左右两栏：曲目信息+歌词 / 播放队列）；`f` 压栈进来，`Esc` 退回 */
-  | { kind: 'player' }
 
 export type Overlay =
   | { kind: 'help' }
@@ -48,8 +46,6 @@ export type Overlay =
   | { kind: 'report'; trackId: string; title: string }
   /** 行操作菜单：条目由 `ui/rowActions.ts` 按行类型在这一刻算好（含收藏状态快照） */
   | { kind: 'actions'; title: string; entries: import('./entries.js').Entry[] }
-  /** 播放队列书架：推荐 / 我喜欢 / 每张歌单 / 临时，Enter 切过去（`Q` 或播放页 `[队列]` 打开） */
-  | { kind: 'queues' }
 
 export type ToastKind = 'info' | 'success' | 'error'
 export interface Toast {

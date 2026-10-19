@@ -2,14 +2,22 @@
  * 「这份队列是谁的」—— 界面到 core 队列书架之间的那层翻译。
  *
  * 一份**播放队列**按来源分四种（策略在 core 的 `QueueBook` 里，这里只管拼 spec）：
- *  - `recommend` 听歌模式（场景 / 推荐 / 熟悉 / 新鲜）：滑动窗口 + 自动续批，顺序播
+ *  - `recommend` 听歌模式（场景 / 推荐 / 熟悉 / 新鲜）：只往后追加（听过的不删）+ 自动续批，顺序播
  *  - `playlist` 每张歌单一份（本地歌单也算）：整张进队，顺序播，切走再切回来接着上次那一首
  *  - `liked` 我喜欢的音乐 / 本地喜欢：随机
  *  - `temporary` 搜索 / 榜单 / 专辑 / 艺人 / 首页推荐块这些**浏览型结果**：每次点播整队替换
  *
  * 所以列表页的「播放这首」不再是「覆盖播放器队列」，而是「把这首所在的这份队列切到前台」。
  */
-import { FEED_PREFERENCE_MODES, type FeedModeRef, type QishuiCore, type QueueKind, type TrackData } from 'qishui-core'
+import {
+  FEED_PREFERENCE_MODES,
+  type FeedModeRef,
+  type QishuiCore,
+  type QueueInfo,
+  type QueueKind,
+  type TrackData,
+} from 'qishui-core'
+import { truncate } from './format.js'
 import type { ListSource } from './types.js'
 
 export type QueueSpec =
@@ -39,6 +47,16 @@ export function recommendTitle(ref: FeedModeRef, sceneText?: string): string {
     return `推荐 · ${label}`
   }
   return `推荐 · ${sceneText || `场景 ${ref.sceneModeId}`}`
+}
+
+/** 一份队列一行的备注：`种类 · N 首 · 第 k 首 · 当前曲目`（推荐队列另标「自动续批」）；书架页与播放页的切换弹层共用 */
+export function queueNote(queue: QueueInfo): string {
+  const bits = [queueKindLabel(queue.kind), `${queue.count} 首`]
+  if (queue.kind === 'liked') bits.push('随机')
+  if (queue.refilling) bits.push('自动续批')
+  if (queue.count > 0 && queue.index >= 0) bits.push(`第 ${queue.index + 1} 首`)
+  if (queue.current) bits.push(truncate(queue.current, 16))
+  return bits.join(' · ')
 }
 
 const trackData = (tracks: { data: TrackData }[]): TrackData[] => tracks.map((track) => track.data)

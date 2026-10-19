@@ -1,6 +1,11 @@
 import { QishuiError } from '../errors.js'
+import { expiresAtOf, mimeOf } from './cdn.js'
 import { getImageUrl, type ImageResource } from './image.js'
 import { type ResolveOptions, resolveShareLink, type ShareItem } from './share.js'
+
+/** 分享页/H5 接口共用的桌面 UA（移动端分享页结构不同） */
+export const BROWSER_USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
 
 /** KRC 逐字歌词的一个词：带本词的起止毫秒 */
 export interface ShareLyricWord {
@@ -103,20 +108,6 @@ function extractRouterData(html: string): any {
   throw new QishuiError('分享页的 _ROUTER_DATA 括号不配平')
 }
 
-/** 字节 CDN 的签名地址形如 `https://<host>/<token>/<过期时刻16进制>/...` */
-function expiresAtOf(url: string): number | undefined {
-  const seg = new URL(url).pathname.split('/').filter(Boolean)[1]
-  if (!seg || !/^[0-9a-f]{8}$/.test(seg)) return undefined
-  const ts = parseInt(seg, 16)
-  // 只接受「此刻 ~ 一年后」，避免把路径里的其它 hex 当时间
-  const now = Math.floor(Date.now() / 1000)
-  return ts >= now - 3600 && ts <= now + 31_536_000 ? ts : undefined
-}
-
-function mimeOf(url: string): string | undefined {
-  return new URL(url).searchParams.get('mime_type') ?? undefined
-}
-
 /** 分享页的 `offsetStart` / `offsetDuration` 是秒（浮点），统一换算成 ms；非法值归 undefined */
 function offsetMs(seconds: unknown): number | undefined {
   if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) return undefined
@@ -200,10 +191,13 @@ function toMedia(item: ShareItem, loader: any, coverWidth?: number): ShareMedia 
 }
 
 /**
- * 分享链接/ID → 可播地址。
+ * 分享链接/ID → 可播地址（读 SSR）。
  * 只 GET 一次 `www.qishui.com/share/<kind>` 的 SSR 页面并从 `_ROUTER_DATA` 取值，
  * 不请求 goapi 的 `GetTrackV2`/`GetMediaPlayer`/`GetVideoV2`，也不构造它们的签名。
  * 地址是带签名的，`expires_at` 到期就废，需要重新解析。
+ *
+ * **曲目现在优先走 `getTrackMedia()`（h5，多档 + 权益 + 歌词）**，这里当兜底；
+ * `ugc_video` 只有这条路（h5 侧没有对应的视频端点，`/luna/h5/video*` 实测 404）。
  */
 export async function getShareMedia(input: string | ShareItem, options: ShareMediaOptions = {}): Promise<ShareMedia> {
   const item = await resolveShareLink(input, options)
@@ -211,11 +205,7 @@ export async function getShareMedia(input: string | ShareItem, options: ShareMed
     throw new QishuiError(`分享页只有 track / ugc_video 带可播地址，当前是 ${item.kind}/${item.id}`)
 
   const res = await (options.fetchImpl ?? fetch)(pageUrlFor(item), {
-    headers: {
-      'user-agent':
-        options.userAgent ??
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-    },
+    headers: { 'user-agent': options.userAgent ?? BROWSER_USER_AGENT },
     signal: options.signal,
   })
   if (!res.ok) throw new QishuiError(`分享页 HTTP ${res.status}：${item.kind}/${item.id}`)

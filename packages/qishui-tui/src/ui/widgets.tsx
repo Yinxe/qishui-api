@@ -100,6 +100,11 @@ export function Modal({
 export interface CursorHandlers {
   active: boolean
   onEnter?: (index: number) => void
+  /**
+   * `↓` 落在**最后一行**时先问这里（返回 true = 已处理）——给「到队尾再去取下一批」这类动作留的口子；
+   * 不接就照旧停在最后一行。
+   */
+  onTailDown?: (index: number) => boolean
   /** 额外按键；返回 true 表示已消费 */
   onKey?: (input: string, key: Key, index: number) => boolean
 }
@@ -123,6 +128,7 @@ export function useCursor(count: number, handlers: CursorHandlers): { cursor: nu
         return
       }
       if (key.downArrow || input === 'j') {
+        if (cursor === last && handlers.onTailDown?.(cursor)) return
         setCursor((c) => Math.min(last, c + 1))
         return
       }

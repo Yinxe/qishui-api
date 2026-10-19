@@ -10,9 +10,14 @@
  *  1. 单字符（绝大多数情况）；
  *  2. 鼠标报文与它的碎片（`[<64;10;5M` / `10;5M`）—— 拆开会把 `<` `;` `M` 当成人敲的键（`<` 是后退 10 秒）；
  *  3. 带 ESC 的序列（方向键等）：ink 已经把方向键解析成 `key.upArrow`，带 ESC 的多字符串不是按键。
+ *
+ * 另外 `useKeys` 会**先剔掉终端回报报文**（`ui/reports.ts`：kitty 图形应答、DCS、DA1/DA2）——
+ * 开机那次能力探测（`cli.tsx`）的回音一般已经收干净，但慢终端可能落在 ink 接手之后，那串里的 `q`/`j`
+ * 会被当成命令键执行。文本输入处（下面这些继续用 `useInput` 的地方）用同一个 `stripReports()` 剔。
  */
 import { type Key, useInput } from 'ink'
 import { isMouseInput } from './mouse.js'
+import { stripReports } from './reports.js'
 
 /** 拆键时传给 handler 的「空 key」：没有任何修饰键/特殊键位（字段与 ink 的 `Key` 一一对应） */
 const NO_KEY: Key = {
@@ -47,7 +52,10 @@ export function shouldSplitInput(input: string, key: Key): boolean {
 }
 
 export function useKeys(handler: (input: string, key: Key) => void, opts: { isActive?: boolean } = {}): void {
-  useInput((input, key) => {
+  useInput((raw, key) => {
+    // 探测回音落在 ink 接手之后时整串会当按键进来（`ui/reports.ts`）：剔掉回报字节，剔空了就整个不理
+    const input = stripReports(raw)
+    if (raw && !input) return
     if (shouldSplitInput(input, key)) {
       for (const char of input) handler(char, NO_KEY)
       return

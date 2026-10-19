@@ -9,14 +9,13 @@ import { CommentsOverlay } from './overlays/Comments.js'
 import { HelpOverlay } from './overlays/Help.js'
 import { LoginOverlay } from './overlays/Login.js'
 import { AddToPlaylistOverlay, ConfirmOverlay, InputOverlay, NewPlaylistOverlay } from './overlays/Modals.js'
-import { QueuesOverlay } from './overlays/Queues.js'
 import { ReportOverlay } from './overlays/Report.js'
 import { DiscoverScreen } from './screens/Discover.js'
 import { LibraryScreen } from './screens/Library.js'
 import { ListScreen } from './screens/List.js'
 import { ListenScreen } from './screens/Listen.js'
 import { LocalScreen } from './screens/Local.js'
-import { PlayerScreen } from './screens/Player.js'
+import { QueueScreen } from './screens/Queues.js'
 import { SearchScreen } from './screens/Search.js'
 import { SettingsScreen } from './screens/Settings.js'
 import { TrackDetailScreen } from './screens/TrackDetail.js'
@@ -33,6 +32,7 @@ const ROOT_LABEL: Record<RootKind, string> = {
   search: '搜索',
   discover: '发现',
   listen: '听歌',
+  queues: '播放队列',
   library: '我的',
   local: '本地',
   settings: '设置',
@@ -55,9 +55,7 @@ function breadcrumbsOf(stack: Route[]): Crumb[] {
             ? '设置'
             : route.kind === 'user'
               ? '用户'
-              : route.kind === 'player'
-                ? '正在播放'
-                : '曲目',
+              : '曲目',
     depth,
   }))
 }
@@ -91,12 +89,27 @@ function Shell() {
   const { toggle, playNext, playPrevious, nudgeSeek, nudgeVolume, cycleRepeat, toggleShuffle } = useCore()
   const { isRawModeSupported } = useStdin()
   const rootRef = useRef<DOMElement>(null)
+  /** 上一次按 Ctrl+C 的时刻（毫秒）：两次之间超过这个窗口就重新计数 */
+  const lastCtrlC = useRef(0)
   const rows = useFullscreenRows(rootRef)
 
   const interactive = Boolean(isRawModeSupported)
 
   useKeys(
     (input, key) => {
+      // 退出收口在这里：`q` 不再是退出键（单键命令太多，误触一次就得重进）。
+      // Ctrl+C 连按两次（1.5s 内）才退，单按只响一声——不弹 toast：那会盖住页面内容，
+      // 而「Ctrl+C x2 退出」本来就写在提示行和帮助里。
+      if (key.ctrl && input === 'c') {
+        const now = Date.now()
+        if (now - lastCtrlC.current <= 1500) {
+          ui.quit()
+          return
+        }
+        lastCtrlC.current = now
+        process.stdout.write('\u0007')
+        return
+      }
       if (ui.textFocus) return
       // 鼠标报文（滚轮/点击）不走按键：ink 会把原始报文一并交给 handler，别当成人敲的字
       if (isMouseInput(input)) return
@@ -166,7 +179,7 @@ function Shell() {
         ui.go('library')
         return
       }
-      // `S` 把设置压在当前页之上（Esc 退回原页）；侧边栏第 5 项则直接切过去
+      // `S` 把设置压在当前页之上（Esc 退回原页）；侧边栏第 7 项则直接切过去
       if (input === 'S') {
         ui.push({ kind: 'settings' })
         return
@@ -175,15 +188,15 @@ function Shell() {
         ui.go('search')
         return
       }
-      // `f` 在播放页上是「退回原页」，别处是「压栈进播放页」——一个键进出同一个地方
+      // `f` 去「听歌」页（独立播放页已并入那一页）：已在听歌就退回原页，别处就压一层上去
       if (input === 'f') {
-        if (ui.route.kind === 'player') ui.pop()
-        else ui.push({ kind: 'player' })
+        if (ui.route.kind === 'root' && ui.route.root === 'listen') ui.pop()
+        else ui.push({ kind: 'root', root: 'listen' })
         return
       }
-      // `Q`（大写）= 播放队列书架：推荐 / 我喜欢 / 每张歌单 / 临时各自一份，切过去就接着上次那一首
+      // `Q`（大写）= 播放队列页（侧边栏第 4 项）：压在当前页之上，Esc 退回
       if (input === 'Q') {
-        ui.openOverlay({ kind: 'queues' })
+        ui.push({ kind: 'root', root: 'queues' })
         return
       }
       if (input === '?') {
@@ -195,12 +208,21 @@ function Shell() {
         return
       }
       if (key.escape) {
-        if (ui.stack.length > 1) ui.pop()
-        else ui.setFocus('sidebar')
-        return
-      }
-      if (input === 'q') {
-        ui.quit()
+        // Esc 一路往上退：先退层，退到根页再把焦点从侧栏交回内容，都退不动了才给退出确认
+        if (ui.stack.length > 1) {
+          ui.pop()
+          return
+        }
+        if (ui.focus === 'sidebar') {
+          ui.setFocus('content')
+          return
+        }
+        ui.openOverlay({
+          kind: 'confirm',
+          message: '退出 qishui-tui？',
+          hint: '正在播的那首会停下；本地记录都留着，再进来接着听',
+          onConfirm: () => ui.quit(),
+        })
         return
       }
     },
@@ -257,6 +279,16 @@ function Header() {
   return (
     <Box flexShrink={0} paddingX={GUTTER} justifyContent="space-between" gap={1}>
       <Box flexShrink={1}>
+        {ui.columns >= 48 ? (
+          <Box flexShrink={0} marginRight={2}>
+            <Text bold color={COLOR.accent}>
+              Qishui
+            </Text>
+            <Text bold color={COLOR.warning}>
+              TUI
+            </Text>
+          </Box>
+        ) : null}
         {crumbs.map((crumb, i) => (
           <Pressable key={crumb.depth} onPress={() => ui.popTo(crumb.depth)} active={i < crumbs.length - 1}>
             <Text
@@ -285,8 +317,6 @@ function OverlayLayer() {
   switch (overlay.kind) {
     case 'help':
       return <HelpOverlay />
-    case 'queues':
-      return <QueuesOverlay />
     case 'comments':
       return <CommentsOverlay trackId={overlay.trackId} title={overlay.title} />
     case 'add':
@@ -335,12 +365,13 @@ function Screen({ route, active }: { route: Route; active: boolean }) {
   if (route.kind === 'track') return <TrackDetailScreen id={route.id} active={active} />
   if (route.kind === 'user') return <UserScreen id={route.id} nickname={route.nickname} active={active} />
   if (route.kind === 'settings') return <SettingsScreen active={active} />
-  if (route.kind === 'player') return <PlayerScreen active={active} />
   switch (route.root) {
     case 'discover':
       return <DiscoverScreen active={active} />
     case 'listen':
       return <ListenScreen active={active} />
+    case 'queues':
+      return <QueueScreen active={active} />
     case 'search':
       return <SearchScreen active={active} />
     case 'library':
@@ -367,10 +398,10 @@ function HintBar() {
       ['↑↓', '选项'],
       ['Enter', '进入'],
       ['Tab', '到内容'],
-      ['1–6', '切页'],
+      ['1–7', '切页'],
       ['0', '我的'],
       ['?', '帮助'],
-      ['q', '退出'],
+      ['Ctrl+C x2', '退出'],
     ]
   } else if (ui.route.kind === 'list') {
     items = [
@@ -388,30 +419,36 @@ function HintBar() {
       ['R', '刷新'],
       ['Esc', '返回'],
     ]
-  } else if (ui.route.kind === 'player') {
+  } else if (ui.route.kind === 'root' && ui.route.root === 'queues') {
     items = [
-      ['t', '歌词/队列'],
-      ['↑↓', '翻词 / 选队列'],
-      ['Enter', '操作菜单'],
-      ['Q', '换播放队列'],
-      ['Space n p', '播放 / 上下首'],
-      ['f', '返回'],
+      ['↑↓', '选队列 / 曲目'],
+      ['Enter', '切过去 / 操作'],
+      ['d', '收起 / 移除'],
+      ['Esc', '返回'],
+      ['Ctrl+C x2', '退出'],
     ]
   } else if (ui.route.kind === 'root' && ui.route.root === 'listen') {
     items = [
-      ['↑↓', '选模式'],
-      ['Enter', '设为当前并起播'],
-      ['R', '刷新'],
+      ['←→', '选模式/按钮'],
+      ['b', '选按钮'],
+      ['Enter', '应用 / 按按钮'],
+      ['o', '操作菜单'],
+      ['↑↓', '翻词 / 滚队列'],
+      ['t', '歌词 / 队列'],
+      ['q', '收起 / 队列栏'],
+      ['Q', '播放队列'],
       ['Esc', '返回'],
+      ['Ctrl+C x2', '退出'],
     ]
   } else {
     items = [
       ['↑↓', '移动'],
       ['Enter', '进入'],
-      ['f', '正在播放'],
+      ['f', '听歌 / 正在播放'],
       ['Q', '播放队列'],
       ['?', '帮助'],
       ['Esc', '返回'],
+      ['Ctrl+C x2', '退出'],
     ]
   }
   return (

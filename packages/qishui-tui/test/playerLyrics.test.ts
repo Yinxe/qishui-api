@@ -1,6 +1,6 @@
 /**
  * 歌词窗口的**取景**：`LyricsView` 只负责「把固定行数的窗口画出来」，
- * 居中那半（`start = 居中句 - 行数/2`、上下留白）在 `Player.tsx` 里算。
+ * 居中那半（`start = 居中句 - 行数/2`、上下留白）在 `Listen.tsx` 里算。
  * 这里用 ink 真渲染一帧，验三件事：
  *  1. 正在唱的那句落在窗口**正中**（第 (height-1)/2 行）；
  *  2. 歌刚开头（居中句 0）时，上面几行是留白、不是从第 0 句顶到最上面；
@@ -11,7 +11,7 @@ import { render } from 'ink'
 import type { Lyrics } from 'qishui-core'
 import { createElement } from 'react'
 import { expect, it } from 'vitest'
-import { LyricsView } from '../dist/screens/Player.js'
+import { LyricsView } from '../dist/components/Lyrics.js'
 
 const lyricsOf = (count: number): Lyrics =>
   ({

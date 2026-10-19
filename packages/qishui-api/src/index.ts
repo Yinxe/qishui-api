@@ -49,7 +49,17 @@ export {
   userAgent,
 } from './params.js'
 export { createCaller, type TransportOptions } from './transport.js'
+export {
+  getTrackDetail,
+  getTrackMedia,
+  type QualityEntitlement,
+  type TrackDetail,
+  type TrackDetailOptions,
+  type TrackMediaOptions,
+  type TrackQuality,
+} from './web/h5Track.js'
 export { type CdnPattern, getImageUrl, type ImageResource, type ImageTemplateType } from './web/image.js'
+export { parseKrc } from './web/lyrics.js'
 export {
   getShareMeta,
   parseShareLink,

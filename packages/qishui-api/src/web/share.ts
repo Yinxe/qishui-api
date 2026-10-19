@@ -156,7 +156,8 @@ function toTrackRef(t: any, coverWidth?: number): TrackRef | undefined {
  *   GetShareInfo  → 标题/歌手文案/封面/各平台分享文案与链接（track 与 ugc_video 都有）
  *   MCheckMedia   → 可播性与 VIP 权益标记（只对 track 有效，ugc_video 会回 1000004）
  *   GetRelatedMedia → 相关曲目（带完整 album/歌手/时长/封面）
- * 曲目自身的结构化时长和专辑要走 GetTrackV2（本项目不实现），所以这里没有。
+ * 曲目自身的结构化时长和专辑走 `getTrackDetail()`（`/luna/h5/track_v2`），`ShareMeta` 这张白名单里没有；
+ * 要时长/专辑请另调它。
  * 封面的两种形态都支持：`uri + urls[0]` 拼串，以及 ugc_video 那种直接给签名完整 URL。
  */
 export async function getShareMeta(

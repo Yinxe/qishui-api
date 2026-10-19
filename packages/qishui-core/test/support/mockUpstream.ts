@@ -4,7 +4,8 @@
  *
  * 覆盖的路由（其余 path 一律回 `{status_code:0}` 兜底）：
  *  - `/service/2/desktop/device_register/` → 固定假设备
- *  - `www.qishui.com/share/track` → 带 `_ROUTER_DATA` 的 SSR 分享页（可播/不可播可切）
+ *  - `/luna/h5/track_v2`（认 `device_platform=web`）→ 曲目详情/档位/歌词/权益（core 取址正口）
+ *  - `www.qishui.com/share/track` → 带 `_ROUTER_DATA` 的 SSR 分享页（可播/不可播可切，h5 之外的兜底）
  *  - `audio.mock` → 支持 `Range: bytes=N-`（206）的音频字节流
  *  - `/luna/media*`（MGetMedia）→ 按请求里的 id 造完整曲目实体（GET 回空 body，逼出 POST 回退）
  *  - `/luna/me`、`/luna/media-stats`、`/luna/media/related`、`/luna/search/*`、`/luna/playlist/detail`、
@@ -32,6 +33,11 @@ export interface MockUpstreamOptions {
   myInfo?: Record<string, unknown> | null
   /** 分享页标记为试听片段（秒）；给了就写 offsetStart/offsetDuration */
   clip?: { startSec?: number; durationSec: number }
+  /**
+   * `/luna/h5/track_v2` 是否可用（默认 true = 曲目取址走 h5 这条正口）。
+   * 设 false 复刻「上游改版/接口拿不出曲目」，用来验 core 回落到分享页 SSR 那条兜底路径。
+   */
+  h5?: boolean
   /**
    * 扫码状态脚本（`check_qrconnect` 每次调用 consume 一格，走完停在最后一格）。
    * 默认 `['waiting', 'confirmed']`；要复刻「确认后上游把 token 判成 expired」就写
@@ -141,6 +147,76 @@ function sharePageHtml(playable: boolean, clip?: MockUpstreamOptions['clip']): s
   return `<!doctype html><html><body><script>window._ROUTER_DATA = ${JSON.stringify(data)}</script></body></html>`
 }
 
+/**
+ * `/luna/h5/track_v2` 的响应骨架（与实测同形：`video_model` 是 JSON 字符串，
+ * 档位时长是 `video_duration` **秒**，`preview` 描述本次地址那一段）。
+ */
+function h5TrackJson(id: string, playable: boolean, clip?: MockUpstreamOptions['clip']): Record<string, unknown> {
+  const clipSeconds = clip?.durationSec
+  const durationMs = 12_345
+  const tiers = [
+    { quality: 'medium', bitrate: 66_160, size: 1550 },
+    { quality: 'higher', bitrate: 132_195, size: 3098 },
+    { quality: 'highest', bitrate: 260_197, size: 6098 },
+  ]
+  return {
+    status_info: { log_id: 'mock-h5', now: Math.floor(Date.now() / 1000) },
+    expire_at: Math.floor(Date.now() / 1000) + 86_400,
+    track: {
+      ...trackEntity(id, '晴天（mock）', durationMs),
+      audition_info: { vid: 'mock-audition-vid', start_time_ms: 0, duration_ms: 30_001 },
+      // 上游 `preview.start`/`duration` 是**毫秒**（分享页的 offsetStart 才是秒），这里照实测口径
+      preview:
+        clipSeconds == null
+          ? undefined
+          : { start: Math.round((clip?.startSec ?? 0) * 1000), duration: Math.round(clipSeconds * 1000) },
+      bit_rates: tiers.map((t) => ({ br: t.bitrate, size: t.size, quality: t.quality })),
+      label_info: {
+        only_vip_playable: !playable,
+        quality_map: {
+          medium: {
+            play_detail: { condition: 'benefit_play_medium', need_vip: false },
+            download_detail: { condition: 'benefit_download_medium', need_vip: true },
+          },
+          lossless: {
+            play_detail: { condition: 'benefit_play_lossless', need_vip: true },
+            download_detail: { condition: 'benefit_download_lossless', need_vip: true },
+          },
+        },
+      },
+    },
+    // 与分享页 SSR 那三行同内容：一行署名行（无逐字标记）+ 两行正文
+    lyric: {
+      type: 1,
+      content: '[0,1000]作曲：测试\n[1000,3000]<0,1500,0>第一行歌词\n[4000,4000]<0,4000,0>第二行歌词\n',
+    },
+    track_player: {
+      expire_at: Math.floor(Date.now() / 1000) + 86_400,
+      media_id: 'mock-vid',
+      video_model: JSON.stringify({
+        status: 10,
+        video_id: 'mock-vid',
+        video_duration: clipSeconds == null ? durationMs / 1000 : clipSeconds,
+        video_list: playable
+          ? tiers.map((t) => ({
+              main_url: mockPlayUrl(),
+              gear_des_key: `0:M4A|1:audio|2:aac|5:${t.quality}`,
+              video_meta: {
+                quality: t.quality,
+                vtype: 'm4a',
+                bitrate: t.bitrate,
+                real_bitrate: t.bitrate,
+                codec_type: 'aac',
+                size: t.size,
+                audio_sample_rate: '44100',
+              },
+            }))
+          : [],
+      }),
+    },
+  }
+}
+
 /** MGetMedia 的请求参数可能走 POST body，也可能被 GET 序列化进 query —— 两处一起捞 id */
 function requestedIds(url: URL, body?: string): string[] {
   try {
@@ -174,6 +250,7 @@ function trackIdsFromBody(body?: string): string[] {
 
 export function createMockUpstream(options: MockUpstreamOptions = {}): MockUpstream {
   const playable = options.playable !== false
+  const h5 = options.h5 !== false
   const size = options.audioSize ?? 2048
   const audioBytes = Buffer.alloc(size, 0x42)
   const coverBytes = Buffer.alloc(512, 0x11)
@@ -225,6 +302,17 @@ export function createMockUpstream(options: MockUpstreamOptions = {}): MockUpstr
         status: 200,
         headers: { 'content-type': 'text/html' },
       })
+    }
+    // 曲目取址的正口：放行只认 device_platform=web 这个 query（缺了就回 1000062，与 UA/签名无关）
+    if (url.pathname === '/luna/h5/track_v2') {
+      if (url.searchParams.get('device_platform') !== 'web') {
+        return jsonResponse({
+          status_code: 1000062,
+          status_info: { log_id: 'mock-h5', status_msg: '应用版本有风险，请从应用商店下载正式版本' },
+        })
+      }
+      if (!h5) return jsonResponse({ status_code: 0, status_info: { log_id: 'mock-h5' } })
+      return jsonResponse(h5TrackJson(url.searchParams.get('track_id') ?? '0', playable, options.clip))
     }
     if (url.hostname === 'cover.mock') {
       return new Response(coverBytes, { status: 200, headers: { 'content-type': 'image/jpeg' } })

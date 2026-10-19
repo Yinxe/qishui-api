@@ -6,6 +6,13 @@
 
 ### Added
 
+- **`cache stats` 长出「容量」一节，`cache prune` 能选淘汰顺序，`config set` 认体积写法**
+  - **症状**：`cache stats` 只报音频/封面各多少字节（meta 自报的数），看不到「用了多少 / 上限多少 / 超没超」；`cache prune` 的人读输出把上限硬写成「后台默认（2GiB）」，config 改成别的值也照抄这句
+  - **做法**：stats 增容量节（已用 = `dirStats` 真实磁盘字节、上限（档位名 + 占比）、满溢策略、自动淘汰、超限时「可释放 X（N 首）」+ 一句能直接抄走的 `cache prune --media`）；prune 加 `--by lru|leastPlayed`（不传读 `config.mediaEvictPolicy`），回显实际生效的上限与策略，没加 `--media` 而媒体超限时只提示不动手；`config set` 对 `*Bytes` 键走 `parseBytes`（`3G`/`1536MB`/`0`/`不限制` 都收，原先 `Number('2GB')` 直接报「要给数字」），`mediaEvictPolicy` 按枚举校验，回显带档位名
+  - **边界**：上限与策略都取自 core（`MEDIA_CAPACITY_TIERS`/`mediaCapacityLabel`/`mediaEvictPolicyLabel`），CLI 不另抄一份；`prune` 保住 `player.current` 那一首
+
+### Added
+
 - **`qishui comments --pages <n>` 能翻页了，新增 `qishui replies <commentId> --track <trackId>`**：`ListComments` / `ListReplies` 的 `cursor` 都是偏移量（实测 `count=5` → `next_cursor='5'`、`count=10` → `'10'`，两页零重复），翻页统一走 `collectPages()` 回传上游游标（不按页号/条数自己累加）。`replies` 要 `--track` 是因为 `ListReplies` 的 `group_id` 是曲目 id
 - **`qishui search --pages <n>`：搜索能翻页了**。上游口径（2026-10-18 实测）：按类型搜（`--type track/album/artist/playlist`）20 条/页、`has_more=true`、`next_cursor` 是偏移量字符串（`"20"`→`"40"`，第二页零重复）；`--type all` 的分组是**预览**（6/3/3/3 条，没有游标）→ 配 `--pages` 会直接报错并指路。默认仍 1 页；单页时末尾会提示「还有下一页：--pages N」+ 上游游标
 - **推荐请求的种子按 App 口径带上**：`qishui feed` 默认带 `played_media`（待播队列 + 云端 `GetRecentPlayedTracks` + 本地历史，去重后 ≤30 条，core 的 `buildPlayedMedia()`），`--played` 换成 `--no-played`（默认开、要关才传）；`qishui radio` 补 `--flow-type`（默认 2）/`--trigger-info`，与 App 的 `FeedRadioTracks` 请求字段一致
@@ -29,7 +36,8 @@
 - **`chart <id>` 名次列整列空白**：上游不给名次数字（core 的 `parseChart` 已按数组位次补），表格随之有 1..n
 - **`link` 的「过期 刚刚」**：未来时刻被 `ago()` 误判（差值 <60 秒分支含了负数）。新增 `until()`——`25 小时后` / `30 分钟后` / 远期给日期 / 已过给 `已过期`；`link` 过期行与 `whoami` 会员「到期」都改用它，`ago()` 本身也对未来时间回落到日期不再谎报「刚刚」
 - **`playback.test.ts` 的「无残留进程」断言不再数全系统的 mpv**：原来 `pgrep -c mpv` 只要是台机器上跑着别的 qishui 播放器（例如用户自己开着的 TUI 听歌）就必红。现在按 cmdline 里的 CLI 专属 socket 名 `qishui-mpv-*` 认「CLI 的播放器」（TUI 是 `qishui-tui-mpv-*`，不会误伤），且只比对跑之前/之后的 pid 差集——不仅免误报，还能抓住「这一跑新漏下的」
-- **试听片段歌词错位**：`-l` 的歌词窗口原来直接拿 mpv 的片段内位置查整曲歌词，片段从非 0 处开始时整段对不上；现在加上 `player.clipStartMs`（core 已从分享页解析片段起点），进度条/钳位也随之用片段实际时长
+- **试听片段歌词错位**：`-l` 的歌词窗口原来直接拿 mpv 的片段内位置查整曲歌词，片段从非 0 处开始时整段对不上；现在加上 `player.clipStartMs`（core 从取址结果解析片段起点，h5 或分享页），进度条/钳位也随之用片段实际时长
+- **`1000062` 的提示是错的**（`src/context.ts`）：原文案说「上游按客户端完整性校验拒答，换 path/参数也没用」——实测翻案了，那道门是 query 参数 `device_platform`（库的 common 参数发 `windows`，`/luna/h5/track_v2` 带 `web` 就匿名放行）。文案改成指认这个参数并说明曲目取址不受影响
 
 ## 0.2.0 — 2026-10-17
 

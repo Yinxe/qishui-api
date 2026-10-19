@@ -1,11 +1,11 @@
 /**
- * 听歌页条目构造的离线单测：单选标记、两个「当前」并存、场景弹层的执行顺序、没数据时的骨架。
- * `buildListenSections` 是纯函数（状态进、动作出），所以这里不起 core、不打上游。
+ * 听歌页条目构造的离线单测：模式单行（三档偏好 + 场景）的标记与「上次听到哪」、
+ * 场景弹层的执行顺序、没数据时的退化。`buildModeOptions` / `buildSceneEntries` 是纯函数
+ * （状态进、动作出），所以这里不起 core、不打上游。
  */
 import type { FeedModeRef, FeedModeView } from 'qishui-core'
 import { describe, expect, it } from 'vitest'
-import { buildListenSections, buildSceneEntries, feedModeLabel, type ListenCtx } from '../dist/screens/Listen.js'
-import type { Entry } from '../dist/ui/entries.js'
+import { buildModeOptions, buildSceneEntries, feedModeLabel, type ListenCtx } from '../dist/screens/Listen.js'
 
 const modes = (): FeedModeView =>
   ({
@@ -23,26 +23,16 @@ const modes = (): FeedModeView =>
 
 interface Spy {
   picked: FeedModeRef[]
-  played: number
-  stopped: number
-  opened: Entry[][]
   closed: number
 }
 
 function ctx(over: Partial<ListenCtx> = {}): { c: ListenCtx; spy: Spy } {
-  const spy: Spy = { picked: [], played: 0, stopped: 0, opened: [], closed: 0 }
+  const spy: Spy = { picked: [], closed: 0 }
   const c: ListenCtx = {
     modes: undefined,
     current: undefined,
-    streaming: false,
     pick: (ref) => spy.picked.push(ref),
-    play: () => {
-      spy.played += 1
-    },
-    stop: () => {
-      spy.stopped += 1
-    },
-    openScenes: (entries) => spy.opened.push(entries),
+    play: () => {},
     closeOverlay: () => {
       spy.closed += 1
     },
@@ -51,74 +41,72 @@ function ctx(over: Partial<ListenCtx> = {}): { c: ListenCtx; spy: Spy } {
   return { c, spy }
 }
 
-const labelOf = (entry: Entry | undefined): string => entry?.label ?? ''
-
-describe('buildListenSections', () => {
-  it('常用三档永远画得出来（core 的常量，不依赖请求）', () => {
+describe('buildModeOptions', () => {
+  it('偏好三档（core 常量，不依赖请求）+「场景」永远画得出来', () => {
     const { c } = ctx()
-    const sections = buildListenSections(c)
-    const preferences = sections[0].entries
-    expect(preferences.map((e) => e.key)).toEqual(['pref:default', 'pref:familiar', 'pref:fresh'])
-    expect(labelOf(preferences[1])).toBe('( ) 熟悉')
+    const options = buildModeOptions(c)
+    expect(options.map((option) => option.key)).toEqual(['default', 'familiar', 'fresh', 'scene'])
+    expect(options.map((option) => option.label)).toEqual(['推荐', '熟悉', '新鲜', '场景'])
+    expect(options.every((option) => !option.active)).toBe(true)
   })
 
-  it('`(x)` 只标本机记住的那个，且整页只有一个', () => {
-    const { c } = ctx({ current: { kind: 'preference', mode: 'fresh' }, modes: modes() })
-    const entries = buildListenSections(c)[0].entries
-    expect(entries.filter((e) => e.label.startsWith('(x)'))).toHaveLength(1)
-    expect(labelOf(entries[2])).toBe('(x) 新鲜')
+  it('`active` 只标本机记住的那一档；偏好档带 `ref`，「场景」不带（要开弹层）', () => {
+    const { c } = ctx({ current: { kind: 'preference', mode: 'fresh' } })
+    const options = buildModeOptions(c)
+    expect(options.filter((option) => option.active).map((option) => option.key)).toEqual(['fresh'])
+    expect(options.find((option) => option.key === 'default')?.ref).toEqual({ kind: 'preference', mode: 'default' })
+    expect(options.find((option) => option.key === 'scene')?.ref).toBeUndefined()
   })
 
-  it('`（上游当前）`只标上游栏里那一条，可以与本机的 `(x)` 并存', () => {
-    // 本机记住 fresh、上游栏当前是 familiar —— 两个标记各说各的
-    const { c } = ctx({ current: { kind: 'preference', mode: 'fresh' }, modes: modes() })
-    const entries = buildListenSections(c)[0].entries
-    expect(entries[1]?.note).toBe('（上游当前）')
-    expect(entries[2]?.label).toBe('(x) 新鲜')
-    expect(entries[0]?.note).toBeUndefined()
+  it('记住的场景档让「场景」亮起', () => {
+    const { c } = ctx({ current: { kind: 'scene', sceneModeId: 48 }, modes: modes() })
+    expect(buildModeOptions(c).find((option) => option.key === 'scene')?.active).toBe(true)
   })
 
-  it('Enter 就是选模式并起播（一次 pick，没有额外的播放条目）', () => {
+  it('「上次听到哪」随记忆挂在对应那一档：有记忆写「上次：曲名」，没播过不写', () => {
+    const { c } = ctx({
+      memory: (ref) =>
+        ref.kind === 'preference' && ref.mode === 'familiar' ? { count: 6, current: '晴天' } : undefined,
+    })
+    const options = buildModeOptions(c)
+    expect(options.find((option) => option.key === 'familiar')?.note).toBe('上次：晴天')
+    expect(options.find((option) => option.key === 'fresh')?.note).toBeUndefined()
+  })
+
+  it('只有条数没有曲名时退成「上次取过 N 首」', () => {
+    const { c } = ctx({ memory: () => ({ count: 4 }) })
+    expect(buildModeOptions(c)[0].note).toBe('上次取过 4 首')
+  })
+})
+
+describe('buildSceneEntries', () => {
+  it('只有带 sceneModeId 的场景进得去，记住那个带 `(x)`', () => {
+    const { c } = ctx({ modes: modes(), current: { kind: 'scene', sceneModeId: 52 } })
+    const entries = buildSceneEntries(c)
+    expect(entries.map((entry) => entry.key)).toEqual(['scene:48', 'scene:52', 'scene:77'])
+    expect(entries.map((entry) => entry.label)).toEqual(['( ) 专注模式', '(x) 通勤', '( ) 场景 77'])
+  })
+
+  it('点场景是「先关弹层再切模式」——起播提示别被弹层挡住', () => {
     const { c, spy } = ctx({ modes: modes() })
-    buildListenSections(c)[0].entries[0]?.onEnter?.()
-    expect(spy.picked).toEqual([{ kind: 'preference', mode: 'default' }])
-  })
-
-  it('场景收进弹层：只有带 sceneModeId 的进得去，点它是先关弹层再切模式', () => {
-    const { c, spy } = ctx({ modes: modes() })
-    const gate = buildListenSections(c)[1].entries[0]
-    expect(labelOf(gate)).toBe('更多场景（3）> 选择')
-    gate?.onEnter?.()
-    expect(spy.opened).toHaveLength(1)
-    expect(spy.opened[0].map((e) => e.key)).toEqual(['scene:48', 'scene:52', 'scene:77'])
-    spy.opened[0][0]?.onEnter?.()
+    buildSceneEntries(c)[0]?.onEnter?.()
     expect(spy.closed).toBe(1)
     expect(spy.picked).toEqual([{ kind: 'scene', sceneModeId: 48 }])
   })
 
-  it('没拿到模式列表时场景档置灰，不假装认得', () => {
-    const { c, spy } = ctx()
-    const gate = buildListenSections(c)[1].entries[0]
-    expect(gate?.disabled).toBe(true)
-    gate?.onEnter?.()
-    expect(spy.opened).toHaveLength(0)
+  it('场景档也带「上次听到哪」：切走再切回来接着上次那首，所以能回溯', () => {
+    const { c } = ctx({
+      modes: modes(),
+      memory: (ref) => (ref.kind === 'scene' && ref.sceneModeId === 48 ? { count: 6, current: '夜曲' } : undefined),
+    })
+    const entries = buildSceneEntries(c)
+    expect(entries.find((entry) => entry.key === 'scene:48')?.note).toBe('上次：夜曲')
+    expect(entries.find((entry) => entry.key === 'scene:52')?.note).toBeUndefined()
   })
 
-  it('流状态档三态：在跑 → 停止；没跑但记住过 → 再来一批；没记住 → 说明行', () => {
-    const running = ctx({ streaming: true, current: { kind: 'preference', mode: 'familiar' }, modes: modes() })
-    const stopEntry = buildListenSections(running.c)[2].entries[0]
-    expect(labelOf(stopEntry)).toBe('停止自动续播')
-    stopEntry?.onEnter?.()
-    expect(running.spy.stopped).toBe(1)
-
-    const idle = ctx({ current: { kind: 'scene', sceneModeId: 48 }, modes: modes() })
-    const playEntry = buildListenSections(idle.c)[2].entries[0]
-    expect(labelOf(playEntry)).toBe('按「专注模式」再来一批')
-    playEntry?.onEnter?.()
-    expect(idle.spy.played).toBe(1)
-
-    const none = ctx()
-    expect(buildListenSections(none.c)[2].entries[0]?.disabled).toBe(true)
+  it('没拿到模式列表时弹层是空的（调用方据此提示刷新），不假装认得', () => {
+    const { c } = ctx()
+    expect(buildSceneEntries(c)).toEqual([])
   })
 })
 
@@ -130,13 +118,5 @@ describe('feedModeLabel', () => {
     expect(feedModeLabel(modes(), { kind: 'scene', sceneModeId: 999 })).toBe('场景 999')
     expect(feedModeLabel(undefined, { kind: 'preference', mode: 'fresh' })).toBe('新鲜')
     expect(feedModeLabel(modes(), undefined)).toBe('未选')
-  })
-})
-
-describe('buildSceneEntries', () => {
-  it('记住的场景带 `(x)`，其余 `( )`', () => {
-    const { c } = ctx({ modes: modes(), current: { kind: 'scene', sceneModeId: 52 } })
-    const entries = buildSceneEntries(c)
-    expect(entries.map((e) => e.label)).toEqual(['( ) 专注模式', '(x) 通勤', '( ) 场景 77'])
   })
 })

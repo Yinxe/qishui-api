@@ -1,5 +1,5 @@
 import type { Client, CookieJar, CookieMap, DeviceIdentity, EndpointName, ResponseOf } from 'qishui-api'
-import { getShareMedia } from 'qishui-api'
+import { getShareMedia, getTrackDetail, type TrackDetail } from 'qishui-api'
 import type { PlaySource } from './cache/media.js'
 import { MediaCache } from './cache/media.js'
 import { KIND_SCOPE } from './cache/policy.js'
@@ -36,9 +36,9 @@ export interface CoreEvents extends EventMap {
   log: { line: string }
   /** 激活账号变了（登录/切号/登出都会发；undefined = 回到匿名） */
   'account-changed': { uid?: string }
-  /** 播放队列书架变了（打开 / 切换 / 推荐队列滚窗口 / 续批） */
+  /** 播放队列书架变了（打开 / 切换 / 推荐队列补进来一批） */
   'queues-changed': { activeId?: string }
-  /** 队列自己要说的一句话（续批失败、停止自动续播） */
+  /** 队列自己要说的一句话（续批的结果，含「连续取不到已停掉自动续播」） */
   'queue-note': { message: string; kind: 'info' | 'error' }
 }
 
@@ -147,7 +147,7 @@ export class QishuiCore {
     this.social = new SocialService(this)
     this.feedback = new FeedbackService(this)
     this.link = new LinkService(this)
-    // 队列书架的自动行为挂在播放器事件上：滚窗口（踢上上个）与续批都在那儿发生
+    // 队列书架的自动行为挂在播放器事件上：推荐队列的续批（只往队尾追加）在那儿判断
     this.player.on('queue', () => this.queues.onPlayerQueue())
     this.player.on('ended', ({ action }) => this.queues.onPlayerEnded(action))
   }
@@ -311,6 +311,16 @@ export class QishuiCore {
 
   /* ------------------------------------------------------------ 便捷入口 */
 
+  /**
+   * 曲目详情 + 可播档位 + 权益矩阵（`/luna/h5/track_v2`，匿名可用）。
+   * 回答「这首哪档要 VIP、现在拿到的是整曲还是试听段」用它；
+   * 要拿去播放的地址走 `core.source()`（那条会落缓存）。
+   */
+  async trackDetail(input: string | Track): Promise<TrackDetail> {
+    const id = input instanceof Track ? input.data.id : String(input)
+    return await getTrackDetail(id, { fetchImpl: this.fetchImpl, cover_width: this.config.coverWidth })
+  }
+
   /** 分享链接/裸 ID → 可播地址（不落盘，直接用） */
   async source(input: string, opts: { download?: boolean } = {}): Promise<PlaySource> {
     const item = await this.link.resolve(input)
@@ -350,26 +360,37 @@ export class QishuiCore {
     return saveConfig(this.paths, this.config)
   }
 
-  /** 缓存总览（元数据 + 媒体） */
+  /** 缓存总览（元数据 + 媒体 + 容量账：已用/上限/按当前策略能释放多少） */
   async cacheStats(): Promise<{
     entities: Awaited<ReturnType<EntityCache['stats']>>
     media: Awaited<ReturnType<MediaCache['stats']>>
+    capacity: Awaited<ReturnType<MediaCache['capacity']>>
   }> {
-    return { entities: await this.cache.stats(), media: await this.media.stats() }
+    const [entities, media, capacity] = await Promise.all([
+      this.cache.stats(),
+      this.media.stats(),
+      this.media.capacity(),
+    ])
+    return { entities, media, capacity }
   }
 
   /**
    * 清缓存。默认只清**过期**的元数据（`prune`）；显式传 `all: true` 才全清。
    * 媒体（音频文件）几个 MB 一个，要显式 `media: true` 才动 —— 别顺手删人家的歌。
+   * 动媒体时永远保住 `player` 当前那一首：剔了它，正在放的声音就没了。
    */
   async clearCache(opts: { media?: boolean; all?: boolean } = {}): Promise<void> {
+    const keep = this.player.current?.id ? [this.player.current.id] : []
     if (opts.all) await this.cache.clear()
     else await this.cache.prune()
-    if (opts.media) await this.media.prune(opts.all ? { maxBytes: 0, maxAgeMs: 1 } : {})
+    if (opts.media) {
+      await this.media.prune({ ...(opts.all ? { maxBytes: 0, maxAgeMs: 1 } : {}), keep })
+    }
   }
 
   /** 停时钟、释放订阅（进程退出前调一下更干净） */
   dispose(): void {
+    this.queues.flush()
     this.player.dispose()
     this.events.removeAll()
   }

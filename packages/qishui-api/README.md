@@ -15,13 +15,13 @@
 | 需要登录 | **38 条**（`status_code=1000016`）：我的歌单/收藏/最近播放、收藏与关注、歌单增删改、评论、举报、隐私设置、下单等。其中 **29 条是写接口**，另 **9 条是「读」** —— 带会话复测后 **6 条翻盘**（我的信息/我的歌单/黑名单/上传凭据/隐私设置/h5 搜索），3 条回了空（账号没数据）。清单见 [`docs/APP_ENDPOINTS.md`](docs/APP_ENDPOINTS.md) |
 | **写接口** | **29 条全部实测通过**（`test/write.ts`，每步「做 → 回读验证 → 撤销 → 再回读」，收尾 11 项安全复查全过）：建单/改单/加歌/移歌/删单、收藏↔取消（曲目/专辑/艺人/歌单/媒体列表）、关注↔取关、拉黑↔解除、发评→点赞→删评、`Dislike`、举报、改隐私（原值回写）、取下单 token —— **29 条全部 `status_code=0`**（4 条是换参数/换 path 后翻案）。逐条参数与回读验证见 [`docs/APP_ENDPOINTS.md`](docs/APP_ENDPOINTS.md) §3.12 |
 | 登录 | **汽水音乐 App 扫码**（`/passport/web/get_qrcode` + `check_qrconnect`，二维码内容 = `bff-pc.qishui.com/.../scan_login?token=…`），cookie 落进 `CookieJar`；`test/login.ts --start` 出码、`--poll` 等扫 |
-| **播放地址** | goapi 那批接口（`GetTrackV2`/`GetMediaPlayer`/`GetVideoV2`/`MGetMediaV2`/`GetTrack`/`GetH5Track`/`GetH5TrackV2`/`GetTrackPlayerInfo`）**照常发请求、不拦**：匿名与**带会话**实测上游都拒答（pc 变体空响应 / 非 pc 变体 `1000062 应用版本有风险`），只在 `ENDPOINT_DATA[].gated` 上打标记。**会员态是否放行未验证**（本次账号非会员）。要在 API 层拿曲目详情用 `MGetMedia`（匿名可用，**但不含播放地址**）、拿可播性用 `MCheckMedia`/`MCheckTrack`；`src/web/sharePage.ts` 走 web 分享页的 SSR，实测能拿到 `audio_mp4`/`video_mp4` 地址。见下 |
+| **播放地址** | **曲目走 `src/web/h5Track.ts` 的 `getTrackMedia()`**（`/luna/h5/track_v2` + query `device_platform=web`，匿名可用，还给多档音质 + `label_info` 权益矩阵 + KRC 歌词）；不通时回落 `src/web/sharePage.ts` 的 `getShareMedia()`（读 `www.qishui.com/share/<kind>` 的 SSR，`ugc_video` 只有这条路）。goapi 那批接口（`GetTrackV2`/`GetMediaPlayer`/`GetVideoV2`/`MGetMediaV2`/`GetTrack`/`GetH5Track`/`GetTrackPlayerInfo`）**照常发请求、不拦**：**库客户端口径**（`device_platform=windows`）下匿名与**带会话**实测都拒答（pc 变体空响应 / 非 pc 变体 `1000062 应用版本有风险`），只在 `ENDPOINT_DATA[].gated` 上打标记。**会员态是否放行未验证**（本次账号非会员）。要在 API 层拿曲目详情用 `MGetMedia`（匿名可用，**但不含播放地址**）、拿可播性用 `MCheckMedia`/`MCheckTrack`。见下 |
 | 搜索 | **匿名可用**：官方 `Search` 走 `/luna/search/<type>`（非 pc 变体）就返回 `result_groups`（track 一次 ~114KB 完整实体）；注意**不能带 `debug_params`**，pc 变体恒 `200+0 字节`。7 个 `search_type` 由 `SearchCategories` 给出。`Sug` / `SuggestWords` 做联想与推荐词 |
 | 检索替代 | 关键词可直接走 `Search`；`Sug` / `SuggestWords` 返回 track/album/artist 实体与 ID 做下拉与「猜你想搜」。`FlowSearch` 404（path 线上不存在）；`Search2023`（h5）匿名回 `login_required`、**带会话可用** |
 | **排行榜** | **能拿**：`DiscoverView` 空 body（= 官方 `Discover.vue`）回 `discover_top_song_list` 块（热歌榜 / 新歌榜 / 欧美榜，每榜几十首、每周四更新），曲目在 `resources[].entity.ranked_track.track`；每个榜条目的 `inner_block_id` 就是 `GetChartDetail` 的 `chart_id`，能再取整榜 `track_ranks[{rank,track}]`。`{first_request, pc_new_discover_request:true}`（听歌模式）只回 30 个场景队列、**榜单块不在响应里** |
 | 热搜榜 | **PC 客户端身份下拿不到**：`GetSearchBlock` 的 `search_chart_block`（热搜/热歌/新歌/歌手榜）恒为空（`includes` 只认 `SearchBlockType*` 三种块名，`scene_name` 换过也没用）；`GetFeaturedContents` 回空 body。替代：`SuggestWords(recommendation)`（推荐搜索词，带 track id）+ `GetChartDetail`（用榜单块的 `inner_block_id` 当 `chart_id`） |
 | 分享链接入口 | `src/web/share.ts`：短链→`track_id`（只读 3xx 的 Location）→ 标题/歌手文案/**封面 JPEG**/可播性 VIP 标记/相关曲目。见「分享链接 → 元数据」 |
-| 可播地址入口 | `src/web/sharePage.ts`：`getShareMedia()` 读 `www.qishui.com/share/<kind>` 分享页的 `_ROUTER_DATA`，返回 `play_url` + 时长/封面/`expires_at` + **KRC 歌词（行级+逐字时间戳）**。见「分享链接 → 可播地址」 |
+| 可播地址入口 | `src/web/h5Track.ts`（`getTrackDetail()` / `getTrackMedia()`）走 `/luna/h5/track_v2`；`src/web/sharePage.ts`（`getShareMedia()`）读分享页 SSR，也是 `ugc_video` 的唯一路。两者都给 `play_url` + 时长/封面/`expires_at` + **KRC 歌词（行级+逐字时间戳）**，h5 还多给各档音质与权益。见「曲目取址 / 详情」 |
 | 响应叶子类型 | 大部分是 `any`。`entity/*.ts` 是纯类型声明，编译期被完整擦除，产物里根本没有这段源码，拿不到 |
 
 逐端点实测记录（匿名、最小参数、`200+0字节` / `biz_error` / `login_required` 分类）与「这些接口能拿来做什么」
@@ -46,16 +46,22 @@
 只碰自己刚造的数据（建单返回的 id、自己刚发的评论），收藏类**先查有没有收藏过**、原本就有就跳过「取消」，
 收尾复查歌单数/关注数/黑名单/评论/最近播放/收藏/隐私设置是否都回到原样。
 
-关于播放地址，两条路不是一回事，别再写成「跟入口无关」——那句是未实测的假设，已被推翻：
+关于播放地址，三条路不是一回事，别再写成「跟入口无关」——那句是未实测的假设，已被推翻：
 
-- **goapi 那条现在照发、由上游裁决**。`GetTrackV2`/`GetMediaPlayer`/`GetVideoV2`/`MGetMediaV2`/`GetTrack`/`GetH5Track`/`GetH5TrackV2`/`GetTrackPlayerInfo` 这一类要音频 URL/单曲直读的接口，官方客户端依赖 native 层
-  （`ttnet`/`bdticket`，Windows PE 二进制）产生的设备证明与请求签名；**匿名与带会话实测都拒答**：pc 变体 `200 + 0 字节`，
-  非 pc 变体回 `1000062 应用版本有风险，请从应用商店下载正式版本`。本库此前自己抛 `UnsupportedError` 把它们拦下，
+- **h5 曲目口是现在的主路**：`GET /luna/h5/track_v2?track_id=<id>&device_platform=web` + 普通浏览器 UA，**无 cookie、无签名、不注册设备**就能匿名拿到
+  `track`（`label_info` 权益矩阵、`bit_rates` 完整体积、`audition_info`）、`track_player.video_model`（多档地址，**是个 JSON 字符串**）、`lyric`（KRC 原文）、`expire_at`。
+  实现是 `src/web/h5Track.ts` 的 `getTrackDetail()` / `getTrackMedia()`。关键那条门是 **query 参数 `device_platform=web`**，不是 UA（空 UA、LunaPC UA 都照回 `1000062`）。
+- **goapi 那条现在照发、由上游裁决**。`GetTrackV2`/`GetMediaPlayer`/`GetVideoV2`/`MGetMediaV2`/`GetTrack`/`GetH5Track`/`GetTrackPlayerInfo` 这一类要音频 URL/单曲直读的接口，官方客户端依赖 native 层
+  （`ttnet`/`bdticket`，Windows PE 二进制）产生的设备证明与请求签名；**库客户端口径（`device_platform=windows`）下匿名与带会话实测都拒答**：pc 变体 `200 + 0 字节`，
+  非 pc 变体回 `1000062 应用版本有风险，请从应用商店下载正式版本`（`POST /luna/pc/track_v2?device_platform=web` 试过，仍是 0 字节）。本库此前自己抛 `UnsupportedError` 把它们拦下，
   现在**删掉了那道拦截**——上游才是裁判，本库只把「实测拒答」标在 `ENDPOINT_DATA[].gated` 上，请求照发。
   （要在 API 层拿曲目详情，用匿名可用的 `MGetMedia`；但它**不含播放地址**。）
   本库不伪造 native attest（那是绕门禁，不是协议研究）。**会员态是否放行还没验过**（本次账号非会员），别把非会员结论当终局。
-- **web 分享页这条路是通的**：`www.qishui.com/share/track` 与 `/share/ugc_video` 匿名返回的 SSR 里就带着
+  > **推测（未实测）**：有会员会话时这条 pc 口大概也会放行，但那类文件**可能是加密的**（h5 给的 `main_url` 实测是裸 `audio_mp4`，能整段下）。
+  > 拿到会员账号再验，现在别按这个写代码。
+- **web 分享页这条路也是通的（`ugc_video` 唯一路）**：`www.qishui.com/share/track` 与 `/share/ugc_video` 匿名返回的 SSR 里就带着
   `audioWithLyricsOption.url` / `videoOptions.url`，实测 `http=206`，全程只 GET 一次网页、不碰 goapi。
+  曲目上它现在只当**兜底**：实测与 h5 拿到的是同一份音频（字节数完全一致、试听区间对得上），但只给一档、字段名还比 h5 脆。
   2026-10-15 由项目 owner 决定纳入范围。**这仍然大概率违反平台《服务协议》里「只在我们自己的页面/客户端里播」的授权口径**，
   用途自行评估；批量抓取、镜像曲库、对外提供播放不在支持范围内。
 
@@ -94,8 +100,8 @@ console.log(share_info?.share_link_desc)
 
 const sug = await client.request('Sug', { q: 'lucky', sug_scene: 'search_sug', sug_search_id: '' })
 
-// 3) goapi 的播放地址接口 —— 库照发请求，上游拒答就如实报（匿名实测回 1000062 / 空响应）
-//    可播地址走 web 分享页（见下），别把主链路压在这三个接口上
+// 3) goapi 的播放地址接口 —— 库照发请求，上游拒答就如实报（库客户端口径下匿名实测回 1000062 / 空响应）
+//    曲目取址走 getTrackMedia()（h5）或 getShareMedia()（分享页），别把主链路压在这三个接口上
 const r = await client.request('GetTrackV2', { track_id: '…', media_type: 1, queue_type: '' }).catch((e) => e)
 console.log(r instanceof Error ? `${r.name}: ${r.message}` : r)
 ```
@@ -159,13 +165,51 @@ const tracks = (res.media ?? []).map((m) => m.entity.track_wrapper.track)  // �
 `media[]` 里**只有 `type: 'track'` 有实体**（album/playlist/video/ugc_video 一律 0 条）。
 「播放前查权益」用 `MCheckMedia`（`media_list`）或 `MCheckTrack`（`track_ids`，粒度更细）。
 
-**拿不到的**：歌词在 goapi 侧**没有独立接口**（`GetTrackV2Response` 里带 `lyric: track.TrackLyrics`，与音频同响应、同闸门，
-全 320 端点的 path/name 无 `lyric`/`lrc`）；但 web 分享页的 SSR 里带着 KRC 结构化歌词，`getShareMedia()` 已能取出
-（见「分享链接 → 可播地址」）。`ShareMeta` 是显式字段白名单，原始响应里的其他字段不会透传出来。
+**歌词**：goapi 侧**没有独立的歌词接口**（`GetTrackV2Response` 里带 `lyric: track.TrackLyrics`，与音频同响应、同闸门，
+全 320 端点的 path/name 无 `lyric`/`lrc`）；但**匿名能拿到 KRC 结构化歌词的两条路都通**——`getTrackDetail()` 从
+`/luna/h5/track_v2` 的 `lyric.content` 解（`parseKrc()`），`getShareMedia()` 从分享页 SSR 的 `audioWithLyricsOption.lyrics` 取（已经是结构化形态）。
+两者逐行/逐字时间戳实测一致。`ShareMeta` 是显式字段白名单，原始响应里的其他字段不会透传出来。
 
 **ugc_video（短视频分享）** 也走同一套：`/qishui/share/ugc_video?ugc_video_id=…` → 标题、分享文案、封面。
 它没有歌手文案与相关曲目，`MCheckMedia` 会回 `1000004`（所以只对 track 查可播性）；封面形态也不同——
 它直接给带 `x-expires`/`x-signature` 的完整签名 URL（会过期，别缓存），而 track 是 `uri + 模板` 拼串。
+
+## 曲目取址 / 详情（`src/web/h5Track.ts`）
+
+```ts
+import { getTrackDetail, getTrackMedia } from 'qishui-api'
+
+const detail = await getTrackDetail('7631943484455995443')
+// { kind: 'track', id: '7631943484455995443',
+//   title: '…', artist: '…', album: { id, name }, duration_ms: 291840,   // 整曲时长
+//   cover_url: 'https://p3-luna.douyinpic.com/img/…', vid: '…',
+//   clip: false,                    // 这次拿到的是整曲
+//   expires_at: 1792367511, mime_type: 'audio_mp4',
+//   qualities: [                    // 实际取得到地址的档，按码率降序
+//     { quality: 'highest', url: 'https://…?mime_type=audio_mp4', backup_url, duration_ms: 291840, bytes: 9391139, bitrate: 257, codec_type, container: 'm4a' },
+//     { quality: 'higher', … bytes: 4721165 }, { quality: 'medium', … bytes: 2386935 } ],
+//   declared_qualities: [ { quality: 'lossless', bitrate: 320, bytes: … }, … ],  // bit_rates 声明的，不代表取得到
+//   entitlements: { lossless: { play: { condition, need_vip: true }, download: {…} }, … },
+//   only_vip_playable: false, only_vip_download: false,
+//   lyrics: { lyric_type: 'krc', sentences: [ … 行级 + 逐字时间戳 ] } }
+
+const media = await getTrackMedia('7631943484455995443')          // 归一到 getShareMedia 的返回型（默认最高档）
+const smaller = await getTrackMedia(id, { quality: 'medium' })    // 指定档位
+```
+
+一发请求把「曲目详情 + 多档地址 + KRC 歌词 + 权益矩阵」拿全。走的是
+`GET https://api.qishui.com/luna/h5/track_v2?track_id=<id>&device_platform=web`，**普通浏览器 UA、无 cookie、无签名、不注册设备**，
+所以它不经 `createClient()`（那会先打一次 device_register），也不吃 `client` 的会话——想带会员 cookie 用 `{ cookie }` 原样附上（**是否放行未验证**）。
+
+- **放行门是 query 参数 `device_platform=web`**，不是 UA：缺它回 `1000062 应用版本有风险`，空 UA、`LunaPC/*` UA 都照样拒；带上它普通浏览器 UA 就通。
+- `clip` / `clip_start_ms` / `clip_duration_ms` 判「这次是整曲还是试听片段」，依据是 `video_model.video_duration`（**该地址实际给的长度**）对 `track.duration`（整曲）；
+  `audition_info` 只在它指向同一个 vid 时才可信（整曲可播的曲也带 `audition_info`，指的是另一段试听）。实测 VIP 曲匿名给的就是片段，例如整曲 261.3s、只给 208.9s 起 52.3s。
+- `label_info` 的 `lossless` / `hi_res` / `spatial` 会出现在 `declared_qualities`/`entitlements` 里，但**匿名从来不在 `qualities` 给它们的地址** —— 声明了档位不等于取得到。
+- 地址带签名，`expires_at` 约 24h 后 403，**别缓存地址**（要缓存就缓存下载下来的字节）。
+- `parseKrc()` 单独导出：把 KRC 原文（`[行起,行时长]<词偏移,词长,升调>字…`，词时间是**相对行首**的）解成 `ShareLyrics`。
+
+实测（匿名）：与分享页 SSR 对比 5 首，**音频字节数完全一致**（487152 / 972356 / 972375 B 等）、试听区间对得上；
+整曲可播的条目这里比 SSR 多给 `medium`/`highest` 两档（SSR 只有一条）。`ugc_video` **没有** h5 对应接口（`/luna/h5/video_info`、`/luna/h5/ugc_video`、`/luna/h5/video` 实测 404），视频只能继续走下面的分享页。
 
 ## 分享链接 → 可播地址（`src/web/sharePage.ts`）
 

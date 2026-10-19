@@ -7,6 +7,7 @@ import { useUi } from '../ui/context.js'
 import { truncate } from '../ui/format.js'
 import { contentWidth } from '../ui/layout.js'
 import { Pressable, stripMouse, useRowClick, useWheelScroll } from '../ui/mouse.js'
+import { stripReports } from '../ui/reports.js'
 import { COLOR, SELECT_PREFIX } from '../ui/theme.js'
 import { EmptyState, ErrorState, Loading, Modal, useCursor } from '../ui/widgets.js'
 
@@ -94,7 +95,7 @@ export function CommentsOverlay({ trackId, title }: { trackId: string; title: st
         setDraft((current) => [...current].slice(0, -1).join(''))
         return
       }
-      const printable = [...stripMouse(input)].filter((ch) => ch >= ' ').join('')
+      const printable = [...stripReports(stripMouse(input))].filter((ch) => ch >= ' ').join('')
       if (printable && !key.ctrl && !key.meta) {
         setDraft((current) => current + printable)
       }

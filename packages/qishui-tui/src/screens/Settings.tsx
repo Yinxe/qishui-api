@@ -6,7 +6,17 @@
  * 缓存分档表直接用 core 的 `CACHE_TIERS`/`KIND_SCOPE`，不另抄一份。
  */
 import { Box } from 'ink'
-import { CACHE_TIERS, CONFIG_DEFAULTS, formatBytes, KIND_SCOPE, parseFeedMode } from 'qishui-core'
+import {
+  CACHE_TIERS,
+  CONFIG_DEFAULTS,
+  formatBytes,
+  KIND_SCOPE,
+  MEDIA_EVICT_POLICIES,
+  mediaCapacityLabel,
+  mediaEvictPolicyLabel,
+  nextMediaCapacityTier,
+  parseFeedMode,
+} from 'qishui-core'
 import { useState } from 'react'
 import { useCore } from '../core/context.js'
 import { useUi } from '../ui/context.js'
@@ -25,10 +35,28 @@ interface CacheOverview {
     withLyrics: number
     oldestAccessedAt?: number
     totalPlays: number
+    /** `cache/tracks` 的真实磁盘占用 */
+    diskBytes: number
+  }
+  capacity: {
+    usedBytes: number
+    limitBytes: number
+    percent?: number
+    overLimit: boolean
+    policy: 'lru' | 'leastPlayed'
+    autoEvict: boolean
+    reclaimableTracks: number
+    reclaimableBytes: number
   }
 }
 
 const REPEAT_ORDER = ['off', 'all', 'one'] as const
+
+/** 枚举型配置项的循环顺序（值直接取自 core，档位/策略都不在这抄一份） */
+const ENUM_ORDERS: Record<string, readonly string[]> = {
+  defaultRepeat: REPEAT_ORDER,
+  mediaEvictPolicy: MEDIA_EVICT_POLICIES,
+}
 
 /** 配置项名字 → 给人看的中文 */
 const CONFIG_LABELS: Record<string, string> = {
@@ -36,7 +64,9 @@ const CONFIG_LABELS: Record<string, string> = {
   entityTtlMs: '默认实体 TTL（ms）',
   coverWidth: '封面宽度（px）',
   autoCacheMedia: '播放时自动落盘媒体',
-  maxMediaBytes: '媒体缓存上限（字节）',
+  maxMediaBytes: '媒体缓存上限（Enter 换档位）',
+  mediaEvictPolicy: '满溢淘汰策略（Enter 换）',
+  mediaAutoEvict: '超上限自动淘汰（默认关）',
   reportPlayback: '播放行为上报',
   defaultRepeat: '默认循环模式',
   defaultShuffle: '默认随机',
@@ -81,9 +111,17 @@ export function SettingsScreen({ active }: { active: boolean }) {
       void writeConfig(key, !current)
       return
     }
-    if (key === 'defaultRepeat') {
-      const index = REPEAT_ORDER.indexOf(current as (typeof REPEAT_ORDER)[number])
-      void writeConfig(key, REPEAT_ORDER[(index + 1) % REPEAT_ORDER.length])
+    // 容量按档位循环（2G→3G→4G→5G→10G→不限制→2G）；手改的非档位值先跳进最近的档位
+    if (key === 'maxMediaBytes') {
+      const next = nextMediaCapacityTier(typeof current === 'number' ? current : 0)
+      void writeConfig(key, next)
+      ui.toast(next === 0 ? '上限不限制' : `上限 ${mediaCapacityLabel(next)}（${formatBytes(next)}）`, 'success')
+      return
+    }
+    const order = ENUM_ORDERS[key]
+    if (order) {
+      const at = order.indexOf(current as string)
+      void writeConfig(key, order[(at + 1 + order.length) % order.length])
       return
     }
     ui.toast(`这个项在终端里只读，改：qishui config set ${key} <value>`, 'info')
@@ -142,6 +180,35 @@ export function SettingsScreen({ active }: { active: boolean }) {
         disabled: true,
       },
       {
+        key: 'capacity',
+        label: '容量',
+        note: overview ? capacityText(overview) : undefined,
+        disabled: true,
+      },
+      {
+        key: 'evict-media',
+        label: '按上限清理媒体',
+        note: overview
+          ? `剔到上限为止 · 可释放 ${formatBytes(overview.capacity.reclaimableBytes)}（${overview.capacity.reclaimableTracks} 首）`
+          : undefined,
+        onEnter: () =>
+          confirm(
+            '按上限清理媒体缓存？',
+            `按「${overview ? mediaEvictPolicyLabel(overview.capacity.policy) : '最久未用'}」剔到上限为止，正在播的那首不动；音频删了可再下载`,
+            async () => {
+              const keep = core?.player.current?.id ? [core.player.current.id] : []
+              const result = await core?.media.prune({ keep })
+              const removed = result?.removed ?? 0
+              ui.toast(
+                removed
+                  ? `已清理 ${removed} 首，释放 ${formatBytes(result?.freedBytes ?? 0)}`
+                  : '没东西要清（已在上限内）',
+                'success',
+              )
+            },
+          ),
+      },
+      {
         key: 'refresh-stats',
         label: '刷新统计',
         note: 'R',
@@ -188,11 +255,15 @@ export function SettingsScreen({ active }: { active: boolean }) {
         label: '清空媒体缓存',
         note: '会删音频文件',
         onEnter: () =>
-          confirm('清空媒体缓存？', '本地音频/封面/歌词会被删除（可再下载），歌单不受影响', async () => {
-            await core?.clearCache({ all: true, media: true })
-            setIssues(undefined)
-            ui.toast('已清空媒体缓存', 'success')
-          }),
+          confirm(
+            '清空媒体缓存？',
+            '本地音频/封面/歌词会被删除（可再下载），正在播的那首不动，歌单不受影响',
+            async () => {
+              await core?.clearCache({ all: true, media: true })
+              setIssues(undefined)
+              ui.toast('已清空媒体缓存', 'success')
+            },
+          ),
       },
     ],
   })
@@ -214,7 +285,7 @@ export function SettingsScreen({ active }: { active: boolean }) {
     entries: CONFIG_KEYS.map((key) => {
       const value = core ? (core.config as unknown as Record<string, unknown>)[key] : undefined
       const sample = (CONFIG_DEFAULTS as unknown as Record<string, unknown>)[key]
-      const editable = typeof sample === 'boolean' || key === 'defaultRepeat'
+      const editable = typeof sample === 'boolean' || key === 'maxMediaBytes' || ENUM_ORDERS[key] !== undefined
       return {
         key: `cfg:${key}`,
         label: `${CONFIG_LABELS[key] ?? key}`,
@@ -262,14 +333,28 @@ export function SettingsScreen({ active }: { active: boolean }) {
 
 function formatConfigValue(key: string, value: unknown): string {
   if (value === undefined) return '—'
-  if (key === 'defaultShuffle' || key === 'reportPlayback' || key === 'autoCacheMedia' || key === 'tuiMouse') {
-    return value ? '开' : '关'
-  }
+  if (typeof value === 'boolean') return value ? '开' : '关'
   // 循环模式存的是 'off' / 'all' / 'one'，给人看中文词（推荐队列固定「关」，见 core 的 QueueBook）
   if (key === 'defaultRepeat') return value === 'all' ? '全部' : value === 'one' ? '单曲' : '关'
   // 听歌模式存的是 `preference:familiar` 这种文法串，给人看名字别看文法
   if (key === 'feedMode') return feedModeLabel(undefined, parseFeedMode(value as string | undefined))
+  if (key === 'maxMediaBytes' && typeof value === 'number') {
+    const label = mediaCapacityLabel(value)
+    return label === '自定义' ? `自定义 ${formatBytes(value)}` : label
+  }
+  if (key === 'mediaEvictPolicy') return mediaEvictPolicyLabel(value as 'lru' | 'leastPlayed')
   if (typeof value === 'number' && /Bytes$/.test(key)) return formatBytes(value)
   if (typeof value === 'number' && /Ms$/.test(key)) return `${value} ms`
   return JSON.stringify(value)
+}
+
+/** 缓存的「已用 / 上限」一句话：不限制就直说，超了把超出量也写出来 */
+function capacityText(overview: CacheOverview): string {
+  const { usedBytes, limitBytes, percent, overLimit } = overview.capacity
+  const limit =
+    limitBytes === 0
+      ? '不限制'
+      : `${mediaCapacityLabel(limitBytes) === '自定义' ? formatBytes(limitBytes) : mediaCapacityLabel(limitBytes)}（${percent ?? 0}%）`
+  const base = `已用 ${formatBytes(usedBytes)} / ${limit}`
+  return overLimit ? `${base} · 超 ${formatBytes(usedBytes - limitBytes)}` : base
 }

@@ -9,6 +9,7 @@ import { artistNames, truncate } from '../ui/format.js'
 import { useKeys } from '../ui/keys.js'
 import { listHeight } from '../ui/layout.js'
 import { Pressable, stripMouse } from '../ui/mouse.js'
+import { stripReports } from '../ui/reports.js'
 import { buildRowActions } from '../ui/rowActions.js'
 import { looksLikeShareInput, type ShareRef, shareTarget } from '../ui/shareLink.js'
 import { COLOR, GUTTER } from '../ui/theme.js'
@@ -222,8 +223,8 @@ export function SearchScreen({ active }: { active: boolean }) {
         return
       }
       // 一次 read 可能带回多个字符（粘贴/快速输入），逐个收下；控制字符丢掉。
-      // 鼠标报文也是「一次 read 多个字符」，先剔掉，否则滚轮一动就往输入框里塞 `[<64;10;5M`
-      const printable = [...stripMouse(input)].filter((ch) => ch >= ' ').join('')
+      // 鼠标报文与探测回音也是「一次 read 多个字符」，先剔掉，否则滚轮一动就往输入框里塞 `[<64;10;5M`
+      const printable = [...stripReports(stripMouse(input))].filter((ch) => ch >= ' ').join('')
       if (printable && !key.ctrl && !key.meta) {
         setNavSug(false)
         setQuery((current) => current + printable)

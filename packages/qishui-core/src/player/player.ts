@@ -201,6 +201,18 @@ export class Player {
     await this.startCurrent(opts)
   }
 
+  /**
+   * 播队列里的**某一首**（按曲目 id）—— 界面上点队列行走这条，别用行号。
+   * 行号是「界面那一刻看到的」，中途从队列里移除某一首会让后面那些集体前移：拿老行号跳要么播成隔壁那首，
+   * 要么越界被 `jumpTo` 静默拒掉（点了没反应）。id 才是「你点的是谁」，找得着就播它。
+   */
+  async playQueueTrack(trackId: string, opts: PlayOptions = {}): Promise<boolean> {
+    if (!this.queue.jumpToTrack(trackId)) return false
+    this.emitQueue()
+    await this.startCurrent(opts)
+    return true
+  }
+
   /** 追加到队尾（不打断当前播放） */
   enqueue(tracks: TrackInput | TrackInput[]): void {
     const list = (Array.isArray(tracks) ? tracks : [tracks]).map(toTrackData).filter((t): t is TrackData => !!t?.id)

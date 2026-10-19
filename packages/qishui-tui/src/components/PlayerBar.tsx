@@ -5,6 +5,7 @@ import { useUi } from '../ui/context.js'
 import { artistNames, barRatio, displayWidth, formatDuration, progressBar, truncate } from '../ui/format.js'
 import { Pressable } from '../ui/mouse.js'
 import { repeatLabel, shuffleLabel, statusLabel, volumeLabel } from '../ui/playMode.js'
+import { toggleTrackLike, trackLiked, trackLikeOf } from '../ui/rowActions.js'
 import { COLOR, GUTTER, NO_TRACK_TEXT } from '../ui/theme.js'
 
 /** 曲名/进度条各自的保底宽度：右侧标签装不下就从尾巴往后丢（时间与音量始终保底） */
@@ -21,7 +22,7 @@ interface Segment {
 }
 
 export function PlayerBar() {
-  const { player, queue, toggle, seekMs, nudgeSeek, nudgeVolume, toggleMute, muted, cycleRepeat, toggleShuffle } =
+  const { core, player, queue, toggle, seekMs, nudgeSeek, nudgeVolume, toggleMute, muted, cycleRepeat, toggleShuffle } =
     useCore()
   const ui = useUi()
   const track = player.track
@@ -50,16 +51,22 @@ export function PlayerBar() {
     )
   }
 
-  /** 点曲名 / 队列计数 = 进播放页（左栏曲目信息 + 歌词，右栏队列）；已在播放页就退回原页 */
+  /** 点曲名 = 去「听歌」页的正在播放区（原来那页独立播放页已并入）；已在听歌就不动 */
   const openPlayer = (): void => {
-    if (ui.route.kind === 'player') ui.pop()
-    else ui.push({ kind: 'player' })
+    if (ui.route.kind === 'root' && ui.route.root === 'listen') return
+    ui.push({ kind: 'root', root: 'listen' })
+  }
+  /** 点队列计数 = 去「播放队列」页（切/收队列、看当前队列曲目）；这也是队列管理的可点入口 */
+  const openQueues = (): void => {
+    if (ui.route.kind === 'root' && ui.route.root === 'queues') return
+    ui.push({ kind: 'root', root: 'queues' })
   }
   const name = `${track.name}${track.artists?.length ? ` — ${artistNames(track.artists)}` : ''}`
   const volume = Math.round(player.volume * 100)
   const timeText = `${formatDuration(player.positionMs)}/${formatDuration(player.durationMs)}`
 
-  // 优先级从前往后：时间 > 音量 > 循环 > 随机 > 队列位置。装不下就丢尾巴，不硬挤进度条。
+  // 优先级从前往后：时间 > 音量 > 喜欢 > 循环 > 随机 > 队列位置。装不下就丢尾巴，不硬挤进度条。
+  const like = trackLikeOf(track)
   const segments: Segment[] = [
     { id: 'time', text: timeText, warn: previewing ? '试听' : undefined },
     {
@@ -68,12 +75,17 @@ export function PlayerBar() {
       onPress: toggleMute,
       onWheel: (delta) => nudgeVolume(delta * 0.05),
     },
+    {
+      id: 'like',
+      text: trackLiked(core, like) ? '已喜欢' : '喜欢',
+      onPress: () => void toggleTrackLike({ ui, core, track: like }),
+    },
     { id: 'repeat', text: repeatLabel(player.repeat), onPress: cycleRepeat },
     { id: 'shuffle', text: shuffleLabel(player.shuffle), onPress: toggleShuffle },
     {
       id: 'queue',
       text: `${queue.index + 1}/${queue.items.length}${sourceTag ? ` ${sourceTag}` : ''}`,
-      onPress: openPlayer,
+      onPress: openQueues,
     },
   ]
   const widthOf = (segment: Segment): number =>

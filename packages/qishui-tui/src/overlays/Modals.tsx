@@ -8,6 +8,7 @@ import { truncate } from '../ui/format.js'
 import { useKeys } from '../ui/keys.js'
 import { listHeight } from '../ui/layout.js'
 import { isMouseInput, Pressable, stripMouse, useRowClick, useWheelScroll } from '../ui/mouse.js'
+import { stripReports } from '../ui/reports.js'
 import { COLOR } from '../ui/theme.js'
 import { EmptyState, ErrorState, Loading, Modal, Row, useCursor, windowFor } from '../ui/widgets.js'
 
@@ -191,7 +192,7 @@ export function InputOverlay({
         return
       }
       // 一次 read 可能带回多个字符（粘贴/快速输入），逐个收下；控制字符丢掉
-      const printable = [...stripMouse(input)].filter((ch) => ch >= ' ' && ch !== '\u007f').join('')
+      const printable = [...stripReports(stripMouse(input))].filter((ch) => ch >= ' ' && ch !== '\u007f').join('')
       if (printable && !key.ctrl && !key.meta) setValue((current) => current + printable)
     },
     { isActive: true },
@@ -247,7 +248,7 @@ export function NewPlaylistOverlay({ trackIds }: { trackIds?: string[] }) {
         setName((current) => [...current].slice(0, -1).join(''))
         return
       }
-      const printable = [...stripMouse(input)].filter((ch) => ch >= ' ' && ch !== '\u007f').join('')
+      const printable = [...stripReports(stripMouse(input))].filter((ch) => ch >= ' ' && ch !== '\u007f').join('')
       if (printable && !key.ctrl && !key.meta) setName((current) => current + printable)
     },
     { isActive: true },

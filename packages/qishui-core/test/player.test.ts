@@ -236,10 +236,10 @@ describe('player：频繁切歌的竞态', () => {
     const home2 = makeTempDir('qishui-player-race-')
     try {
       const mock2 = createMockUpstream()
-      // 只让 T1 的分享页慢 200ms；T2 立即返回
+      // 只让 T1 的取址（h5 曲目接口）慢 200ms；T2 立即返回
       const slowFetch: typeof fetch = async (input, init) => {
         const url = String(input)
-        if (url.includes('www.qishui.com') && url.includes(T1)) await sleep(200)
+        if (url.includes('/luna/h5/track_v2') && url.includes(T1)) await sleep(200)
         return mock2.fetchImpl(input, init)
       }
       const core2 = await createQishui({

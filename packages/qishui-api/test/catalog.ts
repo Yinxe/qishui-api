@@ -255,7 +255,7 @@ export const CATALOG: Entry[] = [
     name: 'GetTrackV2',
     auth: 'gated',
     capability:
-      'goapi 音频地址。匿名实测：每个 path 变体都是 `200+0字节`（pc / 非 pc、GET / POST 全一样）。上游对这类接口会按客户端完整性校验拒答（同类 GetMediaPlayer 的非 pc 变体回 `1000062 应用版本有风险`）。库照发请求、不拦；可播地址走 web 分享页（getShareMedia）。**登录/会员后是否放行未验证**',
+      'goapi 音频地址（pc 口 `/luna/pc/track_v2`）。匿名实测：每个 path 变体都是 `200+0字节`（pc / 非 pc、GET / POST 全一样，`?device_platform=web` 也还是 0 字节——那条放行只对 h5 口的 `/luna/h5/track_v2` 有效）。库照发请求、不拦；曲目取址走 `web/h5Track.ts` 的 `getTrackMedia`（h5 优先）+ 分享页兜底。**登录/会员后是否放行未验证**（有 VIP 账号时这条 pc 口大概能用，但那类文件是否加密未实测）',
     params: (c) => ({ track_id: c.trackId, media_type: 1, queue_type: '' }),
   },
   {
@@ -263,14 +263,15 @@ export const CATALOG: Entry[] = [
     name: 'GetMediaPlayer',
     auth: 'gated',
     capability:
-      'goapi 播放器。匿名实测：pc 变体 `200+0字节`、非 pc 变体回 `1000062 应用版本有风险`（上游客户端完整性校验，换参数/带 cookie 都不变）。库照发请求、不拦。**带会话/VIP 后未验证**',
+      'goapi 播放器。匿名实测：pc 变体 `200+0字节`、非 pc 变体回 `1000062 应用版本有风险`。1000062 这个码不是「客户端完整性校验」——同类 `/luna/h5/track_v2` 后续实测证明它其实是缺 query `device_platform=web`（换 UA 没用，带参数就过）；这条自身没试过补该参数，**口径待测**。库照发请求、不拦。**带会话/VIP 后未验证**',
     params: (c) => ({ vid: c.vid, media_type: 1, media_id: c.trackId, queue_type: '' }),
   },
   {
     group: '播放 / 媒体地址',
     name: 'GetVideoV2',
     auth: 'gated',
-    capability: 'goapi 视频地址。匿名实测同 GetTrackV2：各变体均空响应。库照发请求、不拦。**带会话/VIP 后未验证**',
+    capability:
+      'goapi 视频地址。匿名实测同 GetTrackV2：各变体均空响应。库照发请求、不拦；`ugc_video` 取址仍只能走分享页 SSR（`/luna/h5/video_info`、`/luna/h5/ugc_video`、`/luna/h5/video` 实测 404，h5 那条放行路只对 track 有对应端点）。**带会话/VIP 后未验证**',
     params: (c) => ({ video_id: c.trackId, type: 1 }),
   },
   {
@@ -319,7 +320,7 @@ export const CATALOG: Entry[] = [
     name: 'GetTrack',
     auth: 'gated',
     capability:
-      '单曲信息（非 h5 path `/luna/track`）。匿名实测：`1000062 应用版本有风险`（上游客户端完整性校验）。库照发请求、不拦。**带会话/VIP 后未验证**',
+      '单曲信息（非 h5 path `/luna/track`）。匿名实测：`1000062 应用版本有风险`（同批接口后续实测：这个码是缺 query `device_platform=web`，不是客户端校验；这条本身没试过补该参数）。库照发请求、不拦。**带会话/VIP 后未验证**',
     params: (c) => ({ track_id: c.trackId, media_type: 'track' }),
   },
   {
@@ -327,7 +328,7 @@ export const CATALOG: Entry[] = [
     name: 'GetH5Track',
     auth: 'gated',
     capability:
-      'h5 path（`/luna/h5/track`）。匿名实测同 GetTrack：`1000062 应用版本有风险`。库照发请求、不拦。**带会话/VIP 后未验证**',
+      'h5 path（`/luna/h5/track`）。匿名实测同 GetTrack：`1000062 应用版本有风险`。同 URL 系列的 v2（`/luna/h5/track_v2`）已证实是靠 query `device_platform=web` 放行的，这条 v1 是否同机制**未测**。库照发请求、不拦。**带会话/VIP 后未验证**',
     params: (c) => ({ track_id: c.trackId, media_type: 'track' }),
   },
   {
@@ -335,7 +336,7 @@ export const CATALOG: Entry[] = [
     name: 'GetH5TrackV2',
     auth: 'gated',
     capability:
-      'h5 v2（`/luna/h5/track_v2`）。匿名实测：`1000062 应用版本有风险`。库照发请求、不拦。**带会话/VIP 后未验证**（这条用 `track.GetTrackV2Request`，比 GetTrack/GetH5Track 多一个必填的 `queue_type`）',
+      'h5 v2（`/luna/h5/track_v2`）。**这条要分两个口径看**：①下面这套「库客户端」参数（不带 `device_platform`）匿名实测回 `1000062 应用版本有风险`；②**同一 URL 只要补上 query `device_platform=web`、用普通浏览器 UA、无 cookie 无签名，匿名就能拿到完整数据**——那个版本门是这个 query 参数，不是 UA（空 UA / LunaPC UA 都照回 1000062）。返回 `track`（含 `label_info` 权益矩阵、`bit_rates` 完整体积、`audition_info`）+ `track_player`（`video_model` 多档地址）+ `lyric` + `expire_at`。库侧的实现是 `web/h5Track.ts` 的 `getTrackDetail`/`getTrackMedia`（走裸 fetch，不注册设备、不带会话）；**登录/会员后 `queue_type` 那套原生口径是否放行未验证**',
     params: (c) => ({ track_id: c.trackId, media_type: 'track', queue_type: '' }),
   },
   {
@@ -343,7 +344,7 @@ export const CATALOG: Entry[] = [
     name: 'GetTrackPlayerInfo',
     auth: 'gated',
     capability:
-      '播放器信息（`/luna/track_player`）。匿名实测：`1000062 应用版本有风险`。库照发请求、不拦。**带会话/VIP 后未验证**',
+      '播放器信息（`/luna/track_player`）。匿名实测：`1000062 应用版本有风险`（该码的机制见 GetH5TrackV2 条：是 query `device_platform=web` 那道门；这条本身没试过补）。库照发请求、不拦；播放器信息/多档地址匿名可从 `/luna/h5/track_v2` 的 `track_player.video_model` 拿到。**带会话/VIP 后未验证**',
     params: (c) => ({ track_id: c.trackId, type: 'track' }),
   },
 
