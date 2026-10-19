@@ -90,10 +90,18 @@ export const Cover = memo(function Cover({
   // 取字节的 loader 同理：它闭包的东西已经由 `cacheKey` 代表，身份变了才该重取
   const loadRef = useRef(load)
   loadRef.current = load
+  // 当前 `art` 属于哪张图（不含尺寸）：尺寸单变就留着老封面，不必先抹成空白
+  const lastIdentity = useRef(`${mode}:${cacheKey ?? url ?? ''}`)
 
   useEffect(() => {
     let alive = true
-    setArt(undefined)
+    // 只有「同一张图换个尺寸」不抹：拖窗口时每帧都在变 cols/rows，抹成空白就是一路闪，
+    // 留着上一帧的老封面、新解码回来再换，观感稳得多。换曲目/换页（身份变了）才必须抹。
+    const identity = `${mode}:${cacheKey ?? url ?? ''}`
+    if (lastIdentity.current !== identity) {
+      lastIdentity.current = identity
+      setArt(undefined)
+    }
     if (mode === 'off' || (!url && !loadRef.current)) {
       emptyRef.current?.()
       return

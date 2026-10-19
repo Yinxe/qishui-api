@@ -38,7 +38,14 @@ export interface PlayerSnapshot {
   shuffle: boolean
   sourceKind: 'cache' | 'remote' | 'local' | null
   error?: string
+  /** 起播出声失败的那句话，只跟着**它发生的那一首**（换曲即消失，见 `AudioNote`） */
   audioNote?: string
+}
+
+/** 出声报错 + 它属于哪一首（`trackId` 为空 = 报的时候本来就没曲目） */
+interface AudioNote {
+  trackId?: string
+  text: string
 }
 
 export interface QueueSnapshot {
@@ -124,7 +131,7 @@ export function useCore(): CoreValue {
   return value
 }
 
-function snapshotOf(core: QishuiCore, audioNote?: string): PlayerSnapshot {
+function snapshotOf(core: QishuiCore, note?: AudioNote): PlayerSnapshot {
   const state = core.player.state
   return {
     status: state.status,
@@ -137,7 +144,9 @@ function snapshotOf(core: QishuiCore, audioNote?: string): PlayerSnapshot {
     shuffle: state.shuffle,
     sourceKind: state.source?.kind ?? null,
     error: state.error,
-    audioNote,
+    // 报的是哪一首的错就贴在哪儿：这一首之外一律不带过来
+    // （`mpv` 不在、这个源没地址…都是一次性的事，一直挂在条上会把好歌也说成坏的）
+    audioNote: note && note.trackId === state.track?.id ? note.text : undefined,
   }
 }
 
@@ -170,6 +179,8 @@ export function CoreProvider({ children }: { children: ReactNode }) {
   const sourceSeqRef = useRef(0)
   /** mpv 报过的真实时长；换曲清空，重新问一次 */
   const realDurationRef = useRef<number | undefined>(undefined)
+  /** 起播出声的报错，连同「报的是哪一首」：新一首选掉它，播放条据此决定这句话还贴不贴 */
+  const noteRef = useRef<AudioNote | undefined>(undefined)
 
   /**
    * 书架快照：`core.queues.list()` 是唯一真相，这里只是搬进 React（事件驱动刷新）。
@@ -186,7 +197,9 @@ export function CoreProvider({ children }: { children: ReactNode }) {
     const sink = new AudioSink()
     sinkRef.current = sink
     sink.onError = (message) => {
-      if (alive) setPlayer((prev) => ({ ...prev, audioNote: message }))
+      if (!alive) return
+      noteRef.current = { trackId: coreRef.current?.player.state.track?.id, text: message }
+      setPlayer((prev) => ({ ...prev, audioNote: message }))
     }
     createQishui()
       .then((instance) => {
@@ -256,17 +269,19 @@ export function CoreProvider({ children }: { children: ReactNode }) {
     syncQueues()
 
     const offs = [
-      p.on('track', () => setPlayer((prev) => ({ ...snapshotOf(instance), audioNote: prev.audioNote }))),
-      p.on('progress', () => setPlayer((prev) => ({ ...snapshotOf(instance), audioNote: prev.audioNote }))),
-      p.on('error', () => setPlayer((prev) => ({ ...snapshotOf(instance), audioNote: prev.audioNote }))),
+      p.on('track', () => setPlayer(snapshotOf(instance, noteRef.current))),
+      p.on('progress', () => setPlayer(snapshotOf(instance, noteRef.current))),
+      p.on('error', () => setPlayer(snapshotOf(instance, noteRef.current))),
       p.on('queue', () => {
         const snapshot = queueOf(instance)
         setQueue(snapshot)
-        setPlayer((prev) => ({ ...snapshotOf(instance), audioNote: prev.audioNote }))
+        setPlayer(snapshotOf(instance, noteRef.current))
         // 推荐队列在这条路上记下播放头 / 续批（core 的 QueueBook 自己动手），这里只跟着重画书架
         syncQueues()
       }),
       p.on('source', ({ source }) => {
+        // 新一首的出声是另一回事：上一首那句「打不开」不能跟着贴过来（同一首重播也一样，先清）
+        noteRef.current = undefined
         const audio: AudioSource = { kind: source.kind, path: source.path, url: source.url }
         // 先把活跃 generation 清掉：换曲时旧 mpv 的退出不能算作「这一首播完了」
         activeGenRef.current = -1

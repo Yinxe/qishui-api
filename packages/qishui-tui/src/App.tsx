@@ -22,7 +22,7 @@ import { TrackDetailScreen } from './screens/TrackDetail.js'
 import { UserScreen } from './screens/User.js'
 import { UiProvider, useUi } from './ui/context.js'
 import { useKeys } from './ui/keys.js'
-import { isMouseInput, MouseLayer, Pressable } from './ui/mouse.js'
+import { isMouseInput, MouseBlock, MouseLayer, Pressable } from './ui/mouse.js'
 import { COLOR, ERROR_PREFIX, GUTTER } from './ui/theme.js'
 import type { RootKind, Route } from './ui/types.js'
 import { Hints } from './ui/widgets.js'
@@ -249,7 +249,10 @@ function Shell() {
                 保住子树 = 保住已取数据与游标；active 关掉 = 底层自带的 useInput 不和弹层抢方向键。
               */}
               <Box flexDirection="column" flexGrow={overlay ? 0 : 1} height={overlay ? 0 : undefined} overflow="hidden">
-                <BaseLayer active={ui.focus === 'content' && !overlay} />
+                {/* 鼠标同理：底层盒子留着布局矩形，不挡就是「点弹层的按钮、底下那一行同时被 Enter」 */}
+                <MouseBlock blocked={!!overlay}>
+                  <BaseLayer active={ui.focus === 'content' && !overlay} />
+                </MouseBlock>
               </Box>
               {overlay ? <OverlayLayer /> : null}
             </Box>
@@ -302,7 +305,7 @@ function Header() {
         ))}
       </Box>
       <Pressable flexShrink={0} onPress={() => ui.go('library')}>
-        <Text color={error ? COLOR.danger : 'gray'} wrap="truncate-end">
+        <Text color={error ? COLOR.danger : COLOR.muted} wrap="truncate-end">
           {error ? `${ERROR_PREFIX} ${error}` : badge}
         </Text>
       </Pressable>

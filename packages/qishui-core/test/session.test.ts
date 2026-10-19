@@ -280,6 +280,73 @@ describe('session：--as 式临时实例', () => {
   })
 })
 
+describe('session：登录但不切号（CLI 的 `--keep-active`）', () => {
+  const NEW_UID = '3617835472921684'
+  const sessionidOf = (home: string, uid: string): string | undefined =>
+    JSON.parse(fs.readFileSync(path.join(home, 'accounts', `${uid}.json`), 'utf8')).cookies?.sessionid
+
+  it('入库新号、人还留在原号：身份/jar/历史目录/书架都不动，两份账号文件也不许互相写脏', async () => {
+    const home = makeTempDir('qishui-keepactive-')
+    writeLegacySession(home)
+    const mock = createMockUpstream({ qrStatuses: ['confirmed'] })
+    const core = await createQishui({
+      dataDir: home,
+      device: MOCK_DEVICE,
+      fetchImpl: mock.fetchImpl,
+      player: { tickMs: 10, skipOnError: false },
+    })
+    const changed: (string | undefined)[] = []
+    core.events.on('account-changed', ({ uid }) => changed.push(uid))
+    try {
+      await core.queues.open({ kind: 'temporary', title: '搜索', items: [{ id: 'a', name: '曲目 a', artists: [] }] })
+      expect(core.history.scopeFile).toContain(path.join('journal', '111'))
+
+      const login = await core.login({ intervalMs: 10, timeoutMs: 5_000, keepActive: true })
+      expect(await login.wait(10, 5_000)).toBe('confirmed')
+
+      // 「不切号」= 身份、jar、播放历史目录、激活号、书架全部原样
+      expect(core.uid).toBe('111')
+      expect(core.snapshot().nickname).toBe('小号A')
+      expect(core.accounts().find((a) => a.active)?.uid).toBe('111')
+      expect(core.api.cookies.toObject().sessionid).toBe('COOKIE_A')
+      expect(core.history.scopeFile).toContain(path.join('journal', '111'))
+      expect(core.queues.list().map((q) => q.id)).toContain('temporary')
+      // 没真的换号就不发「换号了」（上层据此清书架、换 scope）
+      expect(changed).toEqual([])
+      // 新号确实入了库（不切号 ≠ 不入号），而且没被当成「刚用过」
+      expect(fs.existsSync(path.join(home, 'accounts', `${NEW_UID}.json`))).toBe(true)
+      expect(core.accounts().find((a) => a.uid === NEW_UID)?.lastUsedAt).toBeUndefined()
+
+      // 回写是按 `current.uid` 找文件的：`current` 若还留着新号身份、jar 里却是 A 的 cookie，
+      // 这一步就把新号那份写成 A 的凭据 —— 切过去才发现「这张号是别人的」（反向同理）
+      await core.session.save()
+      expect(sessionidOf(home, '111')).toBe('COOKIE_A')
+      expect(sessionidOf(home, NEW_UID)).toBe('MOCK_SESSIONID')
+    } finally {
+      core.dispose()
+      rmDir(home)
+    }
+  })
+
+  it('没有可保持的号（此前是匿名）：`keepActive` 就按普通登录走，新号即激活', async () => {
+    const home = makeTempDir('qishui-keepactive-anon-')
+    const mock = createMockUpstream({ qrStatuses: ['confirmed'] })
+    const core = await createQishui({ dataDir: home, device: MOCK_DEVICE, fetchImpl: mock.fetchImpl })
+    const changed: (string | undefined)[] = []
+    core.events.on('account-changed', ({ uid }) => changed.push(uid))
+    try {
+      const login = await core.login({ intervalMs: 10, timeoutMs: 5_000, keepActive: true })
+      expect(await login.wait(10, 5_000)).toBe('confirmed')
+      expect(core.uid).toBe(NEW_UID)
+      expect(core.snapshot().activeUid).toBe(NEW_UID)
+      expect(changed).toEqual([NEW_UID])
+    } finally {
+      core.dispose()
+      rmDir(home)
+    }
+  })
+})
+
 describe('session：扫码登录 confirmed 必须入库（登录态刷新的根）', () => {
   async function boot(
     script: string[],

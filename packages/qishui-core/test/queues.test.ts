@@ -3,7 +3,7 @@
  * 「我喜欢」随机。全程 mock 上游（推荐批次直接 stub `discover.feedModeTracks`），不打网络。
  */
 import { readFileSync } from 'node:fs'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createQishui, MAX_QUEUES, type QishuiCore, recommendQueueId, type TrackData } from '../dist/index.js'
 import { createMockUpstream, MOCK_DEVICE } from './support/mockUpstream.js'
 import { makeTempDir, rmDir, sleep } from './support/tmp.js'
@@ -117,6 +117,100 @@ describe('队列书架：歌单与我喜欢', () => {
     expect(ids().sort()).toEqual(['a', 'b', 'c', 'd', 'e', 'f'])
     // 当前这首留在队首（随机只打乱后面）
     expect(core.player.queue.index).toBe(0)
+  })
+})
+
+describe('队列书架：连点切换（两次切换撞在一起）', () => {
+  /** 一张「取数要等人放行」的歌单：模拟上游慢，好把两次切换逼成交错 */
+  function slowPlaylist(
+    id: string,
+    title: string,
+  ): { open: Promise<unknown>; release: () => void; loads: () => number } {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let loads = 0
+    const open = core.queues.open({
+      kind: 'playlist',
+      id,
+      title,
+      load: async () => {
+        loads += 1
+        await gate
+        return [track('a'), track('b')]
+      },
+    })
+    return { open, release, loads: () => loads }
+  }
+
+  const fastPlaylist = (id = 'playlist:fast', title = '快的那张') =>
+    core.queues.open({ kind: 'playlist', id, title, load: async () => [track('x'), track('y')] })
+
+  it('第一份的取数已经在路上：后点的这份最后装在播放器里，慢回来的那份不许再盖上去', async () => {
+    const slow = slowPlaylist('playlist:slow', '慢的那张')
+    await sleep(0) // 让第一格真的跑到 `load` 里（不是还没起步就被顶掉）
+    const fast = fastPlaylist()
+    slow.release()
+    await Promise.all([slow.open, fast])
+
+    expect(core.queues.active?.id).toBe('playlist:fast')
+    expect(ids()).toEqual(['x', 'y'])
+    // 交错跑时慢回来的那份会把自己最后 `playList` 进去：现象就是「响的是慢那张的第一首」
+    expect(slow.loads()).toBe(1)
+    // 慢那张也没丢：用户确实点过它，书架上留着这一行，等真点开时再认
+    expect(core.queues.info('playlist:slow')?.title).toBe('慢的那张')
+  })
+
+  it('两次切换在同一拍点下去：被顶掉的那份一趟上游都不去取（还没起步就不必敲门）', async () => {
+    const slow = slowPlaylist('playlist:slow', '慢的那张')
+    const fast = fastPlaylist()
+    slow.release()
+    await Promise.all([slow.open, fast])
+
+    expect(slow.loads()).toBe(0)
+    expect(core.queues.active?.id).toBe('playlist:fast')
+    expect(ids()).toEqual(['x', 'y'])
+    expect(core.queues.info('playlist:slow')?.title).toBe('慢的那张')
+  })
+
+  it('前一份还在往播放器里装时后一份才起步：两次 `playList` 不交错（交错会把 liveId 记到错的份上）', async () => {
+    await core.queues.open({
+      kind: 'playlist',
+      id: 'playlist:p1',
+      title: '甲',
+      load: async () => ['a', 'b', 'c'].map(track),
+    })
+    await core.queues.open({
+      kind: 'playlist',
+      id: 'playlist:p2',
+      title: '乙',
+      load: async () => ['x', 'y', 'z'].map(track),
+    })
+
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const real = core.player.playList.bind(core.player)
+    const log: string[] = []
+    core.player.playList = async (tracks, startTrackId, opts) => {
+      const head = tracks[0] as unknown as { id?: string; data?: { id?: string } }
+      log.push(`进:${head.id ?? head.data?.id}`)
+      await gate
+      await real(tracks, startTrackId, opts)
+      log.push(`出:${head.id ?? head.data?.id}`)
+    }
+
+    const first = core.queues.activate('playlist:p1')
+    await sleep(0) // 让第一次切换真的进到 `playList` 里卡住
+    const second = core.queues.activate('playlist:p2')
+    release()
+    await Promise.all([first, second])
+
+    expect(log).toEqual(['进:a', '出:a', '进:x', '出:x'])
+    expect(core.queues.active?.id).toBe('playlist:p2')
+    expect(ids()).toEqual(['x', 'y', 'z'])
   })
 })
 
@@ -440,6 +534,16 @@ describe('队列书架：切号', () => {
     expect(core.queues.list()).toHaveLength(0)
     expect(core.queues.activeQueueId).toBe(undefined)
   })
+
+  it('退登也作废书架：退到匿名后不该把「我的」那批留给下一个号', async () => {
+    await core.queues.open({ kind: 'liked', title: '我喜欢的音乐', load: async () => [track('a')] })
+    core.queues.flush()
+    expect(core.queues.list()).toHaveLength(1)
+    await core.logout()
+    expect(core.queues.list()).toHaveLength(0)
+    // 只清内存不够：`qishui logout` 这种跑完就退的进程，要的是盘上那一次也作废
+    expect(readFileSync(core.paths.queuesFile, 'utf8')).not.toContain('"id":"a"')
+  })
 })
 
 describe('队列书架：上限（自动维护不超过 10 份）', () => {
@@ -524,6 +628,8 @@ describe('队列书架：持久化（重启还看得见）', () => {
       expect(fresh.queues.activeQueueId).toBe(undefined)
       expect(fresh.queues.info('playlist:p1')?.count).toBe(3)
       expect(fresh.queues.info('playlist:p1')?.current).toBe('曲目 b')
+      // 顺序队列那两个下标空间是同一个：`第 2 首` 与曲名指的是同一首
+      expect(fresh.queues.info('playlist:p1')?.index).toBe(1)
       await fresh.queues.activate('playlist:p1')
       expect(fresh.player.queue.current?.id).toBe('b')
       // 推荐那档：曲目和听歌模式都在盘上 → 切回来接着上次那一首，且不重新取批
@@ -534,6 +640,33 @@ describe('队列书架：持久化（重启还看得见）', () => {
       expect(fresh.player.queue.current?.id).toBe(recCurrent)
     } finally {
       fresh.dispose()
+    }
+  })
+
+  it('停放着的随机队列：那一行说的是「上次听到的那首」，不是拿播放顺序下标去点加入顺序', async () => {
+    // 随机顺序由 `Math.random` 排：钉住它，保证这两个下标空间确实错位
+    // （不钉的话，本条偶尔摊上一个恒等排列，断言就成了白跑）
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0)
+    try {
+      await core.queues.open({
+        kind: 'liked',
+        id: 'liked',
+        title: '我喜欢的音乐',
+        load: async () => ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'].map(track),
+      })
+      const queue = core.player.queue
+      expect(queue.shuffled).toBe(true)
+      await core.player.next()
+      expect(queue.current?.id).not.toBe(queue.list[queue.index]?.id)
+      const heard = queue.current?.name
+      // 切去别的队列，把「我喜欢」停放下来
+      await core.queues.open({ kind: 'temporary', title: '搜索', items: [track('x')] })
+      const parked = core.queues.info('liked')
+      expect(parked?.current).toBe(heard)
+      // 随机那份索性不报「第 k 首」：那个数属于上一次的重排，切回来还要再排一次
+      expect(parked?.index).toBe(-1)
+    } finally {
+      random.mockRestore()
     }
   })
 
@@ -556,6 +689,54 @@ describe('队列书架：持久化（重启还看得见）', () => {
     const fresh = await reopen()
     try {
       expect(fresh.queues.list()).toHaveLength(0)
+    } finally {
+      fresh.dispose()
+    }
+  })
+
+  it('重启后点一首快照里没有的歌：播的就是这首，不是第一首', async () => {
+    await core.queues.open({
+      kind: 'playlist',
+      id: 'playlist:p9',
+      title: '老歌单',
+      load: async () => ['a', 'b'].map(track),
+    })
+    core.dispose() // flush 把只有 a/b 的快照写回盘
+
+    const fresh = await reopen()
+    try {
+      // 重启后 entry.load 是 undefined、`loaded` 却因为「曲目都在盘上」置了真；
+      // 从歌单页重新点播会带回新的 `load`（这次多了 c）和 startTrackId
+      await fresh.queues.open({
+        kind: 'playlist',
+        id: 'playlist:p9',
+        title: '老歌单',
+        load: async () => ['a', 'b', 'c'].map(track),
+        startTrackId: 'c',
+      })
+      expect(fresh.player.queue.current?.id).toBe('c')
+      expect(fresh.player.queue.list.map((t) => t.id)).toEqual(['a', 'b', 'c'])
+    } finally {
+      fresh.dispose()
+    }
+  })
+
+  it('快照里确实没这首、又没带新的 load：说一句「已从第一首开始」，不静默换歌', async () => {
+    await core.queues.open({
+      kind: 'playlist',
+      id: 'playlist:p8',
+      title: '老歌单',
+      load: async () => ['a', 'b'].map(track),
+    })
+    core.dispose()
+
+    const fresh = await reopen()
+    try {
+      const notes: string[] = []
+      fresh.events.on('queue-note', ({ message }) => notes.push(message))
+      await fresh.queues.open({ kind: 'playlist', id: 'playlist:p8', title: '老歌单', startTrackId: 'zzz' })
+      expect(fresh.player.queue.current?.id).toBe('a')
+      expect(notes.join(' ')).toContain('已从第一首开始')
     } finally {
       fresh.dispose()
     }

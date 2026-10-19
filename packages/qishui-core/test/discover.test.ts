@@ -133,6 +133,17 @@ describe('FeedSongTab 请求口径对齐 App', () => {
     await core.discover.feedSongTab({ withPlayedMedia: false })
     expect(feedBody().played_media).toBeUndefined()
   })
+
+  it('同时进来两次就是两次请求：实时推流不许合流，计数也不许虚增', async () => {
+    mock.resetCalls()
+    await Promise.all([core.discover.feedSongTab(), core.discover.feedSongTab()])
+    const bodies = mock.calls
+      .filter((c) => c.url.includes('/luna/pc/feed/song-tab'))
+      .map((c) => JSON.parse(String(c.body)) as Record<string, any>)
+    // 走 `cache.fetch` 时 pending 去重会把第二次顶成第一批的结果——「再来一批」原样重复六首
+    expect(bodies).toHaveLength(2)
+    expect(bodies.map((b) => b.total_request_count)).toEqual([1, 2])
+  })
 })
 
 describe('radioTracks 请求口径对齐 App', () => {

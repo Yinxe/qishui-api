@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useCore } from '../core/context.js'
 import { useUi } from '../ui/context.js'
 import { truncate } from '../ui/format.js'
-import { contentWidth } from '../ui/layout.js'
+import { contentWidth, listHeight } from '../ui/layout.js'
 import { Pressable, stripMouse, useRowClick, useWheelScroll } from '../ui/mouse.js'
 import { stripReports } from '../ui/reports.js'
 import { COLOR, SELECT_PREFIX } from '../ui/theme.js'
@@ -114,8 +114,13 @@ export function CommentsOverlay({ trackId, title }: { trackId: string; title: st
     ui.push({ kind: 'user', id: author.id, nickname: author.nickname || undefined })
   }
 
+  // 每条固定 3 行（昵称 + 正文 + 空行），可视条数按终端行数推——写死 12 条 = 36 行，
+  // 24 行的终端里页脚那行「Esc 关闭」会被裁到屏外，看着像这个弹层没有退路。
+  const windowSize = Math.max(2, Math.floor(listHeight(ui.rows, 8, 3) / 3))
+
   const { cursor, setCursor } = useCursor(comments?.length ?? 0, {
     active: !editing,
+    pageSize: windowSize,
     onEnter: (index) => openAuthor(index),
     onKey: (input) => {
       if (input === 'p') {
@@ -135,7 +140,6 @@ export function CommentsOverlay({ trackId, title }: { trackId: string; title: st
     if (comments && comments.length > 0 && cursor >= comments.length - 1 && next.hasMore && !loadingMore) loadMore()
   }, [cursor, comments, next.hasMore, loadingMore, loadMore])
 
-  const windowSize = 12
   const start = Math.max(0, Math.min(cursor - 5, Math.max(0, (comments?.length ?? 0) - windowSize)))
   const visible = (comments ?? []).slice(start, start + windowSize)
 

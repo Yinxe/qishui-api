@@ -258,7 +258,11 @@ export class Player {
       this.setStatus('playing')
       return
     }
-    if (this.statusValue === 'idle' || this.statusValue === 'stopped') await this.play(undefined, opts)
+    // `error` 也算「重开」：解析失败后按播放键必须能重试。不然状态卡在 error，
+    // 既不是 paused 也不是 idle/stopped，用户按多少次都没反应（只能显式 play 某首）。
+    if (this.statusValue === 'idle' || this.statusValue === 'stopped' || this.statusValue === 'error') {
+      await this.play(undefined, opts)
+    }
   }
 
   async toggle(opts: PlayOptions = {}): Promise<void> {

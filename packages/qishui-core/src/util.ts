@@ -44,12 +44,37 @@ export async function readJson<T>(file: string): Promise<T | undefined> {
 /**
  * 先写 `.tmp` 再 rename：进程中途挂掉也不会留下半个 JSON（缓存损坏是本项目最不想看到的故障）。
  * mode 用于 session.json 这类含凭据的文件（0600）。
+ *
+ * 同一进程内并发写同一个文件要在这一层排队：tmp 名过去只带 pid，两次并发 `writeFile`
+ * 会写进同一条 `.tmp`，输家的 `rename` 必然 ENOENT（12 路并发实测挂 11 路）——
+ * `queues.json` / `local/library.json` / 曲目 `meta.json` 都会被上层并发触发。
  */
-export async function writeJsonAtomic(file: string, data: unknown, mode?: number): Promise<void> {
+let tmpSeq = 0
+const pendingWrites = new Map<string, Promise<void>>()
+
+async function writeJsonOnce(file: string, data: unknown, mode?: number): Promise<void> {
   await ensureDir(path.dirname(file))
-  const tmp = `${file}.tmp-${process.pid}`
-  await fsp.writeFile(tmp, JSON.stringify(data, null, 2), mode ? { mode } : undefined)
-  await fsp.rename(tmp, file)
+  const tmp = `${file}.tmp-${process.pid}-${++tmpSeq}`
+  try {
+    await fsp.writeFile(tmp, JSON.stringify(data, null, 2), mode ? { mode } : undefined)
+    await fsp.rename(tmp, file)
+  } catch (err) {
+    await fsp.rm(tmp, { force: true }).catch(() => {})
+    throw err
+  }
+}
+
+export function writeJsonAtomic(file: string, data: unknown, mode?: number): Promise<void> {
+  const prev = pendingWrites.get(file) ?? Promise.resolve()
+  // 前一次失败不能把整条链卡住，所以排队时先清掉前一个的结果
+  const run = prev.then(
+    () => writeJsonOnce(file, data, mode),
+    () => writeJsonOnce(file, data, mode),
+  )
+  pendingWrites.set(file, run)
+  return run.finally(() => {
+    if (pendingWrites.get(file) === run) pendingWrites.delete(file)
+  })
 }
 
 export async function appendLine(file: string, line: string): Promise<void> {

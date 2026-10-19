@@ -9,8 +9,8 @@
  */
 import type { Command } from 'commander'
 import type { DiscoverInner, FeedModeView, HomeView } from 'qishui-core'
-import { CliError, core } from '../context.js'
-import { bold, cyan, dim, emit, heading, print, printTable, yellow } from '../output.js'
+import { CliError, core, parseCount } from '../context.js'
+import { bold, cyan, dim, emit, heading, print, printTable, withIdColumn, yellow } from '../output.js'
 import { printPlaylistList, printTrackList } from '../render.js'
 
 /** 首页内部条目：榜单块 `discover_track_top_list`、场景队列 `discover_radio`、歌单推荐 `discover_playlist`… */
@@ -155,7 +155,7 @@ function addChart(cmd: Command): void {
         return
       }
       const chart = await instance.catalog.chart(chartId, opts)
-      const limit = Math.max(1, Number(opts.limit) || 50)
+      const limit = parseCount(opts.limit, '--limit', { fallback: 50, max: 1000 })
       const ranks = chart.ranked.slice(0, limit)
       const extra = chart.toJSON()
       emit(
@@ -170,8 +170,9 @@ function addChart(cmd: Command): void {
               .filter(Boolean)
               .join('  '),
           )
-          printTable(
-            ['名次', '变化', '曲目', '歌手', 'id'],
+          // id 列必须走 `withIdColumn`：写死在表头里就关不掉，`--no-id` 形同虚设
+          const columns = withIdColumn(
+            ['名次', '变化', '曲目', '歌手'],
             ranks.map((rank) => [
               String(rank.rank ?? ''),
               `${rank.trend ?? ''}${rank.delta ? ` ${rank.delta}` : ''}`.trim(),
@@ -180,10 +181,10 @@ function addChart(cmd: Command): void {
                 .map((artist) => artist.name)
                 .filter(Boolean)
                 .join(' / '),
-              rank.track.id,
             ]),
-            { right: [0] },
+            ranks.map((rank) => rank.track.id),
           )
+          printTable(columns.headers, columns.rows, { right: [0] })
         },
         { chart, ranks },
       )
@@ -237,13 +238,15 @@ function addRadio(cmd: Command): void {
           triggerInfo: opts.triggerInfo,
           refresh: opts.refresh,
         })
-        const limit = Math.max(1, Number(opts.limit) || 20)
+        const limit = parseCount(opts.limit, '--limit', { fallback: 20, max: 500 })
+        // 一份数据两条出路：`--limit` 截出来的那一截同时给人看和进 JSON，别只截人读的那份
+        const shown = tracks.slice(0, limit)
         emit(
           () => {
             heading(`电台 ${radioId}`)
-            printTrackList(tracks.slice(0, limit))
+            printTrackList(shown)
           },
-          { radioId, tracks },
+          { radioId, tracks: shown, totalTracks: tracks.length },
         )
       },
     )
@@ -282,15 +285,16 @@ function addScene(cmd: Command): void {
       }
       const tracks = await instance.discover.feedModeTracks(
         { kind: 'scene', sceneModeId: id },
-        { count: opts.count ? Number(opts.count) : undefined },
+        { count: parseCount(opts.count, '--count', { max: 50 }) },
       )
-      const limit = Math.max(1, Number(opts.limit) || 20)
+      const limit = parseCount(opts.limit, '--limit', { fallback: 20, max: 500 })
+      const shown = tracks.slice(0, limit)
       emit(
         () => {
           heading(`场景 ${sceneModeId}`)
-          printTrackList(tracks.slice(0, limit))
+          printTrackList(shown)
         },
-        { sceneModeId: id, tracks },
+        { sceneModeId: id, tracks: shown, totalTracks: tracks.length },
       )
     })
 }
@@ -320,7 +324,7 @@ function addFeed(cmd: Command): void {
       const preferenceMode = mode === 'default' ? undefined : mode
       const tracks = await instance.discover.feedSongTab({
         preferenceMode,
-        count: opts.count ? Number(opts.count) : undefined,
+        count: parseCount(opts.count, '--count', { max: 50 }),
         withPlayedMedia: opts.played,
         excludePlayed: what === 'played' || what === 'both',
         excludeLiked: what === 'liked' || what === 'both',
@@ -355,7 +359,8 @@ function addSquare(cmd: Command): void {
         categoryId: opts.category,
         refresh: opts.refresh,
       })
-      const limit = Math.max(1, Number(opts.limit) || 20)
+      const limit = parseCount(opts.limit, '--limit', { fallback: 20, max: 1000 })
+      const shown = playlists.slice(0, limit)
       emit(
         () => {
           heading('歌单广场')
@@ -372,9 +377,9 @@ function addSquare(cmd: Command): void {
                   .join(dim(' · ')),
             )
           }
-          printPlaylistList(playlists.slice(0, limit))
+          printPlaylistList(shown)
         },
-        { categoryId: opts.category ?? '', categories, playlists },
+        { categoryId: opts.category ?? '', categories, playlists: shown, totalPlaylists: playlists.length },
       )
     })
 }
@@ -416,7 +421,7 @@ function addMix(cmd: Command): void {
     .action(async (blockType: string, subChannelId: string | undefined, opts: { limit: string; refresh?: boolean }) => {
       const instance = await core()
       const inners = await instance.discover.mix({ blockType, subChannelId, refresh: opts.refresh })
-      const limit = Math.max(1, Number(opts.limit) || 20)
+      const limit = parseCount(opts.limit, '--limit', { fallback: 20, max: 1000 })
       const entries = toEntries(inners, blockType).slice(0, limit)
       emit(
         () => {

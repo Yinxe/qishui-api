@@ -447,7 +447,9 @@ async function buildCover(
       const out = await runChafa(['--format', 'kitty', '--stretch', '--size', size, '-'], bytes)
       const parsed = parseKittyOutput(out)
       if (!parsed) return undefined
-      const id = coverId(url)
+      // id 必须和缓存键同一身份：本地封面走 `loadBytes` 时 `url` 是空串，全部塌成 `coverId('')`
+      // 一张图——详情页与听歌页互相盖，卸载把另一张也擦了。
+      const id = coverId(opts.key ?? url)
       return {
         kind: 'kitty',
         id,

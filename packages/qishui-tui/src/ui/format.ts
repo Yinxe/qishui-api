@@ -12,19 +12,29 @@ export function formatClock(ms: number): string {
   return formatDuration(ms)
 }
 
-/** 按「显示宽度」粗略截断（CJK 按 2 计），超出加 `…` */
+/**
+ * 按「显示宽度」截断（CJK 按 2 计），放不下才补 `…`。
+ * 以前拿 `width - 1` 比，正好等宽的串也会被砍掉最后一个真字换成省略号——
+ * 曲名/队列行/播放条全都白丢一个字。
+ */
 export function truncate(input: string, width: number): string {
   if (width <= 0) return ''
   const chars = [...input]
   let used = 0
-  let out = ''
+  let taken = 0
   for (const ch of chars) {
     const w = isWide(ch) ? 2 : 1
-    if (used + w > width - 1) return `${out}…`
-    out += ch
+    if (used + w > width) break
     used += w
+    taken++
   }
-  return out
+  if (taken === chars.length) return input
+  // 还有字放不下：末列要留给 `…`（占 1 列），所以退到真的腾得出那一列为止
+  while (taken > 0 && used >= width) {
+    used -= isWide(chars[taken - 1]) ? 2 : 1
+    taken--
+  }
+  return `${chars.slice(0, taken).join('')}…`
 }
 
 export function displayWidth(input: string): number {

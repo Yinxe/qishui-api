@@ -171,7 +171,7 @@ describe('media：试听片段', () => {
     }
   })
 
-  it('v1 命中只重取一次媒体补片段信息，不重下音频；meta 升到 v2', async () => {
+  it('v1 命中只重取一次媒体补片段信息，不重下音频；meta 升到当前版本', async () => {
     const v1Home = makeTempDir('qishui-media-v1-')
     try {
       const clip = createMockUpstream({ clip: { startSec: 3, durationSec: 5 } })
@@ -188,11 +188,55 @@ describe('media：试听片段', () => {
       expect(clip.count()).toBe(1) // 只有取址那一次
       expect(clip.calls[0]?.url).toContain('/luna/h5/track_v2')
       expect(clip.calls[0]?.url).toContain('device_platform=web')
-      expect(upgraded.v).toBe(2)
+      expect(upgraded.v).toBe(3)
       expect(upgraded.track.playableRange).toEqual({ startMs: 3000, durationMs: 5000 })
       core2.dispose()
     } finally {
       rmDir(v1Home)
+    }
+  })
+
+  it('试听片段缓存不算命中：每次都重取址（不然登录之后还是 30 秒）', async () => {
+    const clipHome = makeTempDir('qishui-media-cliprepeat-')
+    try {
+      const clip = createMockUpstream({ clip: { startSec: 3, durationSec: 5 } })
+      const core2 = await createQishui({ dataDir: clipHome, device: MOCK_DEVICE, fetchImpl: clip.fetchImpl })
+      await core2.media.ensure(TRACK)
+      clip.resetCalls()
+      const again = await core2.media.ensure(TRACK)
+      expect(again.clip).toBe(true)
+      expect(clip.count()).toBeGreaterThan(0)
+      core2.dispose()
+    } finally {
+      rmDir(clipHome)
+    }
+  })
+
+  it('片段缓存遇到整首（登录/开了会员）会重下整首、清掉 clip 与 playableRange', async () => {
+    const home2 = makeTempDir('qishui-media-clipupgrade-')
+    try {
+      const clipMock = createMockUpstream({ clip: { startSec: 3, durationSec: 5 }, audioSize: 2048 })
+      const coreA = await createQishui({ dataDir: home2, device: MOCK_DEVICE, fetchImpl: clipMock.fetchImpl })
+      const clipped = await coreA.media.ensure(TRACK)
+      expect(clipped.clip).toBe(true)
+      const clipFile = path.join(coreA.media.dirOf(TRACK), clipped.audio.file)
+      expect(fs.statSync(clipFile).size).toBe(2048)
+      coreA.dispose()
+
+      // 换一个有权益的上游：同样曲目、不给 offset、整首更大
+      const fullMock = createMockUpstream({ audioSize: 6000 })
+      const coreB = await createQishui({ dataDir: home2, device: MOCK_DEVICE, fetchImpl: fullMock.fetchImpl })
+      const upgraded2 = await coreB.media.ensure(TRACK)
+      expect(upgraded2.clip).toBeUndefined()
+      expect(upgraded2.track.playableRange).toBeUndefined()
+      expect(fs.statSync(clipFile).size).toBe(6000)
+      // 之后才算完整命中
+      fullMock.resetCalls()
+      await coreB.media.ensure(TRACK)
+      expect(fullMock.count()).toBe(0)
+      coreB.dispose()
+    } finally {
+      rmDir(home2)
     }
   })
 

@@ -507,13 +507,15 @@ interface LikeCoreOptions {
   liked?: string[]
   isLiked?: () => Promise<boolean>
   localLiked?: boolean
+  /** 写接口慢这几毫秒（造「两次快按叠在一起」那个窗口） */
+  delayMs?: number
 }
 
 function makeLikeCore(opts: LikeCoreOptions = {}) {
   const calls: string[] = []
   const write = (label: string) => () => {
     calls.push(label)
-    return Promise.resolve()
+    return opts.delayMs ? new Promise((resolve) => setTimeout(resolve, opts.delayMs)) : Promise.resolve()
   }
   let localReads = 0
   const core = {
@@ -591,6 +593,21 @@ it('toggleTrackLike（云端）：已喜欢走 unlike、未喜欢走 like，成�
   await toggleTrackLike({ ui: b.ui, core: marked.core, track: markedTrack })
   expect(marked.calls).toEqual([`unlike:${T1}`])
   expect(markedTrack.data.state?.isCollected).toBe(false)
+})
+
+it('同一首连按两次「喜欢」：第二下等第一下写完 —— 按两下就该是取消，不是又喜欢一次', async () => {
+  // 写接口慢 40ms：两下都在这一次还没写完时进来。老做法两次读到的都是「按之前」的水印，
+  // 于是两下都算「加入」（上游那条写接口幂等，坏的不是数据，是「我以为第二下取消了」）
+  const slow = makeLikeCore({ liked: [], delayMs: 40 })
+  const track = trackLikeOf(trackData(T1))
+  const ui = makeLikeUi()
+  await Promise.all([
+    toggleTrackLike({ ui: ui.ui, core: slow.core, track }),
+    toggleTrackLike({ ui: ui.ui, core: slow.core, track }),
+  ])
+  expect(slow.calls).toEqual([`like:${T1}`, `unlike:${T1}`])
+  expect(track.data.state?.isCollected).toBe(false)
+  expect(ui.toast.mock.calls.map((call) => call[1])).toEqual(['success', 'info'])
 })
 
 it('toggleTrackLike：未登录只提示不动写接口；本地文件走本地库、不需要登录', async () => {

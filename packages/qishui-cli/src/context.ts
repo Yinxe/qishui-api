@@ -45,6 +45,51 @@ export class CliError extends Error {
   }
 }
 
+/**
+ * 数字型选项统一过这一关：`--count abc` / `--pages 0` / `--interval 1e9` 过去会原样
+ * 变成 `NaN` 发给上游（或把轮询间隔算成 `NaN` → 贴 CPU 空转），现在当场报错并给出可用写法。
+ * 给了 `fallback` 就绝不会返回 `undefined`（没传值时返回它）；不给则「没传」= `undefined`，让上游用自己的默认量。
+ */
+export function parseCount(
+  value: string | undefined,
+  name: string,
+  opts: { fallback: number; min?: number; max?: number },
+): number
+export function parseCount(
+  value: string | undefined,
+  name: string,
+  opts?: { min?: number; max?: number },
+): number | undefined
+export function parseCount(
+  value: string | undefined,
+  name: string,
+  opts: { fallback?: number; min?: number; max?: number } = {},
+): number | undefined {
+  if (value === undefined || value.trim() === '') {
+    return opts.fallback
+  }
+  const n = Number(value)
+  const min = opts.min ?? 1
+  const max = opts.max ?? 1000
+  if (!Number.isSafeInteger(n) || n < min || n > max) {
+    throw new CliError(`${name} 要给 ${min}–${max} 之间的整数，收到 ${value}`, `例：${name} ${opts.fallback ?? min}`)
+  }
+  return n
+}
+
+/**
+ * `--volume`：0–100 的百分数，归一成 0–1（mpv 与 core 都用小数）。
+ * 不给值就用默认音量（`fallback`，一律满格），空串按「没给」处理。
+ */
+export function parseVolume(value: string | undefined, name = '--volume', fallback = 1): number {
+  if (value === undefined || value.trim() === '') return fallback
+  const percent = Number(value)
+  if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
+    throw new CliError(`${name} 要给 0–100 的数字，收到 ${value}`, `例：${name} 60`)
+  }
+  return Math.max(0, Math.min(1, percent / 100))
+}
+
 export function setGlobals(next: Partial<Globals>): void {
   Object.assign(state, next)
   setColor(state.color)

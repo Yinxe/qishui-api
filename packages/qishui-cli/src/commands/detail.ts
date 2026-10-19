@@ -6,7 +6,7 @@
  */
 import type { Command } from 'commander'
 import type { Comment } from 'qishui-core'
-import { assertLoggedIn, CliError, core, describeError } from '../context.js'
+import { assertLoggedIn, CliError, core, describeError, parseCount } from '../context.js'
 import { ago, commentLine, count, duration, until, userLine } from '../format.js'
 import {
   dim,
@@ -160,7 +160,7 @@ export function registerDetailCommands(program: Command): void {
     .option('--pages <n>', '翻几页（每页 20 条）', '1')
     .action(async (commentId: string, opts: { track: string; pages: string }) => {
       const instance = await core()
-      const pages = Math.max(1, Number(opts.pages) || 1)
+      const pages = parseCount(opts.pages, '--pages', { fallback: 1, max: 50 })
       const items = await collectPages(async (cursor) => {
         const page = await instance.comments.replies(commentId, {
           cursor: cursor === undefined ? 0 : Number(cursor),
@@ -188,7 +188,7 @@ export function registerDetailCommands(program: Command): void {
     .option('--refresh', '绕过 6 小时缓存')
     .action(async (id: string, opts: { tracks?: boolean; albums?: boolean; limit: string; refresh?: boolean }) => {
       const instance = await core()
-      const limit = Math.max(1, Number(opts.limit) || 20)
+      const limit = parseCount(opts.limit, '--limit', { fallback: 20, max: 1000 })
       const artist = await instance.catalog.artist(id, opts)
       const data = artist.toJSON()
       const tracks = opts.tracks ? await instance.catalog.artistHotTracks(id) : undefined
@@ -225,7 +225,7 @@ export function registerDetailCommands(program: Command): void {
     .option('--refresh', '绕过 6 小时缓存')
     .action(async (id: string, opts: { tracks?: boolean; count: string; refresh?: boolean }) => {
       const instance = await core()
-      const limitCount = Math.max(1, Number(opts.count) || 50)
+      const limitCount = parseCount(opts.count, '--count', { fallback: 50, max: 200 })
       const playlist = await instance.catalog.playlist(id, opts)
       const data = playlist.toJSON()
       const page = await instance.catalog.playlistTracks(id, { count: limitCount })
@@ -281,8 +281,8 @@ export function registerDetailCommands(program: Command): void {
         )
         return
       }
-      const count = Math.max(1, Number(opts.count) || 20)
-      const pages = Math.max(1, Number(opts.pages) || 1)
+      const count = parseCount(opts.count, '--count', { fallback: 20, max: 200 })
+      const pages = parseCount(opts.pages, '--pages', { fallback: 1, max: 50 })
       const items = await collectPages(async (cursor) => {
         const page = await instance.comments.list(trackId, {
           count,

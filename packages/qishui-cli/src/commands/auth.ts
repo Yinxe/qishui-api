@@ -6,7 +6,7 @@
  * 单命令临时换号用全局 `--as`。
  */
 import type { Command } from 'commander'
-import { CliError, core, describeError, globals } from '../context.js'
+import { CliError, core, describeError, globals, parseCount } from '../context.js'
 import { ago, count, membershipLine, until, userLine } from '../format.js'
 import { qrHint, qrImageHint, renderQr } from '../loginQr.js'
 import { dim, emit, green, heading, isJsonMode, print, printKeyValues, printTable, warn, yellow } from '../output.js'
@@ -24,8 +24,12 @@ export function registerAuthCommands(program: Command): void {
       async (opts: { timeout: string; interval: string; profile: boolean; force?: boolean; keepActive?: boolean }) => {
         const instance = await core()
 
-        const intervalMs = Math.max(500, Number(opts.interval) * 1000)
-        const timeoutMs = Math.max(intervalMs, Number(opts.timeout) * 1000)
+        // 秒数要显式收口：`Math.max(500, Number('abc') * 1000)` 得到的是 NaN，
+        // 传进轮询循环就等于「没有间隔」——二维码页会贴 CPU 猛打上游。
+        const intervalSec = parseCount(opts.interval, '--interval', { fallback: 2, min: 1, max: 60 })
+        const timeoutSec = parseCount(opts.timeout, '--timeout', { fallback: 180, min: 5, max: 3600 })
+        const intervalMs = Math.max(500, intervalSec * 1000)
+        const timeoutMs = Math.max(intervalMs, timeoutSec * 1000)
         const login = await instance.login({
           intervalMs,
           timeoutMs,
@@ -57,6 +61,14 @@ export function registerAuthCommands(program: Command): void {
               ['设备号', snapshot.deviceId],
               ['账号文件', snapshot.uid ? `${snapshot.dataDir}/accounts/${snapshot.uid}.json` : undefined],
               ['账号数', snapshot.accountCount ? `${snapshot.accountCount} 个已入库` : undefined],
+              // 上面那几行说的是**现在还在用**的那一号：`--keep-active` 时新号只入了库，
+              // 不说一句会让人以为扫的那个已经切过来了
+              [
+                '说明',
+                opts.keepActive
+                  ? '新号已入库，激活号未变（`qishui accounts` 看清单，`qishui use <昵称|uid>` 切过去）'
+                  : undefined,
+              ],
             ])
           },
           { status, loggedIn: ok, session: snapshot, scanUrl: login.scanUrl, qrImage: login.qrImage },

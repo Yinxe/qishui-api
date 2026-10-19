@@ -387,6 +387,8 @@ qishui.events.on('queue-note', ({ message, kind }) => toast(message, kind))    /
 - `peek(id)` / `has(id)`：**纯读盘，零网络**（所以「命中缓存不再发 url 请求」是硬保证，单测里有断言）。
 - `ensure(track)`：完整命中直接返回；缺音频/歌词/封面才去取址补齐（先 h5 `/luna/h5/track_v2`，它失败再落分享页 SSR，两边各为什么不通会一起写进错误里）。
 - 音频下载用 `.part` + `Range: bytes=N-` **断点续传**（回 200 就重下），下完用 `content-range` 的总长核对再 rename。
+- **试听片段不算命中**（`meta.json` 的 `v: 3` 起有 `clip` 字段）：媒体缓存跨账号共享，匿名时那 30 秒不记下来，登录后就会一直被当成整首（文件尺寸对得上，`peek` 永远命中）。所以 `clip: true` 每次重取址；「上次是片段、这次上游给整首」强制重下（先删掉片段留下的 `.part`——偏移量对不上，续上去就是坏文件），并把 meta 里的 `playableRange` 一并剥掉。老缓存（v1/v2）没这字段，一律重判一次、只重取媒体不重下音频。
+- 同一曲目的 `meta.json`「读-改-写」按 trackId 排队（`withMetaLock`）：`recordPlay` 的计数要在**读之前**就锁上，光靠 `writeJsonAtomic` 排写入还是会丢计数。`writeJsonAtomic` 自身也在同一路径上串一条 promise 链（tmp 名带进程内序号）——并发写同一个文件时输家的 `rename` 从前必然 `ENOENT`。
 - `stats()` / `list()` / `verify({fix})` / `prune({maxBytes, maxAgeMs, policy, keep})` / `clear()` / `evict(id)`。
 - `capacity()`：**这一条只算不删**——真实占用 `usedBytes`、生效上限 `limitBytes`、`percent`（不限制时不给）、
   `overLimit`，再加「按当前策略清到上限要剔几首、能释放多少」（`reclaimableTracks` / `reclaimableBytes`）。

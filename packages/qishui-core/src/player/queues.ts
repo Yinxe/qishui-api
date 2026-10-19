@@ -57,7 +57,7 @@ export interface QueueInfo {
   title: string
   /** 这份队列里现在有几首 */
   count: number
-  /** 播放顺序里的当前位（-1 = 还没定位） */
+  /** 播放顺序里的当前位（-1 = 还没定位；停放着的随机队列也报 -1，顺序重排过对不上） */
   index: number
   /** 当前（或停放在这个位置）的曲目名：书架与听歌页用来说「上次听到哪首」 */
   current?: string
@@ -187,13 +187,20 @@ export class QueueBook {
   private readonly entries = new Map<string, Entry>()
   private activeId?: string
   /**
-   * 播放器里现在装的到底是哪一份（`activate()` 走完 `playList` 才更新）。
-   * 换队列时 `activeId` 先变、曲目还在 await 里取，那段时间播放器里仍是**上一份**的队列 ——
-   * 落盘/停放都要按这个字段核对，才不至于把旧队列的曲位置和 `resumeId` 记到新队列头上。
+   * 播放器里现在装的到底是哪一份（`activateNow()` 走完 `playList` 才更新）。
+   * 换队列取数的那段 await 里播放器仍是**上一份**的队列 —— 落盘/停放都要按这个字段核对，
+   * 才不至于把旧队列的曲位置和 `resumeId` 记到新队列头上。
    */
   private liveId?: string
   /** 本类自己在动播放器队列时置位：`queue` 事件会把自己再叫一遍（换队列时装回去那一下不算用户动作） */
   private applying = false
+  /**
+   * 切换队列的串行链：两次快按并发跑，各自的 `fill`/`playList` 会交错 ——
+   * 播放器里最后装的是哪一份就不定了（`liveId` 也只认最后一次）。
+   */
+  private activateChain: Promise<unknown> = Promise.resolve()
+  /** 用户**最新**点的那一份（同步记下，不等链）：排在后面慢慢取数的那次被顶掉就不必再往播放器里装 */
+  private wantedId?: string
   /** 互斥：一批还在取的时候不再取第二批 */
   private refillPending = false
   /** 换队列后作废在途请求：慢回来的那批不能落进队列 */
@@ -214,6 +221,7 @@ export class QueueBook {
     this.entries.clear()
     this.activeId = undefined
     this.liveId = undefined
+    this.wantedId = undefined
     this.seq = 0
     this.refillGen += 1
     this.refillPending = false
@@ -312,18 +320,32 @@ export class QueueBook {
       .sort((a, b) => b.usedAt - a.usedAt)
       .map((entry) => {
         const active = entry.id === this.activeId
+        const parked = active ? undefined : this.parkedAt(entry)
         return {
           id: entry.id,
           kind: entry.kind,
           title: entry.title,
           count: active ? live.length : entry.items.length,
-          index: active ? live.index : entry.index,
-          current: active ? live.current?.name : entry.items[entry.index]?.name,
+          index: active ? live.index : (parked?.index ?? -1),
+          current: active ? live.current?.name : parked?.name,
           active,
           // 只有「在播的那份推荐队列」才会真的续批（停放中的补不了）
           refilling: active && entry.kind === 'recommend' && Boolean(entry.feed),
         }
       })
+  }
+
+  /**
+   * 停放那一份「上次听到哪一首」落在哪儿：认曲目得用 `resumeId` —— `entry.index` 是**播放顺序**
+   * 下标，而随机顺序不落盘（存的是加入顺序的 `items`），拿它去指 `items` 会指着另一首歌：
+   * 现象就是「我喜欢的音乐」那一行的曲名，跟点开前一次听的那首根本不是一个。
+   * 随机那份索性不报位置（切回来还要重排，那个数到了那时候也不作数），只报曲名。
+   */
+  private parkedAt(entry: Entry): { index: number; name?: string } {
+    const at = entry.resumeId ? entry.items.findIndex((item) => item.id === entry.resumeId) : -1
+    if (entry.shuffle) return { index: -1, name: at < 0 ? undefined : entry.items[at].name }
+    const position = at < 0 ? entry.index : at
+    return { index: position, name: entry.items[position]?.name }
   }
 
   info(id: string): QueueInfo | undefined {
@@ -368,6 +390,13 @@ export class QueueBook {
       if (opts.load) entry.load = opts.load
       if (opts.feed) entry.feed = opts.feed
       if (opts.shuffle !== undefined) entry.shuffle = opts.shuffle
+      // 重启后这份是**盘上的快照**（`hydrate` 里 `loaded` 直接置真、`load` 是回调进不了 JSON）：
+      // 这次点歌既带来了新的 `load`，要播的那首又不在快照里，就必须回源重取——
+      // 否则 `activate` 拿旧列表去 `setItemsAt`，找不到会**静默落到第 0 首**，
+      // 现象是「在这张歌单点《X》、响起来的是第一首」，且新歌永远进不了队列。
+      if (opts.load && opts.startTrackId && !entry.items.some((t) => t.id === opts.startTrackId)) {
+        entry.loaded = false
+      }
     }
 
     if (opts.kind === 'temporary') {
@@ -396,18 +425,32 @@ export class QueueBook {
     return this.info(id)
   }
 
-  /** 切到某份队列（换出去的那份存好位置，换回来的那份接着上次那一首） */
+  /**
+   * 切到某份队列（换出去的那份存好位置，换回来的那份接着上次那一首）。
+   * **按点的先后串起来跑**：两次快按并发跑时各自的 `fill`/`playList` 会交错，
+   * 播放器里最后装的是哪一份就不定了 —— 现象是「连点两行，响的是先点那行的第一批曲目、
+   * 书架上打勾的却是后点的」。
+   */
   async activate(id: string, startTrackId?: string): Promise<void> {
     const entry = this.entries.get(id)
     if (!entry) throw new Error(`没有这个播放队列：${id}`)
-    const player = this.core.player
-    if (this.activeId && this.activeId !== id) this.park(this.activeId)
-    this.activeId = id
-    // 记一笔「刚刚用过」：书架满了淘汰最久没用的那份时，它就是最新的
+    // 点过就算「最近使用」（哪怕这一次被后点的那份顶掉、没装进播放器）：淘汰看的是这一笔
     entry.usedAt = ++this.seq
-    // 换队列 = 换一条流：在途的那批推荐不算数了
-    this.refillGen += 1
-    this.refillPending = false
+    this.wantedId = id
+    const step = this.activateChain.then(
+      () => this.activateNow(id, startTrackId),
+      () => this.activateNow(id, startTrackId),
+    )
+    // 链上只留「这一格跑完了」：前一份取数失败不该把后一份一起带走
+    this.activateChain = step.catch(() => undefined)
+    await step
+  }
+
+  private async activateNow(id: string, startTrackId?: string): Promise<void> {
+    let entry = this.entries.get(id)
+    // 排队的这会儿被删掉 / 换号清空（`wantedId` 也随之没了）：这一格作废
+    if (!entry || this.wantedId !== id) return
+    const player = this.core.player
     if (!entry.loaded) {
       try {
         await this.fill(entry)
@@ -416,6 +459,17 @@ export class QueueBook {
         this.note(`队列没取到曲目（${err instanceof Error ? err.message : String(err)}）`, 'error')
       }
     }
+    // 重新认一次：取数 await 里书架可能被动过（`reset`/`remove`/`evictOverflow`）
+    entry = this.entries.get(id)
+    if (!entry) return
+    // 等待期间用户又点了一份：这一份就别再往播放器里装了 —— `activeId`/`liveId` 都不动，
+    // 播放器里还是它原本那一份，位置也照旧记在原本那份头上，否则后点的会被这份的位置污染
+    if (this.wantedId !== id) return
+    if (this.activeId && this.activeId !== id) this.park(this.activeId)
+    this.activeId = id
+    // 换队列 = 换一条流：在途的那批推荐不算数了
+    this.refillGen += 1
+    this.refillPending = false
     if (!entry.items.length) {
       this.liveId = undefined
       player.stop()
@@ -423,6 +477,10 @@ export class QueueBook {
       return
     }
     const start = startTrackId ?? entry.resumeId ?? entry.items[Math.max(0, entry.index)]?.id ?? entry.items[0].id
+    // 点名要播的那首不在队里：别学 `setItemsAt` 静默从第 0 首开始（那样「点了 X、响的是 A」根本无从发现）
+    if (startTrackId && !entry.items.some((t) => t.id === startTrackId)) {
+      this.note(`这首不在这份队列里，已从第一首开始`, 'error')
+    }
     this.applying = true
     try {
       await player.playList(entry.items, start)
@@ -472,6 +530,7 @@ export class QueueBook {
     this.entries.clear()
     this.activeId = undefined
     this.liveId = undefined
+    this.wantedId = undefined
     this.seq = 0
     this.refillGen += 1
     this.refillPending = false

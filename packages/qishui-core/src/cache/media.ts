@@ -25,12 +25,18 @@ export interface CachedAudio {
 }
 
 export interface CachedMediaMeta {
-  v: 1 | 2
+  v: 1 | 2 | 3
   trackId: string
   track: TrackData
   audio: CachedAudio
   lyrics?: { file: string; lines: number; lyricType?: string; fetchedAt: number }
   cover?: { file: string; bytes: number; fetchedAt: number }
+  /**
+   * 落盘的音频**只是试听片段**（匿名/无权益时拿到的那 30 秒）。
+   * 媒体缓存是跨账号共享的，不记这个就会「匿名时下了试听，登录后一直播 30 秒」——
+   * 文件尺寸对得上，`peek` 永远算完整命中。
+   */
+  clip?: boolean
   fetchedAt: number
   /** LRU 依据（prune 按它剔） */
   accessedAt: number
@@ -128,9 +134,10 @@ const MIME_EXT: Record<string, string> = {
 
 /**
  * media.json 版本：v1 没记试听片段（`playableRange`），读到 v1 命中时重拉一次分享页
- * 补片段信息（音频文件继续用，不重下），之后就升到 v2。
+ * 补片段信息（音频文件继续用，不重下）；v3 起把「这份音频只是试听」记成 `clip` 字段，
+ * 这样匿名时下的 30 秒片段在登录后会被重取、换成整首（v2 没这字段，一律重判一次）。
  */
-const META_VERSION = 2
+const META_VERSION = 3
 
 /**
  * 本地媒体缓存：一首曲目一个目录，装音频 + 歌词 + 封面 + meta.json。
@@ -144,6 +151,7 @@ const META_VERSION = 2
  */
 export class MediaCache {
   private touched = new Map<string, number>()
+  private metaChains = new Map<string, Promise<unknown>>()
 
   constructor(
     private paths: CorePaths,
@@ -193,10 +201,11 @@ export class MediaCache {
     let oldest: number | undefined
     let totalPlays = 0
     for (const meta of all) {
-      audioBytes += meta.audio.bytes
+      // readMeta 只保证 `audio.file` 在，老/手改的 meta 可能没 `bytes`——不兜 0 会把整统计加成 NaN
+      audioBytes += meta.audio.bytes ?? 0
       coverBytes += meta.cover?.bytes ?? 0
       if (meta.lyrics) withLyrics++
-      totalPlays += meta.plays
+      totalPlays += meta.plays ?? 0
       if (oldest === undefined || meta.accessedAt < oldest) oldest = meta.accessedAt
     }
     return { tracks: all.length, audioBytes, coverBytes, withLyrics, oldestAccessedAt: oldest, totalPlays, diskBytes }
@@ -285,11 +294,12 @@ export class MediaCache {
 
     if (!opts.refresh) {
       const hit = await this.peek(id)
-      if (hit && hit.v >= META_VERSION) {
+      // 存的是试听片段就不算命中：媒体缓存跨账号共享，匿名那会儿下的 30 秒会在登录后继续被当成整首
+      if (hit && hit.v >= META_VERSION && !hit.clip) {
         this.logger(`[media] 命中缓存 ${id}（${formatBytes(hit.audio.bytes)}）`)
         return await this.touch(hit)
       }
-      // 命中 v1 老缓存：音频还在，只重取一次媒体补试听片段信息（不重下音频）
+      // 命中 v1/v2 老缓存：音频还在，只重取一次媒体补试听片段信息（不重下音频）
     }
 
     const previous = await this.readMeta(id)
@@ -298,11 +308,18 @@ export class MediaCache {
 
     const mime = share.mime_type
     const audioName = resolveAudioName(previous, mime)
-    const needAudio = previous ? !(await this.audioReady(previous)) || previous.audio.file !== audioName : true
+    const nowClip = clipOf(share) !== undefined
+    // 上次是片段、这次给整首：文件尺寸是「整首」对不上「片段」的，但 `audioReady` 只比对自己记的
+    // 字节数，会误判成可用——必须强制重下，否则 meta 记着非片段、放的还是那 30 秒。
+    const upgradingFromClip = previous?.clip === true && !nowClip
+    const needAudio =
+      upgradingFromClip || (previous ? !(await this.audioReady(previous)) || previous.audio.file !== audioName : true)
 
     let audio: CachedAudio = previous?.audio ?? { file: audioName, bytes: 0, fetchedAt: Date.now() }
     if (needAudio) {
       const target = path.join(dir, audioName)
+      // 试听片段留下的半截 `.part` 不能拿来续传整首：偏移量对不上，续上去就是坏文件
+      if (upgradingFromClip) await removeQuiet(`${target}.part`)
       const result = await this.downloadAudio(share.play_url, target, opts)
       audio = {
         file: path.basename(target),
@@ -340,13 +357,16 @@ export class MediaCache {
       cover = bytes ? { file: 'cover.jpg', bytes, fetchedAt: Date.now() } : undefined
     }
 
+    const merged = mergeTrack(track, share)
     const meta: CachedMediaMeta = {
       v: META_VERSION,
       trackId: id,
-      track: mergeTrack(track, share),
+      // 这次上游没给片段就是整首，别把调用方传进来的旧 `playableRange`（上次试听留下的）带下去
+      track: nowClip ? merged : { ...merged, playableRange: undefined },
       audio,
       lyrics,
       cover,
+      clip: nowClip || undefined,
       fetchedAt: Date.now(),
       accessedAt: Date.now(),
       plays: previous?.plays ?? 0,
@@ -423,12 +443,15 @@ export class MediaCache {
 
   /** 播放器用：记一次播放（纯本地计数 + 访问时间），顺带带回 meta */
   async recordPlay(trackId: string): Promise<CachedMediaMeta | undefined> {
-    const meta = await this.readMeta(trackId)
-    if (!meta) return undefined
-    meta.plays += 1
-    meta.accessedAt = Date.now()
-    await writeJsonAtomic(this.metaFile(trackId), meta)
-    return meta
+    return this.withMetaLock(trackId, async () => {
+      const meta = await this.readMeta(trackId)
+      if (!meta) return undefined
+      meta.plays += 1
+      meta.accessedAt = Date.now()
+      this.touched.set(trackId, meta.accessedAt)
+      await writeJsonAtomic(this.metaFile(trackId), meta)
+      return meta
+    })
   }
 
   async evict(trackId: string): Promise<boolean> {
@@ -476,6 +499,8 @@ export class MediaCache {
       policy,
     )
 
+    // `evict` 返回 false 只代表目录本来就不在（扫描后被删）——那部分字节确实已从 `diskBytes` 里消失，
+    // 所以下面照扣；但不计入 `removed`/`freedBytes`，那两项报的是「真的删掉了多少」。
     const drop = async (meta: CachedMediaMeta): Promise<void> => {
       if (await this.evict(meta.trackId)) {
         removed++
@@ -547,6 +572,20 @@ export class MediaCache {
     return path.join(this.dirOf(trackId), 'meta.json')
   }
 
+  /**
+   * 同一曲目的 meta.json「读-改-写」按 trackId 排队。
+   * `writeJsonAtomic` 里已经排过写入，但计数要在**读之前**就锁上：两次并发 `recordPlay`
+   * 各自读到 plays=5，就只会 +1。所以计数类更新必须整段进这个锁。
+   */
+  private withMetaLock<T>(trackId: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.metaChains.get(trackId) ?? Promise.resolve()
+    const run = prev.then(fn, fn)
+    this.metaChains.set(trackId, run)
+    return run.finally(() => {
+      if (this.metaChains.get(trackId) === run) this.metaChains.delete(trackId)
+    }) as Promise<T>
+  }
+
   private async readMeta(trackId: string): Promise<CachedMediaMeta | undefined> {
     const meta = await readJson<CachedMediaMeta>(this.metaFile(trackId))
     if (!meta?.audio?.file) return undefined
@@ -568,10 +607,14 @@ export class MediaCache {
   private async touch(meta: CachedMediaMeta): Promise<CachedMediaMeta> {
     const last = this.touched.get(meta.trackId) ?? 0
     if (Date.now() - last < 60_000) return meta
-    this.touched.set(meta.trackId, Date.now())
-    meta.accessedAt = Date.now()
-    await writeJsonAtomic(this.metaFile(meta.trackId), meta)
-    return meta
+    return this.withMetaLock(meta.trackId, async () => {
+      this.touched.set(meta.trackId, Date.now())
+      // 重新读一次：手上的 meta 可能比盘上旧（并发 recordPlay 已经加过 plays），照写会把计数冲掉
+      const fresh = (await this.readMeta(meta.trackId)) ?? meta
+      fresh.accessedAt = Date.now()
+      await writeJsonAtomic(this.metaFile(meta.trackId), fresh)
+      return fresh
+    })
   }
 
   /**
@@ -622,6 +665,8 @@ export class MediaCache {
     if (have > 0) headers.range = `bytes=${have}-`
     const res = await this.fetchImpl(url, { headers, signal: opts.signal })
     if (!res.ok && res.status !== 206) {
+      // 出错也要把 body 收掉，否则这条连接的 socket 会一直挂在池里
+      await res.body?.cancel().catch(() => {})
       throw new MediaUnavailableError(`下载音频失败 HTTP ${res.status}（${url.slice(0, 120)}…）`)
     }
     if (res.status === 200 && have > 0) {
@@ -652,7 +697,10 @@ export class MediaCache {
   private async downloadCover(url: string, target: string, opts: EnsureOptions): Promise<number> {
     try {
       const res = await this.fetchImpl(url, { signal: opts.signal })
-      if (!res.ok) return 0
+      if (!res.ok) {
+        await res.body?.cancel().catch(() => {})
+        return 0
+      }
       const buf = Buffer.from(await res.arrayBuffer())
       await ensureDir(path.dirname(target))
       await fsp.writeFile(target, buf)

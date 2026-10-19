@@ -7,7 +7,7 @@
  *  - 上游回空只报「这页没回东西」，不替上游解释成「没数据」——空表和「写没落地」是两件事。
  */
 import type { Command } from 'commander'
-import { assertLoggedIn, CliError, core } from '../context.js'
+import { assertLoggedIn, CliError, core, parseCount, parseVolume } from '../context.js'
 import { tailParts } from '../format.js'
 import { askYesNo, dim, emit, green, heading, idTag, print, warn } from '../output.js'
 import { runPlaySession } from '../playSession.js'
@@ -19,32 +19,36 @@ export function registerLibraryCommands(program: Command): void {
     .description('我喜欢的音乐')
     .option('--play', '直接播（等价 `qishui play liked`）')
     .option('--limit <n>', '最多几首', '50')
+    .option('--volume <percent>', '出声音量 0-100（配 --play）', '100')
     .option('--refresh', '绕过 5 分钟缓存（写操作后会自动失效）')
-    .action(async (opts: { play?: boolean; limit: string; refresh?: boolean }) => {
+    .action(async (opts: { play?: boolean; limit: string; volume: string; refresh?: boolean }) => {
+      // 参数先验完再出门：写错 `--limit`/`--volume` 不该以「连上账号、取回一整张表」收场
+      const limit = parseCount(opts.limit, '--limit', { fallback: 50, max: 1000 })
+      const volume = parseVolume(opts.volume)
       const instance = await core()
       assertLoggedIn(instance)
       const tracks = await instance.library.likedTracks(opts)
-      const limit = Math.max(1, Number(opts.limit) || 50)
       if (opts.play) {
         await runPlaySession(instance, tracks, {
           download: instance.config.autoCacheMedia,
           printPath: false,
           shuffle: instance.config.defaultShuffle,
           repeat: instance.config.defaultRepeat,
-          volume: 1,
+          volume,
           lyrics: true,
         })
         return
       }
       const playlist = await instance.library.likedPlaylist(opts)
+      const shown = tracks.slice(0, limit)
       emit(
         () => {
           heading('我喜欢的音乐', playlist?.countTracks !== undefined ? `${playlist.countTracks} 首` : undefined)
           if (!tracks.length) print(dim('（空，或者上游没给）'))
-          printTrackList(tracks.slice(0, limit))
-          print(dim('播放：qishui liked --play'))
+          printTrackList(shown)
+          print(dim('播放：qishui liked --play（--volume 60 控音量，--limit 少播几首）'))
         },
-        { playlist, tracks, total: tracks.length },
+        { playlist, tracks: shown, total: tracks.length },
       )
     })
 
@@ -140,7 +144,7 @@ export function registerLibraryCommands(program: Command): void {
       if (!opts.yes) {
         const ok = await askYesNo(`确认删除 ${playlistIds.length} 个歌单（${playlistIds.join(', ')}）？`)
         if (!ok) {
-          print(dim('已取消'))
+          emit(() => print(dim('已取消')), { cancelled: true, playlistIds })
           return
         }
       }
@@ -223,7 +227,7 @@ export function registerLibraryCommands(program: Command): void {
       const instance = await core()
       assertLoggedIn(instance)
       const page = await instance.library.collectedArtists({
-        count: Math.max(1, Number(opts.count) || 30),
+        count: parseCount(opts.count, '--count', { fallback: 30, max: 200 }),
         refresh: opts.refresh,
       })
       emit(() => {
@@ -242,7 +246,7 @@ export function registerLibraryCommands(program: Command): void {
       const instance = await core()
       assertLoggedIn(instance)
       const page = await instance.library.recent({
-        count: Math.max(1, Number(opts.count) || 20),
+        count: parseCount(opts.count, '--count', { fallback: 20, max: 200 }),
         refresh: opts.refresh,
       })
       emit(() => {
@@ -265,7 +269,7 @@ export function registerLibraryCommands(program: Command): void {
     .option('--limit <n>', '最多几条', '20')
     .action(async (opts: { limit: string }) => {
       const instance = await core()
-      const limit = Math.max(1, Number(opts.limit) || 20)
+      const limit = parseCount(opts.limit, '--limit', { fallback: 20, max: 1000 })
       const records = instance.plays(limit)
       const stats = instance.playStats()
       emit(

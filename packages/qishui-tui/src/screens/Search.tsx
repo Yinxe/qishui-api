@@ -340,7 +340,7 @@ export function SearchScreen({ active }: { active: boolean }) {
             setEditing(true)
           }}
         >
-          <Text color={editing ? COLOR.accent : 'gray'}>关键词 </Text>
+          <Text color={editing ? COLOR.accent : COLOR.muted}>关键词 </Text>
           <Text inverse={editing} wrap="truncate-end">
             {query || (editing ? '' : '（按 / 继续输入）')}
           </Text>
@@ -392,7 +392,7 @@ export function SearchScreen({ active }: { active: boolean }) {
       <Box paddingX={GUTTER}>
         <Text dimColor wrap="truncate-end">
           {editing
-            ? 'Enter 搜索（粘分享链接/裸 ID 直接打开）   ↑↓ 选联想词   Esc 收起输入   Ctrl+C 退出'
+            ? 'Enter 搜索（粘分享链接/裸 ID 直接打开）   ↑↓ 选联想词   Esc 收起输入   Ctrl+C x2 退出'
             : submitted
               ? truncate(`结果：${submitted}   Enter 操作菜单   / 改关键词   ←→ 切分类`, 72)
               : '按 / 或 Enter 输入关键词'}

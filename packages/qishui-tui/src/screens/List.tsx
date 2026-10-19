@@ -52,6 +52,7 @@ export function ListScreen({ source, active }: { source: ListSource; active: boo
 
   const { cursor, setCursor } = useCursor(state.rows.length, {
     active,
+    pageSize: height,
     // 行操作一律进菜单：键位表因此只留方向键 + Enter（播放是菜单第一项）
     onEnter: (index) => openMenu(state.rows[index]),
     onKey: (input) => {

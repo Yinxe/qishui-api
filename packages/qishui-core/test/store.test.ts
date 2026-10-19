@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { type CorePaths, EntityCache, resolvePaths } from '../dist/index.js'
+import { writeJsonAtomic } from '../dist/util.js'
 import { makeTempDir, rmDir, sleep } from './support/tmp.js'
 
 let home: string
@@ -193,5 +194,38 @@ describe('EntityCache：TTL / fetch / 失效 / 清理', () => {
     const cleared = await c.clear()
     expect(cleared.removed).toBeGreaterThanOrEqual(1)
     expect(fs.existsSync(paths.entityDir)).toBe(false)
+  })
+})
+
+describe('writeJsonAtomic：同进程并发写同一个文件', () => {
+  it('12 路并发全部成功、留最后一次的完整 JSON、无 .tmp 残留', async () => {
+    const dir = makeTempDir('qishui-atomic-')
+    try {
+      const file = path.join(dir, 'queues.json')
+      const pad = (n: number) => 'x'.repeat(120_000 * n)
+      const results = await Promise.allSettled(
+        Array.from({ length: 12 }, (_, i) => writeJsonAtomic(file, { i, payload: pad((i % 3) + 1) })),
+      )
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(12)
+      expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject({ i: 11 })
+      expect(fs.readdirSync(dir).filter((f) => f.includes('.tmp'))).toEqual([])
+    } finally {
+      rmDir(dir)
+    }
+  })
+
+  it('一次写失败不卡住后面排在同一文件上的写', async () => {
+    const dir = makeTempDir('qishui-atomic-err-')
+    try {
+      const file = path.join(dir, 'a.json')
+      await writeJsonAtomic(file, { first: true })
+      // dirname 是个已存在的普通文件 → ensureDir 必失败
+      const bogus = path.join(file, 'nested.json')
+      await expect(writeJsonAtomic(bogus, { x: 1 })).rejects.toThrow()
+      await writeJsonAtomic(file, { second: true })
+      expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject({ second: true })
+    } finally {
+      rmDir(dir)
+    }
   })
 })

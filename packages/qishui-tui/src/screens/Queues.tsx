@@ -146,7 +146,11 @@ export function QueueScreen({ active }: { active: boolean }) {
     if (entry.key.startsWith('track:')) {
       // 直接管理当前队列：把这一行从队列里移除（与行菜单里的「从队列移除」同一动作）
       const index = Number(entry.key.split(':')[1])
-      if (Number.isInteger(index)) removeQueueIndex(index)
+      if (!Number.isInteger(index)) return true
+      const item = queue.items[index]
+      removeQueueIndex(index)
+      // 得给句话：删掉的如果是正在播那一行，界面会变成「下一首」，不说一句分不清是删掉了还是出 bug 了
+      if (item) ui.toast(`已从队列移除「${truncate(item.name, 20)}」`, 'info')
       return true
     }
     return true
@@ -160,7 +164,7 @@ export function QueueScreen({ active }: { active: boolean }) {
     <Box flexDirection="column" flexGrow={1}>
       <PageTitle
         title="播放队列"
-        subtitle={`${queues.length}/${MAX_QUEUES} 份 · Enter 切过去 · d 收起选中的${activeQueue ? ` · 在播：${truncate(activeQueue.title, 16)}` : ''}`}
+        subtitle={`${queues.length}/${MAX_QUEUES} 份 · Enter 切过去 · d 队列=收起 / 曲目=移出队列${activeQueue ? ` · 在播：${truncate(activeQueue.title, 16)}` : ''}`}
       />
       <SectionView sections={sections} cursor={cursor} height={height} onCursor={setCursor} />
     </Box>

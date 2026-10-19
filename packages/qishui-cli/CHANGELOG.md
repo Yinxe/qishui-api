@@ -4,6 +4,26 @@
 
 ## Unreleased
 
+### Fixed
+
+- **`login --keep-active` 的成功面板不再看着像「已经切过去了」**：它印的昵称/uid/账号文件本来就是**仍在用**的那一号（core 修了「入库新号却把 `current` 换成新号」的串号问题，见 core 的 CHANGELOG），但一行说明都没有。现在补一行 `说明 新号已入库，激活号未变（qishui accounts 看清单，qishui use <昵称|uid> 切过去）`——只在给了 `--keep-active` 时出现，`--json` 那份照旧带完整 `session` 快照
+
+- **数字型选项一律当场收口（新增 `parseCount`/`parseVolume`）**：`--count abc`、`--pages 0`、`--interval abc`、`--volume abc` 从前会原样变成 `NaN`
+  - **症状**：`NaN` 直接发给上游（`count=NaN` 这种串会进请求体）；`login --interval abc` 的 `Math.max(500, NaN*1000)` 得到 `NaN`，传进轮询循环等于**没有间隔**——二维码页贴 CPU 猛打上游；`cache prune --max-age abc` 的 `NaN * 86400000` 让「比大小」恒 false，按天数清理一声不响什么都不删；`--volume` 写错会被钳成 0（等于静音）
+  - **做法**：`context.ts` 一处收口——整数走 `Number.isSafeInteger` 加区间校验（非整数、`0`、负数、超过上限都报「要给 X–Y 之间的整数」并给一条能抄的写法）；`--volume` 认 0–100 百分数、归一成 0–1；`play`/`liked`/`chart`/`radio`/`scene`/`feed`/`mix`/`square`/`artist`/`playlist`/`comments`/`replies`/`login`/`prune` 全部改走它；`config set maxMediaBytes`/`cache prune --max-size` 的体积**必须带单位**（`3` 会被读成 3 字节 = 整仓判成超限）
+  - **边界**：参数校验排在 `await core()` 之前——写错 `--limit` 不该以「连上账号、取回一整张表」收场；`--count` 不给值就交给上游默认量，不自己填
+
+- **「一份数据两条出路」补两处漏**：`radio`/`scene`/`square` 的 `--limit` 只管人读那份，`--json` 回的是整张表（脚本按 `--limit` 取到的其实是全量，截断等于没生效）——现在截出来的那一截同时给人看和进 JSON，另带 `totalTracks`/`totalPlaylists`；`chart` 表格的 id 列写死在表头里，`--no-id` 形同虚设——改走 `withIdColumn()`
+- **`--json` 出错时 stdout 也是一份能 parse 的数据**：从前只剩一行红字打在 stderr，脚本分不清「没结果」和「挂了」；现在 stdout 出 `{error, hint}`（退出码仍是 1），stderr 照旧给人看
+- **播放会话两处「听不见/关不掉」**：
+  - 冷下载（开着落盘、这一首还没下过）时把字节数挂到状态行 `下载 3.2MB/8.6MB`——不给这一下，「按了播放但十几秒没声音、光标也停着」和卡死分不清；`--json` 模式不画，拿到播放源就清掉
+  - `MpvSink` 注册 `process.on('exit')`：同步杀掉在播的子进程 + 摘掉它的 IPC socket。上层那套收尾（`finally` 里的 `stop()`、SIGINT）只在事件循环还活着时跑得到，而异常退场（例如 `qishui play … | head -3` 的**未捕获 EPIPE**）会让 mpv 这个**子进程**活得好好的——「命令早退了、歌还在放」。socket 那半边是更普通的病：实测「正常播完一首」也留残渣（进程先结束、`child.on('exit')` 那笔 unlink 排在后面），于是**每听一首就在 `/tmp` 攒一个 `qishui-mpv-*.sock`**
+  - 离线单测 `test/playback.test.ts` 三条盯着这套兜底：① 掐断 stdout 后 CLI 早退（远早于曲目时长）、非零退出、不多出 mpv/socket；② 拿 `MpvSink` 直接起一首、播放器还在放就 `process.exit()`，先断言「确实有个带 `qishui-mpv-` 的进程活着」再退，退完两条都得干净——把兜底那两行分别注掉，对应那条会红（②会留下一个真在放的 mpv）；③ 正常播完一首也不留 socket。**①单独看会假绿**：管道模式下进程死在起播放器之前（实测 ~470ms），它证不了「播放器活着时异常退场」，所以补了②
+- **`liked --play` 认 `--volume`**：从前硬编码满格，`qishui play liked --volume 30` 与它等价却少一个选项；顺带把提示写成「`--volume 60` 控音量、`--limit` 少播几首」
+- **搜索的「未结构化结果」提示不再指错路**：它让人用 `--json` 看原始结构，而 `--json` 默认把 `raw` 剥掉（要 `--json --raw`）——照着做只会拿到一个没有 `raw` 的对象，以为接口没回东西
+- **`cache prune` 的「已取消」也进 `emit`**：`--json` 下从前只有一行人读文字，JSON 那一路什么都没有
+- 测试：起真进程的用例显式给出超时（`cache`/`cli` 30s、`playback` 60s）——一条用例连着起十来个 node 进程，默认 5 秒在并行构建的机器上偶发超时，报的是「Test timed out」而不是任何断言失败
+
 ### Added
 
 - **`cache stats` 长出「容量」一节，`cache prune` 能选淘汰顺序，`config set` 认体积写法**

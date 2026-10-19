@@ -4,8 +4,11 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { makeCliHome, rmDir, runCli, seedTrack } from './support/cli.js'
+
+// 每条用例都要起好几次真进程（一次 spawn 约 300ms），默认 5 秒在并行构建的机器上会翻车
+vi.setConfig({ testTimeout: 30_000 })
 
 const A = '7300000000000000001'
 const B = '7300000000000000002'
@@ -51,7 +54,7 @@ describe('cache stats 的容量账', () => {
   it('人读输出把上限说清楚，超限时给一条能直接抄走的清理命令', () => {
     expect(runCli(home, ['cache', 'stats']).stdout).toContain('容量')
     // 上限压到 1 字节：必然超限
-    runCli(home, ['config', 'set', 'maxMediaBytes', '1'])
+    runCli(home, ['config', 'set', 'maxMediaBytes', '1B'])
     const stats = runCli(home, ['cache', 'stats'])
     expect(stats.stdout).toContain('超上限')
     expect(stats.stdout).toContain('可释放')
@@ -63,7 +66,7 @@ describe('cache prune 的淘汰顺序', () => {
   it('--by leastPlayed 剔播得最少的；不带 --by 就用 config 里的策略', () => {
     const total = runCli(home, ['cache', 'stats', '--json']).json().capacity.usedBytes
     // 上限 = 总量 − C 的体积 + 1：只够剔一首，剔谁就看策略
-    const maxBytes = String(total - dirBytes(C) + 1)
+    const maxBytes = `${total - dirBytes(C) + 1}B`
 
     const byPlays = runCli(home, ['cache', 'prune', '--media', '--by', 'leastPlayed', '--max-size', maxBytes, '--json'])
     expect(byPlays.status).toBe(0)
@@ -81,7 +84,7 @@ describe('cache prune 的淘汰顺序', () => {
 
   it('--by 只认枚举；没加 --media 时媒体一根手指都不碰，只提示', () => {
     expect(runCli(home, ['cache', 'prune', '--by', 'nope']).status).not.toBe(0)
-    runCli(home, ['config', 'set', 'maxMediaBytes', '1'])
+    runCli(home, ['config', 'set', 'maxMediaBytes', '1B'])
     const hint = runCli(home, ['cache', 'prune'])
     expect(hint.stdout).toContain('加 --media')
     expect(cached(A)).toBe(true)
@@ -97,6 +100,7 @@ describe('config set 认体积写法', () => {
       ['2GB', 2 * GIB],
       ['3G', 3 * GIB],
       ['1536MB', 1536 * 1024 * 1024],
+      ['512B', 512],
       ['0', 0],
       ['不限制', 0],
     ]
@@ -106,6 +110,15 @@ describe('config set 认体积写法', () => {
     }
     expect(runCli(home, ['config', 'set', 'maxMediaBytes', '两G']).status).not.toBe(0)
     runCli(home, ['config', 'set', 'maxMediaBytes', '2GB'])
+  })
+
+  it('光给数字要挡下来：`3` 会被读成 3 字节，等于把整仓缓存判成超限', () => {
+    const bad = runCli(home, ['config', 'set', 'maxMediaBytes', '3'])
+    expect(bad.status).not.toBe(0)
+    expect(bad.stderr + bad.stdout).toContain('单位')
+    // 报错不能把用户的上限改掉
+    expect(runCli(home, ['config', 'get', 'maxMediaBytes', '--json']).json().value).toBe(2 * GIB)
+    expect(runCli(home, ['cache', 'prune', '--max-size', '500']).status).not.toBe(0)
   })
 
   it('人读回显给档位名，不只给一串字节', () => {

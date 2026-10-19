@@ -11,6 +11,11 @@ export const COLOR = {
   danger: 'red',
   /** 提示 / 键位 token / 预览 */
   warning: 'yellow',
+  /**
+   * 次要文字里「必须着色」的那一小撮：徽标没登录时、弹层非错误时的边框——
+   * `dimColor` 是渲染开关、给不了 `borderColor`，所以这里留一个词，各处不裸写 `'gray'`。
+   */
+  muted: 'gray',
 } as const
 
 /** 内容左右留白（格子数）——各屏 paddingX 用它，别散写 1 */

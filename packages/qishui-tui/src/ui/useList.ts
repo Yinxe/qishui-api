@@ -48,7 +48,9 @@ export const trackRow = (track: Track): ListRow => ({
 function localTrackRows(core: QishuiCore, tracks: Track[]): ListRow[] {
   const liked = new Set(core.local.likeKeys())
   return tracks.map((track) => {
-    track.data.state = { isCollected: liked.has(core.local.keyOf(track)) }
+    // 展开合并：`state` 同级还有 isFollowing / blockedByMe，整对象覆盖会把它们抹掉
+    // （core 的缓存按 TTL 复用同一份解析结果，抹掉的水印会在别的页读到账）
+    track.data.state = { ...track.data.state, isCollected: liked.has(core.local.keyOf(track)) }
     return trackRow(track)
   })
 }
@@ -177,7 +179,7 @@ export async function fetchPage(core: QishuiCore, source: ListSource, cursor: st
         title: '我喜欢的音乐',
         subtitle: `${tracks.length} 首`,
         rows: tracks.map((track) => {
-          track.data.state = { isCollected: true }
+          track.data.state = { ...track.data.state, isCollected: true }
           return trackRow(track)
         }),
         hasMore: false,
@@ -409,16 +411,22 @@ export function useList(
         setState((prev) => ({ ...prev, loadingMore: true }))
       }
       try {
-        const page = await fetchPage(core, source, cursorRef.current)
+        const cursorBefore = cursorRef.current
+        const page = await fetchPage(core, source, cursorBefore)
         if (my !== generation.current) return
-        // 上游给了游标就照它的来；没给的沿用页序（见 PageResult.nextCursor）
-        cursorRef.current = page.nextCursor ?? (cursorRef.current as number) + 1
+        // 游标只照上游回传的来（见 `fetchPage` 各分支：这些源的 cursor 全是偏移量）。
+        // 以前回退成「页序 +1」，count=50 的第二页就成了偏移 1 —— 整页和第一页重复。
+        const hasNext = page.nextCursor !== undefined && page.nextCursor !== ''
+        if (hasNext) cursorRef.current = page.nextCursor as string | number
+        // 「还有下一页」得真的有一页可去：没回游标、或回的游标原地不动，就到此为止——
+        // 否则 `L` 按下去行数不涨也不报错，看着就是坏了
+        const moved = hasNext && String(cursorRef.current) !== String(cursorBefore)
         setState((prev) => ({
           status: 'ready',
           title: page.title ?? prev.title,
           subtitle: page.subtitle ?? (reset ? undefined : prev.subtitle),
           rows: reset ? page.rows : [...prev.rows, ...page.rows],
-          hasMore: page.hasMore,
+          hasMore: page.hasMore && moved,
           loadingMore: false,
           categories: page.categories ?? (reset ? undefined : prev.categories),
         }))

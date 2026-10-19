@@ -163,8 +163,25 @@ async function play(instance: QishuiCore, list: TrackData[], opts: PlaySessionOp
     statusLine(
       `${icon} ${truncate(trackTitle(state.track), 30)}  ` +
         `${dim(duration(position))} ${progressBar(total ? position / total : 0, 18)} ${dim(duration(total))}  ` +
-        dim(flags),
+        dim(downloading ? `${downloading}  ${flags}` : flags),
     )
+  }
+
+  /**
+   * 冷下载（开着 `download`、这一首还没落盘）时把字节数挂到状态行：不给这一下进度，
+   * 「按了播放但十几秒没声音、光标也停着」和卡死分不清。拿到源就清掉。
+   */
+  let downloading: string | undefined
+  const playOpts = {
+    download: opts.download,
+    onProgress: (progress: { phase: string; received: number; total?: number }): void => {
+      if (isJsonMode() || progress.phase !== 'audio') return
+      const mb = (n: number): string => `${(n / 1024 / 1024).toFixed(1)}MB`
+      downloading = progress.total
+        ? `下载 ${mb(progress.received)}/${mb(progress.total)}`
+        : `下载 ${mb(progress.received)}`
+      redraw()
+    },
   }
 
   const startSink = async (source: PlaySource): Promise<void> => {
@@ -180,7 +197,7 @@ async function play(instance: QishuiCore, list: TrackData[], opts: PlaySessionOp
     if (!quitting && activeGen === generation && !sink.running) {
       activeGen = -1
       warn(`播放进程立刻退出：${sink.lastStderr() || '无输出'}`)
-      void player.next({ download: opts.download })
+      void player.next(playOpts)
     }
   }
 
@@ -229,10 +246,13 @@ async function play(instance: QishuiCore, list: TrackData[], opts: PlaySessionOp
   })
 
   player.on('source', ({ source }) => {
+    downloading = undefined
     void startSink(source)
   })
 
   player.on('status', ({ status }) => {
+    // 开始解下一首就把上一首的下载数清掉（`loading` 是 `startCurrent` 的第一步）
+    if (status === 'loading') downloading = undefined
     if (status === 'paused') void sink.pause(true)
     else if (status === 'playing') void sink.pause(false)
     if ((status === 'stopped' || status === 'idle') && !quitting) void quit('finished')
@@ -256,7 +276,7 @@ async function play(instance: QishuiCore, list: TrackData[], opts: PlaySessionOp
     if (code !== 0) warn(`播放进程以 code=${code} 退出：${sink.lastStderr() || '无输出'}`)
     else if (early) info('播放进程提前结束（按 EOF 处理）')
     void (async () => {
-      const advanced = await player.next({ download: opts.download })
+      const advanced = await player.next(playOpts)
       if (!advanced && !quitting) {
         // 队列到头（单曲/最后一张）：core 的时钟不一定会走完，会话就到这里
         say(dim('队列播放完毕'))
@@ -318,6 +338,11 @@ async function play(instance: QishuiCore, list: TrackData[], opts: PlaySessionOp
       void sink.setVolume(volume)
       say(dim(`音量：${Math.round(volume * 100)}%`))
     }
+    // 按键触发的续播/换曲都是异步的：断网时按 `n` 就是「拿不到播放源」。
+    // 不接住就成 unhandled rejection——Node 甩一坨堆栈直接退出，终端还卡在 raw mode。
+    const runQuietly = (task: Promise<unknown>): void => {
+      task.catch((err: unknown) => warn(err instanceof Error ? err.message : String(err)))
+    }
     const onKey = (chunk: Buffer): void => {
       const key = chunk.toString()
       switch (key) {
@@ -327,15 +352,15 @@ async function play(instance: QishuiCore, list: TrackData[], opts: PlaySessionOp
           void quit('quit')
           return
         case ' ':
-          void player.toggle({ download: opts.download })
+          runQuietly(player.toggle(playOpts))
           return
         case 'n':
         case '.':
-          void player.next({ download: opts.download })
+          runQuietly(player.next(playOpts))
           return
         case 'p':
         case ',':
-          void player.previous({ download: opts.download })
+          runQuietly(player.previous(playOpts))
           return
         case 's': {
           const on = !player.state.shuffle
@@ -392,10 +417,20 @@ async function play(instance: QishuiCore, list: TrackData[], opts: PlaySessionOp
   }
   process.on('SIGINT', sigint)
 
-  await player.play(list, { download: opts.download })
-  const reason = await finished
-  process.off('SIGINT', sigint)
-  release()
+  let reason: 'finished' | 'quit'
+  try {
+    await player.play(list, playOpts)
+    reason = await finished
+  } finally {
+    // `play()` 抛错（第一首就解析不到地址是最常见的一种）也必须把现场收干净：
+    // 不然 stdin 留在 raw mode（终端看起来坏了，得 `reset` 才恢复）、mpv 还在后台出声。
+    process.off('SIGINT', sigint)
+    detachKeys()
+    clearInterval(timer)
+    release()
+    await sink.stop()
+    clearStatusLine()
+  }
 
   const result: PlaySessionResult = { reason, played: played.length, total: list.length, tracks: played }
   if (isJsonMode()) printJson(result)

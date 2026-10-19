@@ -197,7 +197,7 @@ export function UiProvider({ children }: { children: ReactNode }) {
         <Box position="absolute" marginLeft={sidebarWidthFor(columns) + 1} marginTop={Math.max(0, rows - 6)}>
           <Box
             borderStyle="round"
-            borderColor={toast.kind === 'error' ? COLOR.danger : toast.kind === 'success' ? COLOR.success : 'gray'}
+            borderColor={toast.kind === 'error' ? COLOR.danger : toast.kind === 'success' ? COLOR.success : COLOR.muted}
             paddingX={GUTTER}
           >
             <Text color={toast.kind === 'error' ? COLOR.danger : toast.kind === 'success' ? COLOR.success : undefined}>

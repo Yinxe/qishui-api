@@ -4,7 +4,7 @@
  */
 import fs from 'node:fs'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { createQishui, type PlayerStatus, type QishuiCore } from '../dist/index.js'
+import { createQishui, type PlayerStatus, PlayQueue, type QishuiCore, type TrackData } from '../dist/index.js'
 import { createMockUpstream, MOCK_DEVICE } from './support/mockUpstream.js'
 import { makeTempDir, rmDir, sleep } from './support/tmp.js'
 
@@ -190,6 +190,35 @@ describe('player：队列与模式', () => {
     expect(core.player.status).toBe('playing')
     expect(core.player.current?.id).toBe(T1)
     expect(core.player.positionMs).toBeLessThan(1000)
+  })
+})
+
+describe('PlayQueue：随机开关只换顺序，不换「正在播的那一行」', () => {
+  const mk = (id: string): TrackData => ({ id, name: `曲目 ${id}`, artists: [] })
+
+  it('同一首在队列里出现两次时，关随机仍停在原来那一行', () => {
+    const twice = mk('A')
+    const queue = new PlayQueue([twice, mk('B'), twice])
+    queue.jumpTo(2)
+    expect(queue.current).toBe(twice)
+    queue.setShuffle(true)
+    expect(queue.current).toBe(twice)
+    queue.setShuffle(false)
+    // 反查「当前曲目在 items 里的下标」会命中第一次那份（同一个对象），
+    // 于是关随机悄悄跳到第 0 行——听着像突然切了歌。位置得照 order 里的来。
+    expect(queue.index).toBe(2)
+    expect(queue.current).toBe(twice)
+  })
+
+  it('开随机以当前曲目为队首，关随机回到加入顺序', () => {
+    const queue = new PlayQueue([mk('A'), mk('B'), mk('C'), mk('D')])
+    queue.jumpTo(1)
+    queue.setShuffle(true)
+    expect(queue.playOrder[0]?.id).toBe('B')
+    expect(queue.index).toBe(0)
+    queue.setShuffle(false)
+    expect(queue.playOrder.map((t) => t.id)).toEqual(['A', 'B', 'C', 'D'])
+    expect(queue.current?.id).toBe('B')
   })
 })
 

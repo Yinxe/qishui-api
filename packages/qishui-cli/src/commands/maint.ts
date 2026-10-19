@@ -15,7 +15,7 @@ import {
   mediaCapacityLabel,
   mediaEvictPolicyLabel,
 } from 'qishui-core'
-import { CliError, core } from '../context.js'
+import { CliError, core, parseCount } from '../context.js'
 import { ago } from '../format.js'
 import {
   askYesNo,
@@ -41,10 +41,21 @@ function formatTtl(ms: number): string {
   return `${Math.round(ms / 60_000)} 分钟`
 }
 
-/** `--max-size 512` / `512MB` / `2GB` / `2G` 都收 */
+/**
+ * `512MB` / `2GB` / `2G` / `1536m` 都收，`0`（= 不设上限 / 全清）也收，**但光给数字不收**。
+ * 以前 `maxMediaBytes 3` 会静默读成 3 字节：上限立刻小于整个缓存，
+ * 一旦开了 `mediaAutoEvict`，下一首播完就把整仓音频剔光。体积单位必须写在脸上。
+ */
 function parseBytes(value: string): number {
-  const match = /^(\d+(?:\.\d+)?)\s*(b|kb|mb|gb|tb|k|m|g|t)?$/i.exec(value.trim())
-  if (!match) throw new CliError(`认不出体积 ${value}`, '例：--max-size 512MB / --max-size 2GB / maxMediaBytes 2G')
+  const text = value.trim()
+  if (/^0(?:\.0+)?$/.test(text)) return 0
+  const match = /^(\d+(?:\.\d+)?)\s*(kb|mb|gb|tb|k|m|g|t|b)$/i.exec(text)
+  if (!match) {
+    throw new CliError(
+      `认不出体积 ${value}`,
+      '体积要带单位：512MB / 2GB / 2G（`0` = 不限制）；光写一个数字不行——`3` 到底是 3B 还是 3G？',
+    )
+  }
   const scale: Record<string, number> = {
     b: 1,
     k: 1024,
@@ -56,7 +67,7 @@ function parseBytes(value: string): number {
     t: 1024 ** 4,
     tb: 1024 ** 4,
   }
-  return Math.round(Number(match[1]) * scale[(match[2] ?? 'b').toLowerCase()])
+  return Math.round(Number(match[1]) * scale[match[2].toLowerCase()])
 }
 
 /** 容量配置额外认「不设限」：`0` / `unlimited` / `不限制` */
@@ -237,7 +248,10 @@ export function registerMaintCommands(program: Command): void {
 
         if (action === 'prune') {
           const maxBytes = opts.maxSize ? parseBytes(opts.maxSize) : undefined
-          const maxAgeMs = opts.maxAge ? Number(opts.maxAge) * 86_400_000 : undefined
+          // 天数也要显式收：`Number('abc') * 86400000` 是 NaN，比大小的表达式恒 false，
+          // 「按天数清理」会一声不响地什么都不删。
+          const maxAgeDays = parseCount(opts.maxAge, '--max-age', { min: 1, max: 3650 })
+          const maxAgeMs = maxAgeDays === undefined ? undefined : maxAgeDays * 86_400_000
           const policy = opts.by ? parseEvictPolicy(opts.by) : instance.config.mediaEvictPolicy
           const entities = await instance.cache.prune({ maxBytes, maxAgeMs })
           // 正在播的那首不参与剔除（同进程里播的，或别的会话留着的那首）
@@ -276,7 +290,7 @@ export function registerMaintCommands(program: Command): void {
               { default: false },
             )
             if (!ok) {
-              print(dim('已取消'))
+              emit(() => print(dim('已取消')), { cancelled: true })
               return
             }
           }

@@ -144,7 +144,7 @@ qishui --help
 
 | 命令 | 说明 |
 |---|---|
-| `liked [--play] [--limit 50]` | 我喜欢的音乐（`--play` 直接开播） |
+| `liked [--play] [--limit 50] [--volume 100]` | 我喜欢的音乐（`--play` 直接开播，`--volume` 只配 `--play`） |
 | `playlists` | 我的歌单 |
 | `new <title> [--private]` | 新建歌单 |
 | `add <playlistId> <trackIds...>` / `remove <playlistId> <trackIds...>` | 加歌 / 移歌 |
@@ -238,7 +238,9 @@ qishui play playlist:<id> --no-cache  # 不落盘，只用远程签名地址
 | `QISHUI_MPV_ARGS` | 追加给播放器的参数，空白分隔，例如 `QISHUI_MPV_ARGS=--ao=null`（无音频设备的环境） |
 | `NO_COLOR` | 关颜色（等价 `--no-color`） |
 
-**退出码**：`0` 成功；`1` 命令失败（上游拒答、目标解析不出、有下载失败项、`cache verify` 发现问题等）。错误信息走 stderr，形如 `✗ 一句话` + 缩进的「下一步」提示。
+**退出码**：`0` 成功；`1` 命令失败（上游拒答、目标解析不出、有下载失败项、`cache verify` 发现问题等）。错误信息走 stderr，形如 `✗ 一句话` + 缩进的「下一步」提示；**加 `--json` 时 stdout 同时给一份 `{error, hint}`**——脚本要能分清「没结果」和「挂了」，不能只留一行红字。
+
+数字型选项（`--limit`/`--count`/`--pages`/`--interval`/`--timeout`/`--max-age`）与 `--volume` 都带区间校验，写错当场报错（`--volume` 是 0–100 的百分数）；`config set maxMediaBytes` 与 `cache prune --max-size` 的体积**必须带单位**（`3` 会被读成 3 字节，等于把整仓缓存判成超限），`0` / `不限制` 是不设上限。
 
 ## 7. 单元测试
 
@@ -249,9 +251,9 @@ pnpm --filter qishui-cli run test     # vitest：3 个文件（cli/format/playba
 
 `test/*.test.ts` 用 **vitest** 起构建产物 `dist/cli.js`；数据目录由 `test/support/cli.ts` mkdtemp 造并**预置假 device.json**（不触发设备注册），全程**不打上游**：
 
-1. `cli.test.ts`：`--help`/未知命令/未知选项退出码、`--json` 形状、`NO_COLOR` 无转义、`config get/set` 落盘、`cache policy` 分档、多账号离线机制（`accounts`/`use` 未知号报错/`--as` 指错号**直接报错不回落**/`feed --exclude` 与 `discover feed --mode` 非法值）；
+1. `cli.test.ts`：`--help`/未知命令/未知选项退出码、`--json` 形状（**含出错时 stdout 是 `{error, hint}`**）、`NO_COLOR` 无转义、`config get/set` 落盘、`cache policy` 分档、数字型选项的区间校验、多账号离线机制（`accounts`/`use` 未知号报错/`--as` 指错号**直接报错不回落**/`feed --exclude` 与 `discover feed --mode` 非法值）；
 2. `format.test.ts`：时长/体积格式化与实体一行式描述（纯函数，直接 import `../dist/format.js`）；
-3. `playback.test.ts`：`seedTrack` 预置实体缓存 + 媒体缓存（自造 3 秒 WAV，不依赖 ffmpeg），验 `--list`（● 已缓存）、`--print-path --json`（kind=cache 零网络）、`download --out` 导出、`cache stats/list`；再起真 mpv（`QISHUI_MPV_ARGS=--ao=null` 不出声）→ EOF → 自动切下一首 → 收尾，核对 JSON 结果、`reason=finished`、**无新增残留 mpv 进程**（按 `qishui-mpv-<pid>-*.sock` 认自己人，跑前跑后比 pid 差集，用户另开 TUI 听歌也不会误报）、本地历史与统计；有 `script(1)` 时再用 PTY 按 `q` 验快捷键。
+3. `playback.test.ts`：`seedTrack` 预置实体缓存 + 媒体缓存（自造 3 秒 WAV，不依赖 ffmpeg），验 `--list`（● 已缓存）、`--print-path --json`（kind=cache 零网络）、`download --out` 导出、`cache stats/list`；再起真 mpv（`QISHUI_MPV_ARGS=--ao=null` 不出声）→ EOF → 自动切下一首 → 收尾，核对 JSON 结果、`reason=finished`、**无新增残留 mpv 进程**（按 `qishui-mpv-<pid>-*.sock` 认自己人，跑前跑后比 pid 差集，用户另开 TUI 听歌也不会误报）、本地历史与统计；有 `script(1)` 时再用 PTY 按 `q` 验快捷键；另有一条把 stdout 读端立刻关掉（等价 `qishui play … | head -3` 的 EPIPE 猝死）验 CLI 早退、不挂住、不留残渣；再配两条专门盯 `MpvSink` 的 `process.on('exit')` 兜底：一条直接拿 sink 起一首、**播放器还在放**就 `process.exit()`（先断言确实多出一个带 `qishui-mpv-` 的进程，免得空过），一条走最普通的「播完一首」——两条都要求**既不留还在出声的 mpv，也不留它在 `/tmp` 的 socket**。
 
 mpv / script(1) 不在本机只跳过对应分节（`describe.skipIf`）。上游可达性结论由 `qishui-api` 实测台负责，不进单测。
 

@@ -372,25 +372,33 @@ export class SessionManager {
         }
       }
       const next: SessionFile = { v: 1, cookies, uid, nickname, savedAt: Date.now() }
+      // 「入库但不切号」：得真有一个在用的号可保持（没 cookie 的壳/匿名态不算）
+      const kept = Boolean(options.keepActive && uid && previous.uid && Object.keys(previous.cookies).length)
       // 先落盘、再认这条登录：写不进去（目录被占、只读盘…）就保持原状态，
       // 避免出现「界面显示已登录、账号文件一个没有」这种重启就蒸发且不自愈的形态
       await this.writeAccount(next)
-      this.current = next
+      // 不切号时 `current` 也要回到**真正在用的那一号**：留着新号的身份去发旧号的 cookie，之后任何一次
+      // 回写（`save`、`me()` 顺手调的 `rememberIdentity`）都按 `current.uid` 找文件写 —— 会把新号那份
+      // 写成旧号的凭据，切过去才发现「这张号是别人的」（反向也一样：旧号被写成新号的 cookie）
+      this.current = kept ? previous : next
+      if (kept) this.swapCookies(previous.cookies) // 扫码那一路把新号的 cookie 吸进了 jar，灌回在用的那份
       await this.renameAnonIfNeeded()
       if (uid) {
-        this.upsertIndex({ uid, nickname, savedAt: Date.now(), lastUsedAt: Date.now() })
+        // 没切过去就不算「用过」：`lastUsedAt` 是激活号解析不出来时的回落依据
+        this.upsertIndex(
+          kept
+            ? { uid, nickname, savedAt: Date.now() }
+            : { uid, nickname, savedAt: Date.now(), lastUsedAt: Date.now() },
+        )
         await this.saveIndex()
-        if (options.keepActive && previous.uid && Object.keys(previous.cookies).length) {
-          // 登录但不切号：把上一激活账号的 cookie 灌回 jar
-          this.swapCookies(previous.cookies)
-        } else {
-          await this.options.onActivate?.(uid)
-        }
+        if (!kept) await this.options.onActivate?.(uid)
       }
       this.options.logger?.(
         `[session] 登录成功${nickname ? `：${nickname}` : ''}（${uid ?? 'uid 未知'}）${options.keepActive ? '，保持原激活号' : ''}`,
       )
-      options.onPersisted?.(this.current.uid)
+      // 人还停在原来那一号就不报「换号」：`onPersisted` 会清内存缓存、把播放历史换目录、
+      // 并把整个书架作废 —— 原号的书架和 scope 不该给一次「没换号的登录」陪葬
+      if (!kept) options.onPersisted?.(this.current.uid)
     }
 
     // 「见过 confirmed」是单向门：之后无论上游改口（token 被作废很常见）都认定已登录。

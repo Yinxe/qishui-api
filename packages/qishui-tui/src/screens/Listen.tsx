@@ -300,6 +300,9 @@ export function ListenScreen({ active }: { active: boolean }) {
   // 队列栏游标：`↑↓` 挪（游标一出可视窗口就带着窗口滚）、`Enter` 开这一行的操作菜单（窄屏换到队列栏才吃键）
   const { cursor: queueCursor, setCursor: setQueueCursor } = useCursor(queue.items.length, {
     active: active && pane === 'queue',
+    // 一页 = 队列栏那个**固定 10 行**的窗口（`QUEUE_WINDOW`），不是左栏歌词的高度：
+    // 这条游标只在队列栏生效（`active` 就这么写着），`PgDn` 该跳的是「看得见的这一屏」。
+    pageSize: QUEUE_WINDOW,
     onEnter: (index) => openQueueMenu(index),
     // 停在最后一行还按 ↓ = **主动要下一批**（不等 core 那个「剩 ≤2 首」的阈值）；只有推荐队列会长
     onTailDown: () => {
@@ -773,7 +776,7 @@ export function ListenScreen({ active }: { active: boolean }) {
             borderTop={false}
             borderBottom={false}
             borderRight={false}
-            borderColor="gray"
+            borderColor={COLOR.muted}
             paddingLeft={GUTTER}
           >
             {/* 栏头：这份队列是谁的（推荐 / 歌单 / 我喜欢 / 临时）+ `[切换队列]` 弹层 + `[收起]`（`q` 同义） */}

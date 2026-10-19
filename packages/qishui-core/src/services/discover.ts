@@ -305,20 +305,14 @@ export class DiscoverService {
   async feedSongTab(opts: FeedSongTabOptions = {}): Promise<Track[]> {
     const mode = opts.preferenceMode ?? 'default'
     const want = opts.count ?? 6
-    // 缓存键必须带场景：不然「日语」与「粤语」会互相顶掉对方那一批（ttl 0 只是不落盘，内存里还在）
-    const key = opts.sceneModeId === undefined ? mode : `${mode}@scene${opts.sceneModeId}`
     if (!opts.excludePlayed && !opts.excludeLiked) {
       const body = await this.feedSongTabBody(mode, opts)
-      const { value } = await this.core.cache.fetch<any>(
-        'feed-song-tab',
-        key,
-        () => this.core.request('FeedSongTab', body),
-        {
-          force: opts.refresh,
-          ttlMs: CacheTtl.none,
-        },
-      )
-      return this.feedSongTabTracks(value)
+      // 直发、不进 `cache.fetch`：这份是实时推荐流（`CacheTtl.none` 本来就存不住），
+      // 而 fetch 的 pending 去重会把同时进来的两次顶成**同一批**——连着按「再来一批」
+      // 拿到一模一样的六首；更糟的是后一个调用的会话计数在 `feedSongTabBody` 里已经加过，
+      // 请求却没发出去，`total_request_count` 就此和上游错位。场景（`sceneModeId`）与
+      // 偏好档各自一套计数，所以两种口径都不能合流。
+      return this.feedSongTabTracks(await this.core.request('FeedSongTab', body))
     }
     // 客户端排除档：连续翻页去重，补够 want 首或到 maxPages 为止（请求失控防线）
     const excluded = await this.feedExcludedIds(opts)

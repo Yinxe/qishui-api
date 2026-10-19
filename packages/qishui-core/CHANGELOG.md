@@ -4,6 +4,34 @@
 
 ## Unreleased
 
+### Fixed
+
+- **`login({ keepActive: true })` 会串号：入库新号却把两份账号文件互相写脏**
+  - **症状**：扫码入库但不切号时，`session.current` 被换成**新号**（uid/昵称/cookie 都是它的），而 jar 里灌回的是**旧号**的 cookie。于是「当前身份」说的和「真正在发」的不是一回事：`core.uid`/`snapshot().nickname` 变新号、`accounts()` 里旧号不再 `active`、`account-changed` 也发了（上层据此清书架），更糟的是之后任何一次按 `current.uid` 找文件的回写（`save()`、`me()` 顺手调的 `rememberIdentity` → `saveCurrent()`）都会把**新号那份写成旧号的凭据**（反向也一样），切过去才发现「这张号是别人的」；`onPersisted` 还会把播放历史 scope 指到新 uid、把还在听的旧号书架整个 `reset()` 掉
+  - **做法**：`persist` 里先算出 `kept`（要求确有一个带 cookie 的号可保持），`this.current = kept ? previous : next` 并照旧 `swapCookies`；不切号时**不发 `onPersisted`**（没换号就不做换号的编排）、不叫 `onActivate`、也不给新号记 `lastUsedAt`（它是「刚入库」不是「刚用过」——`lastUsedAt` 是激活号解析不出来时的回落依据）
+  - **边界**：此前匿名（没有可保持的号）时 `keepActive` 仍按普通登录走 —— 入库即激活；`uid` 测不出来（`fetchProfile:false` 或 `GetMyInfo` 失败）时走同一支，行为不变
+  - 离线单测 `test/session.test.ts` 补两条：旧号激活时 `keepActive` 登录 —— 身份/jar/历史目录/书架都不动、`account-changed` 不发、新号入库且不冒充「刚用过」、`save()` 后两份账号文件的 `sessionid` 各归各；匿名时 `keepActive` 即激活新号
+
+- **书架里「上次听到哪一首」记岔了两回**
+  - **症状**：① 停放的随机队列（典型就是「我喜欢的音乐」）那一行显示的曲名，跟点开前一次听的那首**根本不是同一首**；② 连点两份队列（第一份还在取数）时，播放器里最后装的是哪一份不定——现象是「响的是先点那行的第一批曲目、书架打勾的却是后点的」，而且慢回来的那份会把自己最后 `playList` 进去、把 `liveId` 认领到自己头上，此后落盘/停放都按错的份核对（两份队列的曲目与 `resumeId` 互相污染）
+  - **做法**：① `list()` 对停放的份改走新的 `parkedAt(entry)`：**认曲目用 `resumeId`**（`entry.index` 是**播放顺序**下标，而随机顺序不落盘，拿它去点加入顺序的 `items` 必指错歌）；随机那份索性不报位置（切回来还要重排，那个数到那时候也不作数，报 `0` 是替上游下结论），只报曲名；② `activate()` 拆成「同步记账 + 排一条 `activateChain` 串行跑 `activateNow()`」，并记下**用户最新点的那一份** `wantedId`：`activateNow` 起步与取数回来各核一次，不是最新那份就直接退——不往播放器里装、`activeId`/`liveId` 都不动，还没起步的那份连上游都不去敲（点过就记 `usedAt`，被顶掉的份不会被 `evictOverflow` 当成最久没用过的先收起）
+  - **边界**：取数 await 里书架可能被动过（`reset`/`remove`/`evictOverflow`），所以 `entry` 取回来重认一次；`park(旧那份)` 挪到取数之后——这段窗口里 `activeId` 仍是播放器里真正那份，队列事件该记在它头上（从前 `activeId` 先指向新份，续批与落盘都在给一份还没进播放器的队列记账）；`reset()`/`hydrate()` 一并清 `wantedId`
+  - 离线单测 `test/queues.test.ts` 补三条：随机停放那份报 `resumeId` 那一首且 `index` 为 `-1`；慢那份在飞时被顶掉——最终在播的是后点的、慢那份也不许盖回来（断两次 `playList` 不交错）；同拍连点时慢那份一次上游都不敲
+
+- **落盘的并发与陈旧三份账：`writeJsonAtomic` 同路径排队、媒体缓存升 v3 记住「这只是试听片段」、`recordPlay` 按曲目排队计数**
+  - **症状**：① 并发写同一个 JSON 会 `ENOENT`——tmp 名只带 pid，两笔 `writeFile` 写进同一条 `.tmp`，输家的 `rename` 必然找不到文件（12 路并发实测挂 11 路），`queues.json` / `local/library.json` / 曲目 `meta.json` 都会被上层并发触发；② 匿名时下的 30 秒试听片段，登录以后还是一直 30 秒——媒体缓存跨账号共享，`peek` 只看「文件尺寸对不对得上 meta」，而那份 meta 自己就记着片段的字节数，永远算命中；③ 连续两次 `recordPlay` 会丢一次计数
+  - **做法**：① `writeJsonAtomic` 内部按文件路径串一条 promise 链（tmp 名再加进程内序号，失败清掉自己的 tmp、不把链卡死）；② `CachedMediaMeta` 新增 `clip` 字段、`META_VERSION` 2→3——`peek` 命中条件加上 `!hit.clip`，「上次是片段、这次上游给整首」时强制重下（并删掉片段留下的 `.part`，偏移量对不上，续上去就是坏文件），写 meta 时把调用方传进来的旧 `playableRange` 也一并剥掉；③ 新增 `withMetaLock(trackId, fn)`，把「读-改-写」整段按曲目排队（锁要在**读之前**，光靠写排队还是会丢计数），顺带补上 `recordPlay` 漏记的 `touched`
+  - **边界**：老缓存（v1/v2）没有 `clip` 字段，一律重判一次、只重取媒体不重下音频；`stats()` 里 `audio.bytes`/`plays` 对老或手改的 meta 可能缺字段，兜 0（不兜会把整份统计加成 `NaN`）；`prune` 里 `evict()` 返回 false 表示目录本来就不在，那部分字节照扣但不计入 `removed`
+  - 离线单测：`test/store.test.ts` 补并发 `writeJsonAtomic` 不 ENOENT、`test/media.test.ts` 补片段↔整首两次升级各重下重判
+
+- **播放器两处「按了没反应」**：状态卡在 `error` 时 `resume()` 现在等于重开当前队列（从前它既不是 `paused` 也不是 `idle`/`stopped`，播放键按多少次都不动，只能显式 `play` 某首）；`PlayQueue.setShuffle(false)` 改回用 `order[cursor]` 定位——从前拿 `items.indexOf(当前曲目)` 反查，同一首重复入列时（`append`/`insertNext` 传的是同一个对象）会命中第一次那份，「关随机」就悄悄跳了行，听着像突然切了歌
+  - 离线单测 `test/player.test.ts` 补两条：重复入列后开关随机仍停在原来那一行；开随机以当前曲目为队首、关随机回到加入顺序
+
+- **推荐流「再来一批」不再把自己顶成同一批**：`feedSongTab` 直发 `FeedSongTab`，不再走 `cache.fetch`
+  - **为什么**：这一路是实时流（`CacheTtl.none`，本来就存不住），但 `fetch` 的 pending 去重会把同时进来的两次合成**一次请求、同一批结果**——连着按两次就是同样的六首；更糟的是后一个调用的会话计数在 `feedSongTabBody` 里已经加过（`total_request_count`/`feed_counts`），请求却没发出去，计数就此和上游错位
+  - **边界**：带 `excludePlayed`/`excludeLiked` 那一路本来就是直发翻页，两条口径因此一致；`policy.ts` 里 `feed-song-tab` 的账号隔离档保留（真要在别的层缓存这份，隔离规则不能丢）
+  - 离线单测 `test/discover.test.ts` 补一条：两次并发就是两次请求，`total_request_count` 依次是 1、2
+
 ### Added
 
 - **媒体缓存的容量维度终于成账：档位上限 + 真实占用 + 满溢策略（+ 一个默认关的自动淘汰）**

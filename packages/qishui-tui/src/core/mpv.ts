@@ -5,7 +5,7 @@
  * 这样暂停/拖动作用在真播放器上，而不是只停我们自己的时钟。
  * 换播放器：`QISHUI_PLAYER=ffplay`、`QISHUI_MPV_ARGS=--ao=null`（无音频设备的环境）。
  */
-import { type ChildProcess, spawn, spawnSync } from 'node:child_process'
+import { type ChildProcess, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
@@ -24,24 +24,31 @@ let seq = 0
  * 进程退出兜底：TUI 正常退出（q / Ctrl+C）时把还在跑的 mpv 收掉。
  * `process.on('exit')` 里只能同步调用，所以直接 SIGKILL；
  * 被 SIGKILL 掉自己（或进程组）时救不了，那属于外部强杀。
+ * socket 也一起摘：mpv 是被 `SIGKILL` 的，来不及自己删，而 `child.on('exit')` 那套收尾在这个时机跑不到——
+ * 不摘的话每强退一次就在 `/tmp` 攒下一个 `qishui-tui-mpv-*.sock`。
  */
-const liveChildren = new Set<ChildProcess>()
+const liveSockets = new Map<ChildProcess, string>()
 let exitHooked = false
 
-function trackChild(child: ChildProcess): void {
-  liveChildren.add(child)
-  child.on('exit', () => liveChildren.delete(child))
+function trackChild(child: ChildProcess, socketPath: string): void {
+  liveSockets.set(child, socketPath)
+  child.on('exit', () => liveSockets.delete(child))
   if (exitHooked) return
   exitHooked = true
   process.on('exit', () => {
-    for (const c of liveChildren) {
+    for (const [c, socket] of liveSockets) {
       try {
         c.kill('SIGKILL')
       } catch {
         /* 已经没了 */
       }
+      try {
+        fs.unlinkSync(socket)
+      } catch {
+        /* mpv 自己摘了，或本来就不在 */
+      }
     }
-    liveChildren.clear()
+    liveSockets.clear()
   })
 }
 
@@ -121,6 +128,7 @@ export class AudioSink {
   private ipc?: Ipc
   private socketPath?: string
   private available?: boolean
+  private probing?: Promise<boolean>
   private generation = 0
   private ipcFailed = false
   /** 起播失败（找不到播放器 / 没地址）时的一次性提示 */
@@ -131,11 +139,34 @@ export class AudioSink {
   constructor() {
     this.command = process.env.QISHUI_PLAYER ?? 'mpv'
     this.extraArgs = process.env.QISHUI_MPV_ARGS ? process.env.QISHUI_MPV_ARGS.split(/\s+/).filter(Boolean) : []
+    // 开机就把「播放器在不在」问掉：以前这条探测是 `spawnSync`，卡在**第一次起播**那一刻——
+    // 按下播放，界面先冻几十毫秒。异步版在这里问完，`start` 只读结果、不等待。
+    void this.probe()
   }
 
-  isAvailable(): boolean {
-    this.available ??= spawnSync(this.command, ['--version'], { stdio: 'ignore' }).status === 0
-    return this.available
+  private probe(): Promise<boolean> {
+    this.probing ??= new Promise<boolean>((resolve) => {
+      const child = spawn(this.command, ['--version'], { stdio: 'ignore' })
+      // 找不到可执行文件走 'error'（ENOENT），`close` 可能根本不来，所以两处都要落一次结果
+      child.once('error', () => {
+        this.available = false
+        resolve(false)
+      })
+      child.once('close', (code) => {
+        this.available ??= code === 0
+        resolve(this.available)
+      })
+    })
+    return this.probing
+  }
+
+  /** 探到过才拦；还在探/没探完就当可用（真起不来由 `spawn` 的 error 报同一句话） */
+  private unavailable(): boolean {
+    return this.available === false
+  }
+
+  private missingMessage(): string {
+    return `找不到播放器：${this.command}（装 mpv，或用 QISHUI_PLAYER 指定）`
   }
 
   get running(): boolean {
@@ -158,8 +189,8 @@ export class AudioSink {
     this.terminate()
     const generation = ++this.generation
     this.ipcFailed = false
-    if (!this.isAvailable()) {
-      this.onError?.(`找不到播放器：${this.command}（装 mpv，或用 QISHUI_PLAYER 指定）`)
+    if (this.unavailable()) {
+      this.onError?.(this.missingMessage())
       return generation
     }
     // 只有 remote 走签名地址，cache / local 都是磁盘上的文件
@@ -186,8 +217,16 @@ export class AudioSink {
 
     const child = spawn(this.command, args, { stdio: ['ignore', 'ignore', 'pipe'] })
     this.child = child
-    trackChild(child)
-    child.on('error', (err) => this.onError?.(String(err)))
+    trackChild(child, socketPath)
+    child.on('error', (err) => {
+      // 探测还没回来就起了播，结果播放器其实不在：ENOENT 翻成人话，并把这个结论记回缓存
+      const missing = (err as NodeJS.ErrnoException).code === 'ENOENT'
+      if (missing) this.available = false
+      // 已被下一次 `start` 顶掉的那个进程：它的故障不是「这一首」的故障，别报在这一首脸上
+      // （缓存里 `available = false` 照记：那是这台机器的全局事实）
+      if (generation !== this.generation) return
+      this.onError?.(missing ? this.missingMessage() : String(err))
+    })
     child.on('exit', (code) => {
       if (generation !== this.generation) return
       this.child = undefined

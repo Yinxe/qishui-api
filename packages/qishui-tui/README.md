@@ -124,7 +124,7 @@ QISHUI_TUI_STUB=1 pnpm run tui                      # 骨架模式：只画外�
 | `src/ui/useList.ts` | `ListSource` → 行 + 分页的唯一取数处；`useAsync` 是通用单次取数。**听歌模式不在 `ListSource` 里**——它一次只随机回一批，不是一屏可浏览的列表 |
 | `src/screens/Local.tsx` | 「本地」页：本地喜欢 / 本地历史 / 本地歌单 / 音乐文件夹（全走 `core.local`，同步读、不出网）；条目构造在页内（本地歌单/文件夹的操作菜单不需要登录前置检查） |
 | `src/ui/entries.tsx` | 「分区条目」渲染（发现/听歌/我的/本地/账号共用一套游标） |
-| `src/ui/mouse.tsx` | 鼠标层：`MouseProvider` 包树 + 开/关追踪；`hitTest`（半开区间 + 盒内行列）、`useWheelScroll`/`useRowClick`、`Pressable`、`isMouseInput`/`stripMouse` |
+| `src/ui/mouse.tsx` | 鼠标层：`MouseProvider` 包树 + 开/关追踪；`hitTest`（半开区间 + 盒内行列）、`useWheelScroll`/`useRowClick`、`Pressable`、`isMouseInput`/`stripMouse`、`MouseBlock`（弹层盖住的底层不接鼠标） |
 | `src/ui/keys.ts` | **单键命令的统一入口 `useKeys`**：ink 的 `useInput` 把一次 read 的整串交给 handler，快按 `jj` 拿到的是 `'jj'`、`input === 'j'` 必然不中；这里把多字符可打印输入按字符拆开逐个派发，鼠标报文/ESC 序列/带修饰键的不拆。进来先过 `stripReports()`（回报字节剔掉，剔空了整个不理）。文本输入处（搜索框/评论/歌单名）仍用 `useInput` + `stripReports`（它们本来就按字符收） |
 | `src/ui/termProbe.ts` | **终端图形能力探测**：`probeQueries()` 发那三条查询、`parseCapsReply()` 纯函数解回音（kitty `a=q` 应答 / XTVERSION 牌子 / DA1 收尾 + Sixel）、`probeGraphics()` 在 render 前一次性问完并把没解完的尾巴 `unshift` 回 stdin；`shouldProbe()` 管「已强制就别问」 |
 | `src/ui/caps.ts` | `TermCaps` 的模块单例（`setTermCaps`/`termCaps`）：单独一个模块而不塞进 React context，`ui/cover.ts` 才能在离线单测里被喂假能力 |
@@ -169,6 +169,7 @@ QISHUI_TUI_STUB=1 pnpm run tui                      # 骨架模式：只画外�
 | 喜欢按钮 | 听歌页两排按钮里的 `[喜欢]`/`[已喜欢]` 与底部播放条的「喜欢 / 已喜欢」是**同一条路**（`ui/rowActions.ts` 的 `toggleTrackLike`）：按当前曲目状态显示，`Enter` / 点一下切换（云端走「我的喜欢」需登录，磁盘文件走本地库不需登录） |
 | `↑↓` / `g` / `o` / `t`（「听歌」页） | 翻歌词 / 回到跟随播放头 / 当前曲目的操作菜单 / 歌词 ↔ 队列换栏（窄屏 = 换 tab）。焦点在队列时 `↑↓` 挪游标：游标一出那 10 行就带着窗口滚（`↑` 回看听过的），**停在最后一行再按 `↓` = 主动要下一批**（`g`/`G` 跳队首 / 队尾） |
 | `↑↓ j k g G` | 列表移动 |
+| `PgUp` `PgDn` | 整页挪（一页 = 该列表的可视行数，由 `listHeight()` 推给 `useCursor({pageSize})`；几百行的「我喜欢的音乐」不用一格一格按）。没接 `pageSize` 的列表按 10 行一页 |
 | `Enter` | **打开这一行的「操作菜单」**（菜单里 `Enter` / 点击 = 执行该项；第一项就是播放，所以 `Enter Enter` 即出声） |
 | `N` | 新建歌单（「我的」页 / 「本地」页的页面级键；**改名 / 删歌单 / 播放整张 / 收藏都在每行的 `Enter` 菜单里**，`e`/`D` 已删） |
 | `A` | 添加音乐文件夹（只在「本地」页；支持 `~/Music` 写法） |
@@ -193,10 +194,11 @@ QISHUI_TUI_STUB=1 pnpm run tui                      # 骨架模式：只画外�
 
 **点击穿透这一道闸**：弹层正画在指针下方，双击的第二下（`SectionView` 挂载后 350ms 内的点击）只挪游标、不执行条目——否则「点一行开菜单」顺带就把菜单第一项跑了。键盘 `Enter Enter` 不受这道闸影响（那才是主路径）。
 
-三条口径：
+四条口径：
 
 - **接缝归属**：库判定命中用 `left..right` 闭区间，而 `right = left + width`——宽 16 的侧边栏会盖到第 17 列，而第 17 列正是内容区第一列，一次点击两个 handler 都跑。`hitTest()` 收成 `[left, right)` / `[top, bottom)`，接缝列只给真正的持有者（单测里那条「点第 17 列不切页」就是守这个的）。同理，**同类型的 handler 不要挂在父子两个盒子上**：库会把一份报文发给每个命中的 handler，父子都注册就双跑；现在的接法是「一个盒子管一段行」，按钮之间都是兄弟盒。
-- **只开按键/滚轮上报**（`?1000` + SGR `?1006`），`?1002`（拖动）/`?1003`（移动）是 `xterm-mouse` 顺手打开的，`MouseSetup` 紧接着关掉它们：那样鼠标每动一下都往 stdin 灌一条报文、ink 每个 handler 白跑一遍。代价是**终端原生的拖选复制被接管**——要复制请按住 `Shift` 拖选，或者干脆 `QISHUI_TUI_MOUSE=0` 启动（彻底不接管鼠标）。退出（含被强杀，走 `process.on('exit')` 兜底）会把四个模式一并关掉，不留鼠标模式。
+- **四个模式全开且运行期不关**（`?1000` 按键/滚轮 + `?1002` 拖动 + `?1003` 移动 + SGR `?1006`）：曾经为了省 stdin 流量在 `MouseSetup` 里补一条 `\x1b[?1003l\x1b[?1002l`，结果在 VTE 系终端（gnome-terminal 等）上**把点击整个废掉**——只开 `?1000` 时终端把界面当成拖选文本区，光标停在 I 型、点下去什么都不报进来。代价是**终端原生的拖选复制被接管**——要复制请按住 `Shift` 拖选，或者干脆 `QISHUI_TUI_MOUSE=0` 启动（彻底不接管鼠标）。退出（含被强杀，走 `process.on('exit')` 兜底）会把四个模式一并关掉，不留鼠标模式。
+- **弹层盖住的那一层不接鼠标**（`MouseBlock`）：底层页面在弹层开着时**不卸载**（要保住已取的数据与游标），但它的布局矩形还在，`hitTest` 照样命中——不挡就是「点弹层的按钮，底下那一行同时被 `Enter`」、滚轮两边一起滚。作用域只包 `BaseLayer`，弹层自己不在这棵子树里，照常接鼠标。
 - **鼠标报文也是「输入」**：ink 的 `useInput` 没有「消费」语义，原始报文会同时进按键 handler，所以文输入处过 `stripMouse()`、单键快捷键处过 `isMouseInput()`，否则滚一下轮就往搜索框里塞 `[<64;10;5M`。
 
 不做悬停高亮（要重开 `?1003`）、不做按住拖动 scrub（要 `?1002` + 防抖）；进度条是**点击定位 + 滚轮 ±5 秒**，音量键滚轮 ±5%。`MouseProvider` 的 `cacheInvalidationMs` 设为 `0`：默认 16ms 的盒子尺寸缓存，在「刚点完 → 重排 → 再点」时会拿陈旧矩形判命中。

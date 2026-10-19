@@ -4,8 +4,11 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { makeCliHome, rmDir, runCli } from './support/cli.js'
+
+// 一条用例里连着起十来个真进程，默认 5 秒在并行构建的机器上会翻车
+vi.setConfig({ testTimeout: 30_000 })
 
 let home: string
 

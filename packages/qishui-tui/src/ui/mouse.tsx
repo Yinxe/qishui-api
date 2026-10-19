@@ -18,6 +18,8 @@
  *  4) 同类型的 handler 别挂在父子两个盒子上：ink-mouse 会把一份报文发给**每个**命中的 handler，
  *     父子都注册就双跑。现在的接法是「一个盒子管一段行」（列表/歌词/队列用 `useRowClick` 按行号分发），
  *     按钮之间都是兄弟盒，不存在嵌套。
+ *  5) 弹层开着时底层页面**不卸载**（卸载会丢数据与游标），于是它的矩形还在、照样命中——
+ *     靠 `MouseBlock` 把那棵子树整片挡掉（见 `BlockedLayer`），不然就是点击穿透与两边一起滚。
  */
 
 import {
@@ -29,9 +31,25 @@ import {
   useOnWheel,
 } from '@ink-tools/ink-mouse'
 import { Box, type BoxProps, type DOMElement, useStdout } from 'ink'
-import { type ReactNode, type RefObject, useEffect, useRef } from 'react'
+import { createContext, type ReactNode, type RefObject, useContext, useEffect, useRef } from 'react'
 import { useCore } from '../core/context.js'
 import { useUi } from './context.js'
+
+/**
+ * 「这一层被弹层盖住了」：`BaseLayer` 在弹层开着时不卸载（保住已取的数据与游标），
+ * 但它那些盒子的布局矩形还在——`hitTest` 照样命中，于是点弹层里的按钮会**同时**驱动底下
+ * 那一行（滚轮也是两边一起滚）。所以把「挡」做成一层作用域：`App.tsx` 只包底层页面，
+ * 弹层自己不在这棵子树里，照常接鼠标。
+ */
+const BlockedLayer = createContext(false)
+
+export function MouseBlock({ blocked, children }: { blocked: boolean; children: ReactNode }) {
+  return <BlockedLayer.Provider value={blocked}>{children}</BlockedLayer.Provider>
+}
+
+function useLayerBlocked(): boolean {
+  return useContext(BlockedLayer)
+}
 
 /** 关追踪：按键/滚轮 + SGR 编码 + 拖动/移动上报（退出或关鼠标时统一还原，别把终端留在鼠标模式） */
 const MOUSE_OFF = '\x1b[?1000l\x1b[?1006l\x1b[?1002l\x1b[?1003l'
@@ -140,11 +158,27 @@ function wheelDelta(event: InkMouseEvent): number {
 
 /** 左键按下即触发；按下 (press) 报文恒比抬起 (click) 可靠，不等抬起坐标 */
 function useLeftPress(ref: RefObject<DOMElement | null>, handler: ((event: InkMouseEvent) => void) | null): void {
+  const blocked = useLayerBlocked()
   useOnPress(
     ref,
-    handler
+    handler && !blocked
       ? (event) => {
           if (event.button === 'left') handler(event)
+        }
+      : null,
+  )
+}
+
+/** 滚轮落在盒子里就报增量；传 null（不接）或整层被弹层盖住就不注册 handler */
+function useWheelDelta(ref: RefObject<DOMElement | null>, onDelta: ((delta: number) => void) | null): void {
+  const blocked = useLayerBlocked()
+  useOnWheel(
+    ref,
+    onDelta && !blocked
+      ? (event) => {
+          if (!hitTest(ref, event)) return
+          const delta = wheelDelta(event)
+          if (delta !== 0) onDelta(delta)
         }
       : null,
   )
@@ -159,16 +193,7 @@ export function useWheelScroll(
   onDelta: (delta: number) => void,
   active = true,
 ): void {
-  useOnWheel(
-    ref,
-    active
-      ? (event) => {
-          if (!hitTest(ref, event)) return
-          const delta = wheelDelta(event)
-          if (delta !== 0) onDelta(delta)
-        }
-      : null,
-  )
+  useWheelDelta(ref, active ? onDelta : null)
 }
 
 /**
@@ -213,16 +238,7 @@ export function Pressable({ onPress, onWheel, active = true, children, ...props 
         }
       : null,
   )
-  useOnWheel(
-    ref,
-    onWheel && active
-      ? (event) => {
-          if (!hitTest(ref, event)) return
-          const delta = wheelDelta(event)
-          if (delta !== 0) onWheel(delta)
-        }
-      : null,
-  )
+  useWheelDelta(ref, onWheel && active ? onWheel : null)
   return (
     <Box ref={ref} {...props}>
       {children}

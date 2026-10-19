@@ -8,7 +8,8 @@
  *   qishui-cli   就是这里：把 core 的能力摆成命令，出声交给 mpv 子进程
  *
  * 全局口径：
- *   - **默认给人看**（颜色/表格/进度条），加 `--json` 出结构化数据（stdout 只有 JSON，能直接管进 jq）；
+ *   - **默认给人看**（颜色/表格/进度条），加 `--json` 出结构化数据（stdout 只有 JSON，能直接管进 jq；
+ *     出错时 stdout 是 `{error, hint}`， stderr 照旧给人看）；
  *   - 写接口只有你明确敲了才发；删除类命令要 `--yes`；
  *   - 日志/警告一律走 stderr，不污染管道。
  */
@@ -21,7 +22,7 @@ import { registerMaintCommands } from './commands/maint.js'
 import { registerPlayCommands } from './commands/play.js'
 import { registerSearchCommands } from './commands/search.js'
 import { describeError, globals, resolveIdVisibility, setGlobals, shutdown } from './context.js'
-import { dim, red } from './output.js'
+import { dim, printJson, red } from './output.js'
 
 const VERSION = '0.1.0'
 
@@ -89,6 +90,9 @@ async function main(argv: string[]): Promise<void> {
 
 main(process.argv).catch(async (err: unknown) => {
   const described = describeError(err)
+  // `--json` 的调用方只看 stdout：出错时也得给它一份能 parse 的数据（配上退出码 1），
+  // 不能只留一行红字——那等于让脚本没法区分「没结果」和「挂了」。
+  if (globals().json) printJson({ error: described.message, hint: described.hint ?? null })
   process.stderr.write(`${red('✗')} ${described.message}\n`)
   if (described.hint) process.stderr.write(`  ${dim(described.hint)}\n`)
   if (globals().verbose && err instanceof Error && err.stack) process.stderr.write(dim(err.stack) + '\n')

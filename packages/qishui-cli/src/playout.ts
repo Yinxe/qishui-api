@@ -148,6 +148,26 @@ export class MpvSink {
     this.command = options.command ?? process.env.QISHUI_PLAYER ?? 'mpv'
     this.extraArgs =
       options.extraArgs ?? (process.env.QISHUI_MPV_ARGS ? process.env.QISHUI_MPV_ARGS.split(/\s+/).filter(Boolean) : [])
+    // 兜底：上层那套收尾（`finally` 里的 `stop()`）只在「正常/异常但事件循环还活着」时跑得到。
+    // 管道被 `qishui play --json | head -3` 这种掐断时，stdout 的 EPIPE 是条未捕获异常——进程当场就没了，
+    // `finally` 与 SIGINT 都来不及，而 mpv 是**子进程**、不会跟着没（于是「命令早退了、歌还在放」）。
+    // `exit` 是唯一的最后时机：那里只能同步杀。
+    // 顺带管 socket：实测「正常播完一首」也常常是进程先结束、`child.on('exit')` 那笔 unlink 排在后面，
+    // 于是每听一首就在 `/tmp` 留一个 `qishui-mpv-*.sock`。
+    process.on('exit', this.exitHook)
+  }
+
+  private readonly exitHook = (): void => {
+    // socket 在这里删一次（不只靠 `stop()`/子进程退出回调）：被 `SIGKILL` 掉的 mpv 不会自己摘，
+    // 而正常收尾那条路也来不及（见上）
+    this.cleanupSocket()
+    const child = this.child
+    if (!child || child.exitCode !== null) return
+    try {
+      child.kill('SIGKILL')
+    } catch {
+      /* 进程已经不在了 */
+    }
   }
 
   private log(line: string): void {

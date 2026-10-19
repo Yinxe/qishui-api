@@ -131,15 +131,52 @@ function isMine(core: QishuiCore | undefined, ownerId?: string): boolean {
 
 /**
  * 收藏状态的两个来源，都不发请求：
- *  1. **这一行自己带的水印** —— 登录态下 `Search`/榜单/推流/`MGetMedia` 的每个曲目实体都嵌了
+ *  1. **这一行自带的水印** —— 登录态下 `Search`/榜单/推流/`MGetMedia` 的每个曲目实体都嵌了
  *     `state.is_collected`（实测 2026-10-18，见 `packages/qishui-api/test/probe-state.ts`），core 已解析成 `Track.liked`；
+ *     自己刚按下去的那一次也写在这里（`data.state.isCollected`），所以它排在 `liked` 前面；
  *  2. 退一步只**白拿**内存里那份「我喜欢的音乐」清单（`liked-tracks` 缓存，`isLiked` 读的就是它）。
  * 两个都没有就返回 undefined —— 建菜单不等它，翻完整张收藏是好几轮请求。
  */
-function likedFromPage(core: QishuiCore, trackId: string, liked?: boolean): boolean | undefined {
-  if (liked !== undefined) return liked
+function likedFromPage(core: QishuiCore, track: TrackLike): boolean | undefined {
+  // 这一行自己的水印优先，且 `data.state.isCollected` 排在 `liked` 前面：刚按下去的那一次写的就是
+  // 前者（`liked` 是实体到手那一刻的老水印），连按两次时它是唯一还跟得上真相的那一份
+  const stamped = track.data.state?.isCollected ?? track.liked
+  if (stamped !== undefined) return stamped
   const cached = core.cache.peek<{ tracks?: { id: string }[] }>('liked-tracks', 'list')
-  return cached?.tracks ? cached.tracks.some((t) => t.id === trackId) : undefined
+  return cached?.tracks ? cached.tracks.some((t) => t.id === track.id) : undefined
+}
+
+/** 每首曲目一条「我的喜欢」串行队列（只在这份界面进程里排队，不碰上游） */
+const likeQueue = new Map<string, Promise<unknown>>()
+
+/**
+ * 云端「我的喜欢」的切换 —— 行菜单与播放条按钮共用同一条路。
+ * 同一首连按两次必须**排队**：并发跑时第二次读到的还是按之前的水印，于是两下都算「加入」——
+ * 数据不会坏（上游那条写接口幂等），坏的是「我以为第二下取消了」。
+ */
+async function toggleUpstreamLike(core: QishuiCore, track: TrackLike): Promise<boolean> {
+  const prev = likeQueue.get(track.id) ?? Promise.resolve()
+  const task = prev.then(
+    () => toggleNow(core, track),
+    () => toggleNow(core, track),
+  )
+  const tail = task.catch(() => undefined) // 前一次失败不该把后一次一起带走
+  likeQueue.set(track.id, tail)
+  void tail.then(() => {
+    if (likeQueue.get(track.id) === tail) likeQueue.delete(track.id)
+  })
+  return task
+}
+
+async function toggleNow(core: QishuiCore, track: TrackLike): Promise<boolean> {
+  // 行上带了水印就照它做（省掉「翻完整张我喜欢的音乐」）；没带才真读一次
+  const known = likedFromPage(core, track)
+  const nowLiked = !(known ?? (await core.library.isLiked(track.id)))
+  if (nowLiked) await core.library.like(track.id)
+  else await core.library.unlike(track.id)
+  // 就地翻这一行的水印：本页数据是打开那一刻的快照，不等重读也得跟着真相位
+  track.data.state = { ...track.data.state, isCollected: nowLiked }
+  return nowLiked
 }
 
 /** 建条目要用的那一套小工具（列表页与播放页共用同一份口径） */
@@ -185,21 +222,15 @@ function makeKit(opts: { ui: UiValue; core?: QishuiCore; afterWrite?: () => void
 
   /** 「我的喜欢」：note 报这一行自带的水印（没有再退到内存里那份收藏清单）；状态没读过就留空 */
   const likedItem = (track: TrackLike): Entry => {
-    const { id: trackId } = track
     const name = track.data.name
     if (!loggedIn || !core) return locked('like', '加入「我的喜欢」')
-    const known = likedFromPage(core, trackId, track.liked)
+    const known = likedFromPage(core, track)
     return item(
       'like',
       '我的喜欢（切换）',
       task(async () => {
-        // 行上带了水印就照它做（省掉「翻完整张我喜欢的音乐」）；没带才真读一次
-        const nowLiked = !(known ?? (await core.library.isLiked(trackId)))
-        if (nowLiked) await core.library.like(trackId)
-        else await core.library.unlike(trackId)
+        const nowLiked = await toggleUpstreamLike(core, track)
         ui.toast(nowLiked ? `已加入「我的喜欢」：${name}` : `已取消喜欢：${name}`, nowLiked ? 'success' : 'info')
-        // 就地翻这一行的水印：本页数据是打开那一刻的快照，不等重读也得跟着真相位
-        track.data.state = { ...track.data.state, isCollected: nowLiked }
         afterWrite?.()
       }),
       known === undefined ? undefined : known ? '已喜欢' : '未喜欢',
@@ -223,13 +254,13 @@ export function trackLikeOf(data: TrackData): TrackLike {
  */
 export function trackLiked(core: QishuiCore | undefined, track: TrackLike): boolean {
   if (track.data.localPath) return Boolean(core?.local.isTrackLiked(track))
-  return core ? Boolean(likedFromPage(core, track.id, track.liked)) : Boolean(track.liked)
+  return core ? Boolean(likedFromPage(core, track)) : Boolean(track.data.state?.isCollected ?? track.liked)
 }
 
 /**
  * [喜欢] 按钮（听歌页 / 底部播放条）的动作：与菜单里那条 `我的喜欢（切换）` **同一条路**——
- * 磁盘文件走本地库（不需要登录），云端先看水印/内存清单、两头都没有才真读一次 `isLiked`，
- * 成功后就地翻 `TrackData` 的水印再 `bump()` 重读（不等重读按钮文案也得跟着真相位）。
+ * 磁盘文件走本地库（不需要登录），云端走 `toggleUpstreamLike`（同一首连按两次会排队）。
+ * 成功后 `bump()` 重读（不等重读按钮文案也得跟着真相位：水印是就地翻的）。
  * 与菜单版的差别只有：没有弹层要关、失败自己接住toast。
  */
 export async function toggleTrackLike(opts: { ui: UiValue; core?: QishuiCore; track: TrackLike }): Promise<void> {
@@ -251,12 +282,8 @@ export async function toggleTrackLike(opts: { ui: UiValue; core?: QishuiCore; tr
       ui.toast('登录之后才有「我的喜欢」（侧边栏底部扫码）', 'info')
       return
     }
-    const known = likedFromPage(core, track.id, track.liked)
-    const nowLiked = !(known ?? (await core.library.isLiked(track.id)))
-    if (nowLiked) await core.library.like(track.id)
-    else await core.library.unlike(track.id)
+    const nowLiked = await toggleUpstreamLike(core, track)
     ui.toast(nowLiked ? `已加入「我的喜欢」：${name}` : `已取消喜欢：${name}`, nowLiked ? 'success' : 'info')
-    track.data.state = { ...track.data.state, isCollected: nowLiked }
     ui.bump()
   } catch (err) {
     ui.toast(err instanceof Error ? err.message : String(err), 'error')
@@ -405,6 +432,9 @@ export function buildRowActions(opts: RowActionOptions): RowActions {
       item('queue', '加入队尾', () => core?.player.enqueue(data)),
     ]
     // 页面级的歌单操作也挂在这一行的菜单里：一期先把 `e`/`D` 这两个散键收掉，不丢能力
+    // 这三个动作改的**就是这一页**（core 那边已经作废了 `playlist-detail` 缓存），所以除了全局
+    // bump，还得让本页重读——只 bump 的话：移出的那行还留在列表里、菜单还能再「移出」一次、
+    // 改名成功后标题也还是老的（`confirmRemoveFromPlaylist`/`promptRenamePlaylist` 自己已经 bump 过）
     const tail: Entry[] = [
       ...(playlist
         ? [
@@ -415,10 +445,12 @@ export function buildRowActions(opts: RowActionOptions): RowActions {
                 playlistId: playlist.id,
                 trackId,
                 name,
-                onDone: () => ui.bump(),
+                onDone: () => afterWrite?.(),
               }),
             ),
-            write('rename-playlist', '本歌单：改名', () => promptRenamePlaylist({ ui, core, id: playlist.id })),
+            write('rename-playlist', '本歌单：改名', () =>
+              promptRenamePlaylist({ ui, core, id: playlist.id, onDone: () => afterWrite?.() }),
+            ),
             write('delete-playlist', '本歌单：删歌单', () =>
               confirmDeletePlaylist({
                 ui,

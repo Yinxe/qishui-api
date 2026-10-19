@@ -209,6 +209,10 @@ export class QishuiCore {
       onPersisted: (uid) => {
         this.cache.clearMemory()
         this.history.setScope(uid)
+        // 换号 = 换一份「我的喜欢 / 我的歌单」：书架跟着作废（口径同 `useAccount`）。
+        // 漏了这一条，上个号留下的曲目快照会原样躺在书架上，下一个号激活它播的是别人的那批。
+        this.queues.reset()
+        this.queues.flush()
         this.events.emit('account-changed', { uid })
       },
     })
@@ -223,6 +227,7 @@ export class QishuiCore {
     this.player.clear()
     // 换号 = 换一份「我的喜欢 / 我的歌单」：书架上的队列跟着作废
     this.queues.reset()
+    this.queues.flush()
     await this.session.useAccount(uid)
     this.cache.clearMemory()
     this.history.setScope(this.session.uid)
@@ -235,6 +240,9 @@ export class QishuiCore {
     const uid = this.session.uid
     await this.session.logout(opts)
     this.cache.clearMemory()
+    // 退登也是换号（退到匿名）：书架上那些「我的喜欢 / 我的歌单」曲目快照不再属于这个会话
+    this.queues.reset()
+    this.queues.flush()
     if (opts.purge && uid) await this.cache.invalidateAccount(uid)
     this.history.setScope(undefined)
     this.events.emit('account-changed', { uid: undefined })

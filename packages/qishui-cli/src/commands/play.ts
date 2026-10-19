@@ -9,7 +9,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import type { Command } from 'commander'
 import { type QishuiCore, type RepeatMode, safeSegment, type Track } from 'qishui-core'
-import { CliError, core, describeError } from '../context.js'
+import { CliError, core, describeError, parseCount, parseVolume } from '../context.js'
 import { durationLong, trackArtists, trackTitle } from '../format.js'
 import { clearStatusLine, dim, emit, green, heading, info, print, statusLine, warn } from '../output.js'
 import { runPlaySession } from '../playSession.js'
@@ -20,12 +20,6 @@ const REPEATS: RepeatMode[] = ['off', 'all', 'one']
 function parseRepeat(value: string): RepeatMode {
   if (!REPEATS.includes(value as RepeatMode)) throw new CliError(`--repeat 只能是 ${REPEATS.join(' / ')}`)
   return value as RepeatMode
-}
-
-function parseVolume(value: string): number {
-  const percent = Number(value)
-  if (!Number.isFinite(percent)) throw new CliError('--volume 要给 0-100 的数字')
-  return Math.max(0, Math.min(1, percent / 100))
 }
 
 /** `--list`：列出队列并标出哪些已经在本地缓存里 */
@@ -91,7 +85,9 @@ export function registerPlayCommands(program: Command): void {
           )
         }
         const instance = await core()
-        const tracks = await resolveTargets(instance, targets, { limit: Math.max(1, Number(opts.limit) || 30) })
+        const tracks = await resolveTargets(instance, targets, {
+          limit: parseCount(opts.limit, '--limit', { fallback: 30, max: 1000 }),
+        })
         if (!tracks.length) throw new CliError('没解析出可播曲目')
 
         if (opts.list) {
@@ -119,7 +115,9 @@ export function registerPlayCommands(program: Command): void {
     .action(async (targets: string[], opts: { limit: string; out?: string; all?: boolean }) => {
       if (!targets?.length) throw new CliError('要下什么？', '例：qishui download playlist:<id> --out ~/Music')
       const instance = await core()
-      const tracks = await resolveTargets(instance, targets, { limit: Math.max(1, Number(opts.limit) || 30) })
+      const tracks = await resolveTargets(instance, targets, {
+        limit: parseCount(opts.limit, '--limit', { fallback: 30, max: 1000 }),
+      })
       if (!tracks.length) throw new CliError('没解析出可下载的曲目')
 
       if (opts.out) await fs.mkdir(opts.out, { recursive: true })

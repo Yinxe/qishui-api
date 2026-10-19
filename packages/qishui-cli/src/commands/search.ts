@@ -12,7 +12,7 @@
  */
 import type { Command } from 'commander'
 import type { SearchGroup, SearchType } from 'qishui-core'
-import { CliError, core } from '../context.js'
+import { CliError, core, parseCount } from '../context.js'
 import { userLine } from '../format.js'
 import { bold, dim, emit, heading, print, printTable } from '../output.js'
 import { printAlbumList, printArtistList, printPlaylistList, printTrackList } from '../render.js'
@@ -23,7 +23,7 @@ function groupTotal(group: SearchGroup): number {
   return group.tracks.length + group.albums.length + group.artists.length + group.playlists.length + group.users.length
 }
 
-/** 没被解析成实体的条目（video 这类）只报个数，原始结构用 --json 看 */
+/** 没被解析成实体的条目（video 这类）只报个数；原始结构要 `--json --raw`（`--json` 默认剥掉 `raw`） */
 function rawItemCount(group: SearchGroup): number {
   const raw = group.raw as { items?: unknown[] } | undefined
   return Array.isArray(raw?.items) ? raw.items.length : 0
@@ -94,7 +94,7 @@ export function registerSearchCommands(program: Command): void {
     .action(async (query: string, opts: { type: string; limit: string; pages: string; refresh?: boolean }) => {
       const type = opts.type as SearchType
       if (!TYPES.includes(type)) throw new CliError(`--type 只能是 ${TYPES.join(' / ')}`)
-      const pages = Math.max(1, Number(opts.pages) || 1)
+      const pages = parseCount(opts.pages, '--pages', { fallback: 1, max: 50 })
       if (pages > 1 && type === 'all') {
         throw new CliError(
           '--pages 不能配 --type all',
@@ -104,7 +104,7 @@ export function registerSearchCommands(program: Command): void {
       const instance = await core()
       const groups = await fetchPages(instance, query, type, pages, opts.refresh)
       const result = { query, groups }
-      const limit = Math.max(1, Number(opts.limit) || 20)
+      const limit = parseCount(opts.limit, '--limit', { fallback: 20, max: 1000 })
       emit(() => {
         heading(`搜索「${query}」`, type === 'all' ? undefined : `类型 ${type}${pages > 1 ? ` · ${pages} 页` : ''}`)
         let printed = 0
@@ -118,7 +118,7 @@ export function registerSearchCommands(program: Command): void {
           group.users.slice(0, limit).forEach((user, index) => {
             print(userLine(user, { index: index + 1 }))
           })
-          if (!groupTotal(group)) print(dim(`  ${rawItemCount(group)} 条未结构化结果（--json 看原始结构）`))
+          if (!groupTotal(group)) print(dim(`  ${rawItemCount(group)} 条未结构化结果（--json --raw 看原始结构）`))
           printed++
         }
         if (!printed) {

@@ -129,8 +129,10 @@ export class PlayQueue {
   setShuffle(on: boolean): void {
     if (this.shuffleOn === on) return
     this.shuffleOn = on
-    const currentItem = this.current
-    this.rebuild(currentItem ? this.items.indexOf(currentItem) : 0)
+    // 当前曲目的 items 下标就是 `order[cursor]`——别拿 `indexOf(曲目)` 反查：
+    // 同一首能被重复入列（`append`/`insertNext` 传的是同一个对象），反查只会命中第一次那次，
+    // 于是「关随机」跳回另一份，听着像突然切了歌。
+    this.rebuild(this.order[this.cursor] ?? 0)
   }
 
   /** 跳到 order 里的第 n 位 */
