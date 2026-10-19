@@ -299,6 +299,45 @@ describe('player：频繁切歌的竞态', () => {
   })
 })
 
+describe('player：收尾的 await（记历史/上报）期间又切歌', () => {
+  it('上一首的收尾不许把已经报出的 `error` 按回「播放中」，进度条更不能偷偷走表', async () => {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let entered = false
+    let blocked = false
+    const realAppend = core.history.append.bind(core.history)
+    core.history.append = async (track, extra) => {
+      if (blocked) {
+        entered = true
+        await gate
+      }
+      return realAppend(track, extra)
+    }
+    const realResolve = core.media.resolve.bind(core.media)
+    core.media.resolve = async (input, opts) => {
+      if (typeof input !== 'string' && input.id === T2) throw new Error('这首没有可播地址')
+      return realResolve(input, opts)
+    }
+
+    blocked = true
+    const first = core.player.play([T1, T2]) // 起播 T1：源已解析，收尾卡在 `history.append`
+    while (!entered) await sleep(5)
+    blocked = false
+    entered = false
+
+    await core.player.play(T2) // 切到 T2：解析必败 → 停在 error
+    expect(core.player.status).toBe('error')
+
+    release()
+    await first
+    await sleep(40)
+    expect(core.player.status).toBe('error')
+    expect(core.player.positionMs).toBe(0)
+  })
+})
+
 describe('player：失败路径（skipOnError）', () => {
   it('单首不可播 → error 且停在原地', async () => {
     const deadHome = makeTempDir('qishui-player-dead-')

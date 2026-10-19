@@ -6,6 +6,9 @@
 
 ### Fixed
 
+- **上一首的收尾不许把新一首按回「播放中」**：`startCurrent()` 里 `await this.recordPlay(source)`（记媒体 `plays`、写本地历史、可选上报最近播放）之后原本**没有再认一次 `loadToken`** —— 这段 await 里用户切了歌、而新一首恰好被判定失败停在 `error` 时，上一首的收尾会照样跑完 `startClock()` + `setStatus('playing')`：现象是「报错卡片被顶掉、播放条显示在播、进度条在一首没出声的歌上走表」。`dispose()` 也补了一笔 `loadToken++`（还在 await 里的那次解析回来就该整段丢弃，不该在已销毁的播放器上重开时钟）
+  - 离线单测 `test/player.test.ts` 补一条：把第一首的 `history.append` 卡在闸门上、切到必败的第二首，放开闸门后状态仍是 `error`、`positionMs` 仍是 0
+
 - **`login({ keepActive: true })` 会串号：入库新号却把两份账号文件互相写脏**
   - **症状**：扫码入库但不切号时，`session.current` 被换成**新号**（uid/昵称/cookie 都是它的），而 jar 里灌回的是**旧号**的 cookie。于是「当前身份」说的和「真正在发」的不是一回事：`core.uid`/`snapshot().nickname` 变新号、`accounts()` 里旧号不再 `active`、`account-changed` 也发了（上层据此清书架），更糟的是之后任何一次按 `current.uid` 找文件的回写（`save()`、`me()` 顺手调的 `rememberIdentity` → `saveCurrent()`）都会把**新号那份写成旧号的凭据**（反向也一样），切过去才发现「这张号是别人的」；`onPersisted` 还会把播放历史 scope 指到新 uid、把还在听的旧号书架整个 `reset()` 掉
   - **做法**：`persist` 里先算出 `kept`（要求确有一个带 cookie 的号可保持），`this.current = kept ? previous : next` 并照旧 `swapCookies`；不切号时**不发 `onPersisted`**（没换号就不做换号的编排）、不叫 `onActivate`、也不给新号记 `lastUsedAt`（它是「刚入库」不是「刚用过」——`lastUsedAt` 是激活号解析不出来时的回落依据）

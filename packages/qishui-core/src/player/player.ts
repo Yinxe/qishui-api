@@ -402,6 +402,8 @@ export class Player {
 
   dispose(): void {
     this.stopClock()
+    // 认一次 token：还在 await 里的那次解析回来就该整段丢弃，别在已 dispose 的播放器上重开时钟
+    this.loadToken++
     this.events.removeAll()
   }
 
@@ -445,6 +447,9 @@ export class Player {
     this.events.emit('track', { track: source.track, index: this.queue.index })
 
     await this.recordPlay(source)
+    // 记历史/上报也是 await：这期间用户已经切歌（或这一首被判定失败停在 `error`）时，
+    // 上一首的收尾不许再把状态按回「播放中」—— 那样进度条会在没有声音的曲目上走表
+    if (token !== this.loadToken) return
     this.startClock()
     this.setStatus('playing')
   }
